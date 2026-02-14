@@ -2121,13 +2121,13 @@ export default function CanvexPage() {
     }
   }, [])
 
-  const findOrphanVideoPlaceholder = useCallback((sceneId: string | null) => {
+  const findOrphanVideoPlaceholder = useCallback((sceneId: string | null, minAgeMs: number = 0) => {
     if (!sceneId) return null
     const api = canvexApiRef.current
     if (!api?.getSceneElements) return null
     const elements = api.getSceneElements()
     if (!Array.isArray(elements)) return null
-    const groups: Record<string, { rectId?: string; textId?: string; hasJobId?: boolean; isVideo?: boolean }> = {}
+    const groups: Record<string, { rectId?: string; textId?: string; hasJobId?: boolean; isVideo?: boolean; createdAt?: number }> = {}
     for (const element of elements) {
       if (!element || element.isDeleted) continue
       const data = element.customData || {}
@@ -2144,6 +2144,15 @@ export default function CanvexPage() {
       if (data.aiVideoJobId) {
         groups[groupId].hasJobId = true
       }
+      if (data.aiChatCreatedAt) {
+        const createdAtTs = Date.parse(String(data.aiChatCreatedAt))
+        if (Number.isFinite(createdAtTs)) {
+          const prevCreatedAt = groups[groupId].createdAt
+          if (!prevCreatedAt || createdAtTs < prevCreatedAt) {
+            groups[groupId].createdAt = createdAtTs
+          }
+        }
+      }
       if (element.type === 'rectangle') {
         groups[groupId].rectId = element.id
       } else if (element.type === 'text') {
@@ -2154,7 +2163,12 @@ export default function CanvexPage() {
       }
     }
     const candidates = Object.entries(groups)
-      .filter(([, value]) => !value.hasJobId && value.rectId && value.textId && value.isVideo)
+      .filter(([, value]) => {
+        if (value.hasJobId || !value.rectId || !value.textId || !value.isVideo) return false
+        if (!minAgeMs) return true
+        if (!value.createdAt || !Number.isFinite(value.createdAt)) return true
+        return Date.now() - value.createdAt >= minAgeMs
+      })
     if (candidates.length !== 1) return null
     const [groupId, value] = candidates[0]
     return {
@@ -2994,7 +3008,7 @@ export default function CanvexPage() {
             if (byJob) {
               resolvedPlaceholder = byJob
             } else {
-              const orphan = findOrphanVideoPlaceholder(sceneId)
+              const orphan = findOrphanVideoPlaceholder(sceneId, 10000)
               if (orphan) {
                 updatePlaceholderMeta(orphan, { aiChatType: 'note-video-placeholder', aiVideoJobId: jobId })
                 resolvedPlaceholder = orphan
@@ -3120,7 +3134,7 @@ export default function CanvexPage() {
         }
       }
 
-      let orphanPlaceholder = findOrphanVideoPlaceholder(sceneId)
+      let orphanPlaceholder = findOrphanVideoPlaceholder(sceneId, 10000)
       let orphanUsed = false
 
       for (const job of jobs) {
