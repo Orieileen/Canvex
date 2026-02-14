@@ -12,7 +12,7 @@ declare global {
   }
 }
 
-const assetPathRaw = import.meta.env.VITE_EXCALIDRAW_ASSET_PATH || '/excalidraw-assets/'
+const assetPathRaw = import.meta.env.VITE_CANVEX_ASSET_PATH || import.meta.env.VITE_EXCALIDRAW_ASSET_PATH || '/canvex-assets/'
 const assetPath = assetPathRaw.endsWith('/') ? assetPathRaw : `${assetPathRaw}/`
 window.EXCALIDRAW_ASSET_PATH = assetPath
 

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { CaptureUpdateAction, Excalidraw, MainMenu, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
-import '@/styles/excalidraw-shadcn.css'
+import '@/styles/canvex-shadcn.css'
 import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX } from '@tabler/icons-react'
 import { request } from '@/utils/request'
 import { Button } from '@/components/ui/button'
@@ -176,8 +176,8 @@ const getLatestElements = (elements: any[]) => {
   }
 }
 
-export default function ExcalidrawPage() {
-  const { t, i18n } = useTranslation('excalidraw')
+export default function CanvexPage() {
+  const { t, i18n } = useTranslation('canvex')
   const [scenes, setScenes] = useState<SceneRecord[]>([])
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null)
   const [initialData, setInitialData] = useState<SceneData | null>(null)
@@ -207,13 +207,13 @@ export default function ExcalidrawPage() {
   const [videoOverlayItems, setVideoOverlayItems] = useState<VideoOverlayItem[]>([])
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null)
   const [, forceVideoOverlayRefresh] = useReducer((value: number) => (value + 1) % 1000000, 0)
-  const [excalidrawReady, setExcalidrawReady] = useState(false)
+  const [canvexReady, setCanvexReady] = useState(false)
   const [videoEditPendingCountByKey, setVideoEditPendingCountByKey] = useState<Record<string, number>>({})
   const [videoEditStatusByKey, setVideoEditStatusByKey] = useState<Record<string, string | null>>({})
   const [videoEditErrorByKey, setVideoEditErrorByKey] = useState<Record<string, string | null>>({})
   const untitledRef = useRef('Untitled')
 
-  const excalidrawApiRef = useRef<any>(null)
+  const canvexApiRef = useRef<any>(null)
   const canvasWrapRef = useRef<HTMLDivElement | null>(null)
   const saveStatusRef = useRef<HTMLDivElement | null>(null)
   const sceneIdRef = useRef<string | null>(null)
@@ -221,14 +221,14 @@ export default function ExcalidrawPage() {
   const lastSavedRef = useRef<string | null>(null)
   const pendingRef = useRef<SceneData | null>(null)
   const saveTimerRef = useRef<number | null>(null)
-  const workspaceKeyRef = useRef('excalidraw:workspace:public')
+  const workspaceKeyRef = useRef('canvex:workspace:public')
   const pinOriginRef = useRef<PinOrigin | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const lastPinnedIdRef = useRef<string | null>(null)
   const imagePlaceholderQueueRef = useRef<ImagePlaceholder[]>([])
   const scrollUnsubRef = useRef<null | (() => void)>(null)
   const previewUrlRef = useRef<string | null>(null)
-  const excalidrawThemeRef = useRef<'light' | 'dark'>('light')
+  const canvexThemeRef = useRef<'light' | 'dark'>('light')
   const videoOverlayKeyRef = useRef('')
   const videoOverlayRafRef = useRef<number | null>(null)
   const createPinnedVideoRef = useRef<null | ((
@@ -390,7 +390,7 @@ export default function ExcalidrawPage() {
 
   const sceneParam = searchParams.get('scene')
 
-  const excalidrawLangCode = useMemo(() => {
+  const canvexLangCode = useMemo(() => {
     const code = (i18n.language || 'en').toLowerCase()
     if (code.startsWith('zh')) return 'zh-CN'
     return 'en'
@@ -760,7 +760,7 @@ export default function ExcalidrawPage() {
   }, [getPinOriginKey])
 
   const fetchUserKey = useCallback(async () => {
-    workspaceKeyRef.current = `excalidraw:workspace:${WORKSPACE_KEY}`
+    workspaceKeyRef.current = `canvex:workspace:${WORKSPACE_KEY}`
     return WORKSPACE_KEY
   }, [])
 
@@ -799,7 +799,7 @@ export default function ExcalidrawPage() {
     }
   }, [])
 
-  const resolveExcalidrawTheme = useCallback((theme?: string) => {
+  const resolveCanvexTheme = useCallback((theme?: string) => {
     if (theme === 'dark') return 'dark'
     if (theme === 'light') return 'light'
     if (theme === 'system') {
@@ -810,15 +810,15 @@ export default function ExcalidrawPage() {
     return 'light'
   }, [])
 
-  const syncExcalidrawTheme = useCallback((theme?: string) => {
+  const syncCanvexTheme = useCallback((theme?: string) => {
     const host = canvasWrapRef.current
     if (!host) return
-    const resolved = resolveExcalidrawTheme(theme)
-    if (excalidrawThemeRef.current !== resolved) {
-      excalidrawThemeRef.current = resolved
+    const resolved = resolveCanvexTheme(theme)
+    if (canvexThemeRef.current !== resolved) {
+      canvexThemeRef.current = resolved
       host.classList.toggle('dark', resolved === 'dark')
     }
-  }, [resolveExcalidrawTheme])
+  }, [resolveCanvexTheme])
 
   const buildVideoPosterDataUrl = useCallback(() => {
     const svg = `
@@ -866,8 +866,8 @@ export default function ExcalidrawPage() {
         setLastPinnedId(latest.id)
       }
     }
-    syncExcalidrawTheme(scene.appState?.theme)
-  }, [syncExcalidrawTheme])
+    syncCanvexTheme(scene.appState?.theme)
+  }, [syncCanvexTheme])
 
   const getSceneFingerprint = useCallback((scene: SceneData) => {
     return normalizeScenePayload(scene).fingerprint
@@ -942,7 +942,7 @@ export default function ExcalidrawPage() {
               migrateDraftChatToScene(newId)
               migrateDraftPinOriginToScene(newId)
               migrateDraftLastPinnedToScene(newId)
-              window.dispatchEvent(new CustomEvent('excalidraw:scenes-changed'))
+              window.dispatchEvent(new CustomEvent('canvex:scenes-changed'))
               try {
                 localStorage.setItem(getLastKey(), newId)
               } catch {}
@@ -1194,9 +1194,9 @@ export default function ExcalidrawPage() {
   useEffect(() => {
     loadScene()
     const handler = () => loadScene()
-    window.addEventListener('excalidraw:scenes-changed', handler)
+    window.addEventListener('canvex:scenes-changed', handler)
     return () => {
-      window.removeEventListener('excalidraw:scenes-changed', handler)
+      window.removeEventListener('canvex:scenes-changed', handler)
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current)
       }
@@ -1382,7 +1382,7 @@ export default function ExcalidrawPage() {
   }, [createBaseElement])
 
   const getElementViewportRect = useCallback((element: any, appStateOverride?: any) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     const appState = appStateOverride || api?.getAppState?.()
     const containerRect = canvasWrapRef.current?.getBoundingClientRect()
     if (!appState || !containerRect) return null
@@ -1404,7 +1404,7 @@ export default function ExcalidrawPage() {
   }, [])
 
   const getSceneRectViewportRect = useCallback((rect: { x: number; y: number; width: number; height: number }, appStateOverride?: any) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     const appState = appStateOverride || api?.getAppState?.()
     const containerRect = canvasWrapRef.current?.getBoundingClientRect()
     if (!appState || !containerRect) return null
@@ -1427,7 +1427,7 @@ export default function ExcalidrawPage() {
 
   const getSelectedElementsByIds = useCallback((ids: string[]) => {
     if (!ids.length) return []
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     const elements = api?.getSceneElements?.()
     if (!Array.isArray(elements)) return []
     return elements.filter((item: any) => ids.includes(item?.id) && !item?.isDeleted)
@@ -1446,7 +1446,7 @@ export default function ExcalidrawPage() {
   }, [])
 
   const getSceneElementsSafe = useCallback(() => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     const fromApi = api?.getSceneElements?.()
     const fromRef = currentSceneRef.current?.elements
     if (Array.isArray(fromApi) && Array.isArray(fromRef)) {
@@ -1460,7 +1460,7 @@ export default function ExcalidrawPage() {
 
   useEffect(() => {
     let cancelled = false
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!canShowAiEditBar || !selectedEditKey || !selectedEditIds.length || !api?.getFiles) {
       if (previewUrlRef.current) {
         URL.revokeObjectURL(previewUrlRef.current)
@@ -1536,7 +1536,7 @@ export default function ExcalidrawPage() {
 
   const updateSelectedEditSelection = useCallback((appStateOverride?: any) => {
     scheduleVideoOverlayRefresh()
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements || !api?.getAppState) return
     if (!canShowAiEditBar) {
       if (selectedEditKey !== null || selectedEditRect !== null) {
@@ -1670,14 +1670,14 @@ export default function ExcalidrawPage() {
         setSaveState('pending')
         queueSave()
       }
-      syncExcalidrawTheme(appState?.theme)
+      syncCanvexTheme(appState?.theme)
       updateSelectedEditSelection(appState)
     },
-    [normalizeScenePayload, queueSave, syncExcalidrawTheme, updateSelectedEditSelection, writeLocalCache]
+    [normalizeScenePayload, queueSave, syncCanvexTheme, updateSelectedEditSelection, writeLocalCache]
   )
 
   const captureSceneSnapshot = useCallback(() => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements || !api?.getAppState || !api?.getFiles) return
     const appState = api.getAppState()
     const { normalized: scene, fingerprint } = normalizeScenePayload({
@@ -1695,12 +1695,12 @@ export default function ExcalidrawPage() {
       setSaveState('pending')
       queueSave()
     }
-    syncExcalidrawTheme(appState?.theme)
+    syncCanvexTheme(appState?.theme)
     updateSelectedEditSelection(appState)
-  }, [normalizeScenePayload, queueSave, syncExcalidrawTheme, updateSelectedEditSelection, writeLocalCache])
+  }, [normalizeScenePayload, queueSave, syncCanvexTheme, updateSelectedEditSelection, writeLocalCache])
 
   const updatePinnedNoteText = useCallback((noteId: string, content: string) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
     const existing = getSceneElementsSafe()
     const target = existing.find((item: any) => item?.id === noteId && !item?.isDeleted)
@@ -1729,7 +1729,7 @@ export default function ExcalidrawPage() {
   }, [captureSceneSnapshot, getSceneElementsSafe, measurePinnedText])
 
   const updatePlaceholderText = useCallback((placeholder: ImagePlaceholder, content: string) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
     const existing = getSceneElementsSafe()
     const target = existing.find((item: any) => item?.id === placeholder.textId && !item?.isDeleted)
@@ -1797,7 +1797,7 @@ export default function ExcalidrawPage() {
   }, [t])
 
   const removeElementsById = useCallback((ids: string[]) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
     const existing = getSceneElementsSafe()
     const now = Date.now()
@@ -1849,7 +1849,7 @@ export default function ExcalidrawPage() {
 
   const createPinnedNote = useCallback((sceneId: string | null, message: ChatMessage) => {
     if (sceneId !== sceneIdRef.current) return
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState) return
     const existing = getSceneElementsSafe()
     const appState = api.getAppState()
@@ -1939,7 +1939,7 @@ export default function ExcalidrawPage() {
   }, [captureSceneSnapshot, createTextElement, flashPinnedElement, getSceneElementsSafe, measurePinnedText, persistLastPinnedForScene, persistPinOriginForScene])
 
   const updatePinnedNoteMeta = useCallback((noteId: string, content: string, meta?: Record<string, any>) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
     const existing = getSceneElementsSafe()
     const target = existing.find((item: any) => item?.id === noteId && !item?.isDeleted)
@@ -1973,7 +1973,7 @@ export default function ExcalidrawPage() {
 
   const createImagePlaceholder = useCallback((sceneId: string | null, label: string, options?: PlaceholderOptions) => {
     if (sceneId !== sceneIdRef.current) return null
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState) return null
     const existing = getSceneElementsSafe()
     const appState = api.getAppState()
@@ -2055,7 +2055,7 @@ export default function ExcalidrawPage() {
   }, [createRectElement, createTextElement, flashPinnedElement, getSceneElementsSafe, persistLastPinnedForScene, persistPinOriginForScene])
 
   const updatePlaceholderMeta = useCallback((placeholder: ImagePlaceholder, meta: Record<string, any>) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
     const existing = getSceneElementsSafe()
     const now = Date.now()
@@ -2082,7 +2082,7 @@ export default function ExcalidrawPage() {
 
   const findVideoPlaceholderByJobId = useCallback((sceneId: string | null, jobId: string | null) => {
     if (!sceneId || !jobId) return null
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return null
     const elements = api.getSceneElements()
     if (!Array.isArray(elements)) return null
@@ -2123,7 +2123,7 @@ export default function ExcalidrawPage() {
 
   const findOrphanVideoPlaceholder = useCallback((sceneId: string | null) => {
     if (!sceneId) return null
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return null
     const elements = api.getSceneElements()
     if (!Array.isArray(elements)) return null
@@ -2241,7 +2241,7 @@ export default function ExcalidrawPage() {
 
   const findImageEditPlaceholdersByJobId = useCallback((sceneId: string | null, jobId: string | null) => {
     if (!sceneId || !jobId) return [] as ImagePlaceholder[]
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return []
     const elements = api.getSceneElements()
     if (!Array.isArray(elements)) return []
@@ -2290,7 +2290,7 @@ export default function ExcalidrawPage() {
 
   const findOrphanImageEditPlaceholders = useCallback((sceneId: string | null) => {
     if (!sceneId) return [] as ImagePlaceholder[]
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return []
     const elements = api.getSceneElements()
     if (!Array.isArray(elements)) return []
@@ -2340,7 +2340,7 @@ export default function ExcalidrawPage() {
 
   const createEditImagePlaceholders = useCallback((sceneId: string | null, bounds: SelectionBounds, label: string, count = 1) => {
     if (sceneId !== sceneIdRef.current) return []
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return []
     const existing = getSceneElementsSafe()
     const width = Math.max(160, Math.round(Number(bounds?.width) || 320))
@@ -2456,7 +2456,7 @@ export default function ExcalidrawPage() {
   }, [])
 
   const resolveVideoImageUrls = useCallback(async (sceneId: string, imageElements: any[]) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getFiles || !api?.getSceneElements || !api?.updateScene) {
       return { urls: [] as string[], allResolved: false }
     }
@@ -2492,7 +2492,7 @@ export default function ExcalidrawPage() {
       const dataUrl = file?.dataURL
       if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
         const suffix = Math.random().toString(36).slice(2, 6)
-        const filename = `excalidraw_${fileId || element?.id || Date.now()}_${suffix}.png`
+        const filename = `canvex_${fileId || element?.id || Date.now()}_${suffix}.png`
         try {
           const uploadedUrl = await uploadDataUrl(dataUrl, filename)
           if (uploadedUrl) {
@@ -2538,7 +2538,7 @@ export default function ExcalidrawPage() {
     result: ToolResult['result'],
     placeholder?: ImagePlaceholder | null,
   ) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements || !api?.addFiles) return false
     const url = result?.url
     if (!url) return false
@@ -2713,7 +2713,7 @@ export default function ExcalidrawPage() {
 
   const getPlaceholderBounds = useCallback((placeholder: ImagePlaceholder | null) => {
     if (!placeholder) return null
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return null
     const elements = api.getSceneElements()
     const rect = elements.find((item: any) => item?.id === placeholder.rectId && !item?.isDeleted)
@@ -3082,7 +3082,7 @@ export default function ExcalidrawPage() {
   const recoverVideoJobsForScene = useCallback(async (sceneId: string, attempt: number = 0) => {
     if (!sceneId) return
     if (recoveredVideoScenesRef.current[sceneId]) return
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return
     const creator = createPinnedVideoRef.current
     if (!creator) {
@@ -3191,7 +3191,7 @@ export default function ExcalidrawPage() {
   const recoverImageEditJobsForScene = useCallback(async (sceneId: string, attempt: number = 0) => {
     if (!sceneId) return
     if (recoveredImageEditScenesRef.current[sceneId]) return
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return
     recoveredImageEditScenesRef.current[sceneId] = true
     try {
@@ -3317,7 +3317,7 @@ export default function ExcalidrawPage() {
   }, [activeSceneId])
 
   useEffect(() => {
-    if (!activeSceneId || loading || loadError || !excalidrawReady) return
+    if (!activeSceneId || loading || loadError || !canvexReady) return
     let cancelled = false
     const intervalMsEnv = Number(import.meta.env.VITE_SCENE_SYNC_INTERVAL_MS ?? 5000)
     const intervalMs = Number.isFinite(intervalMsEnv) && intervalMsEnv > 0 ? Math.floor(intervalMsEnv) : 5000
@@ -3337,7 +3337,7 @@ export default function ExcalidrawPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeSceneId, excalidrawReady, loadChatForScene, loadError, loading, recoverImageEditJobsForScene, recoverVideoJobsForScene])
+  }, [activeSceneId, canvexReady, loadChatForScene, loadError, loading, recoverImageEditJobsForScene, recoverVideoJobsForScene])
 
   const handleImageEdit = useCallback(async (opts?: { cutout?: boolean }) => {
     if (!selectedEditKey || !selectedEditIds.length) return
@@ -3349,7 +3349,7 @@ export default function ExcalidrawPage() {
       setImageEditError(t('editNoScene', { defaultValue: 'Save the scene first.' }))
       return
     }
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements || !api?.getAppState || !api?.getFiles) {
       setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
       return
@@ -3470,7 +3470,7 @@ export default function ExcalidrawPage() {
       setImageEditError(t('editNoScene', { defaultValue: 'Save the scene first.' }))
       return
     }
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) {
       setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
       return
@@ -3588,7 +3588,7 @@ export default function ExcalidrawPage() {
     meta?: Record<string, any>,
   ) => {
     if (sceneId !== sceneIdRef.current) return
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState || !api?.addFiles) return
     const url = tool?.result?.url
     if (!url) return
@@ -3738,7 +3738,7 @@ export default function ExcalidrawPage() {
     videoJobId?: string | null,
   ) => {
     if (sceneId !== sceneIdRef.current) return false
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState || !api?.addFiles) return false
     if (!videoUrl) return false
 
@@ -3900,7 +3900,7 @@ export default function ExcalidrawPage() {
   }, [])
 
   const buildChatContentWithSelection = useCallback(async (sceneId: string, content: string) => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getAppState) return content
 
     const appState = api.getAppState()
@@ -3960,7 +3960,7 @@ export default function ExcalidrawPage() {
   }, [getSelectedElementsByIds, resolveVideoImageUrls])
 
   const jumpToLatestPinned = useCallback(() => {
-    const api = excalidrawApiRef.current
+    const api = canvexApiRef.current
     if (!api?.getSceneElements) return
     const elements = api.getSceneElements()
     const { latest, previous } = getLatestElements(elements)
@@ -4300,16 +4300,16 @@ export default function ExcalidrawPage() {
   return (
     <div className="flex flex-1 flex-col min-h-0">
       <style>{`
-        .excalidraw-host {
+        .canvex-host {
           overflow: visible !important;
         }
-        .excalidraw-host .FixedSideContainer_side_top {
+        .canvex-host .FixedSideContainer_side_top {
           top: 5px !important;
         }
-        .excalidraw-host .help-icon,
-        .excalidraw-host .help-icon-container,
-        .excalidraw-host .HelpDialog__Icon,
-        .excalidraw-host .HelpDialog__icon {
+        .canvex-host .help-icon,
+        .canvex-host .help-icon-container,
+        .canvex-host .HelpDialog__Icon,
+        .canvex-host .HelpDialog__icon {
           display: none !important;
         }
         .Dialog__content .HelpDialog__header {
@@ -4318,18 +4318,18 @@ export default function ExcalidrawPage() {
         [data-testid="command-palette-button"] {
           display: none !important;
         }
-        .excalidraw-host .layer-ui__wrapper__footer-left section {
+        .canvex-host .layer-ui__wrapper__footer-left section {
           flex-direction: column;
           align-items: flex-start;
           gap: 0.5rem;
         }
-        .excalidraw-host .layer-ui__wrapper__footer-left .undo-redo-buttons {
+        .canvex-host .layer-ui__wrapper__footer-left .undo-redo-buttons {
           order: -1;
         }
-        .excalidraw-host .layer-ui__wrapper__footer-left .zoom-actions {
+        .canvex-host .layer-ui__wrapper__footer-left .zoom-actions {
           order: 1;
         }
-        .excalidraw-host .layer-ui__wrapper__footer-left .finalize-button {
+        .canvex-host .layer-ui__wrapper__footer-left .finalize-button {
           order: 2;
         }
       `}</style>
@@ -4375,7 +4375,7 @@ export default function ExcalidrawPage() {
 
       <div className="flex flex-1 min-h-0 px-0 pb-0 pt-0">
         <div className="flex flex-1 min-h-0">
-          <div ref={canvasWrapRef} className="excalidraw-host relative isolate h-full min-h-[calc(100vh-180px)] w-full overflow-visible rounded-xl border bg-background shadow-sm">
+          <div ref={canvasWrapRef} className="canvex-host relative isolate h-full min-h-[calc(100vh-180px)] w-full overflow-visible rounded-xl border bg-background shadow-sm">
             {loading ? (
               <div className="flex h-full items-center justify-center text-muted-foreground">
                 <IconLoader className="mr-2 size-5 animate-spin" />
@@ -4392,13 +4392,13 @@ export default function ExcalidrawPage() {
                 name="Canvex"
                 initialData={initialData || undefined}
                 onChange={handleChange}
-                langCode={excalidrawLangCode}
+                langCode={canvexLangCode}
                 validateEmbeddable={true}
                 excalidrawAPI={(api) => {
-                  excalidrawApiRef.current = api
-                  setExcalidrawReady(Boolean(api))
+                  canvexApiRef.current = api
+                  setCanvexReady(Boolean(api))
                   const state = api?.getAppState?.()
-                  syncExcalidrawTheme(state?.theme)
+                  syncCanvexTheme(state?.theme)
                   if (scrollUnsubRef.current) {
                     scrollUnsubRef.current()
                     scrollUnsubRef.current = null
@@ -4428,7 +4428,7 @@ export default function ExcalidrawPage() {
             {!loading && !loadError && videoOverlayItems.length > 0 && (
               <div className="pointer-events-none absolute inset-0 z-30">
                 {videoOverlayItems.map((item) => {
-                  const api = excalidrawApiRef.current
+                  const api = canvexApiRef.current
                   const element = api?.getSceneElements?.().find((el: any) => el?.id === item.id && !el?.isDeleted)
                   if (!element) return null
                   const rect = getElementViewportRect(element)
@@ -4436,7 +4436,7 @@ export default function ExcalidrawPage() {
                   return (
                     <div
                       key={item.id}
-                      className="excalidraw-video-overlay-item absolute"
+                      className="canvex-video-overlay-item absolute"
                       style={{
                         pointerEvents: 'none',
                         left: rect.x,
@@ -4475,7 +4475,7 @@ export default function ExcalidrawPage() {
                       ) : (
                         <>
                           <video
-                            className="excalidraw-video-overlay-media h-full w-full rounded-md border border-border/60 bg-black object-cover shadow-sm"
+                            className="canvex-video-overlay-media h-full w-full rounded-md border border-border/60 bg-black object-cover shadow-sm"
                             src={item.url}
                             poster={item.thumbnailUrl || buildVideoPosterDataUrl()}
                             style={{ pointerEvents: 'none' }}
@@ -4667,7 +4667,7 @@ export default function ExcalidrawPage() {
                   type="button"
                   size="icon"
                   variant="ghost"
-                  className="excalidraw-back-to-latest pointer-events-auto size-8 rounded-full shadow-none"
+                  className="canvex-back-to-latest pointer-events-auto size-8 rounded-full shadow-none"
                   onClick={jumpToLatestPinned}
                   title={t('backToLatest', { defaultValue: 'Back to latest element' })}
                 >

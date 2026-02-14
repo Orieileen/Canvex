@@ -1,10 +1,10 @@
-import ExcalidrawPage from '@/pages/dashboard/excalidraw'
-import { ExcalidrawSidebar } from '@/components/excalidraw-sidebar'
+import CanvexPage from '@/pages/dashboard/canvex'
+import { CanvexSidebar } from '@/components/canvex-sidebar'
 import { SiteHeader } from '@/components/site-header'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import type { CSSProperties } from 'react'
 
-export default function ExcalidrawWorkspacePage() {
+export default function CanvexWorkspacePage() {
   return (
     <SidebarProvider
       style={{
@@ -12,10 +12,10 @@ export default function ExcalidrawWorkspacePage() {
         '--header-height': 'calc(var(--spacing) * 10)',
       } as CSSProperties}
     >
-      <ExcalidrawSidebar variant="inset" />
+      <CanvexSidebar variant="inset" />
       <SidebarInset>
         <SiteHeader />
-        <ExcalidrawPage />
+        <CanvexPage />
       </SidebarInset>
     </SidebarProvider>
   )

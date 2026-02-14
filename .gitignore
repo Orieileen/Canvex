@@ -35,3 +35,7 @@ debug_cv_crop_*.png
 
 debug_images/
 backend/db.sqlite3
+
+# Synced canvas runtime assets
+frontend/public/canvex-assets/
+frontend/public/excalidraw-assets/

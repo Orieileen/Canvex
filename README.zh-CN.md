@@ -108,7 +108,7 @@ celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --pre
 | 聊天模型 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EXCALIDRAW_CHAT_MODEL` |
 | 媒体生成 | `MEDIA_OPENAI_BASE_URL`, `MEDIA_OPENAI_API_KEY`, `MEDIA_OPENAI_IMAGE_MODEL`, `MEDIA_OPENAI_IMAGE_EDIT_MODEL`, `MEDIA_OPENAI_VIDEO_MODEL` |
 | 视频轮询 | `MEDIA_OPENAI_VIDEO_TIMEOUT_SECONDS`, `MEDIA_OPENAI_VIDEO_POLL_MAX_ATTEMPTS`, `MEDIA_OPENAI_VIDEO_POLL_INTERVAL` |
-| 前端配置 | `VITE_API_URL`, `VITE_EXCALIDRAW_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
+| 前端配置 | `VITE_API_URL`, `VITE_CANVEX_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
 | 容器内媒体回源 | `INTERNAL_MEDIA_BASE`（默认 `http://backend:8000`） |
 
 ## API 概览
@@ -166,8 +166,8 @@ celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --pre
 │  └─ requirements.txt
 └─ frontend/
    ├─ src/
-   ├─ public/excalidraw-assets/
-   └─ scripts/sync-excalidraw-assets.mjs
+   ├─ public/canvex-assets/
+   └─ scripts/sync-canvex-assets.mjs
 ```
 
 ## 常见问题

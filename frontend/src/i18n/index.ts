@@ -7,7 +7,7 @@ const resources = {
     sidebar: {
       nav: {
         dashboard: 'Dashboard',
-        excalidraw: 'Canvex',
+        canvex: 'Canvex',
         templates: 'Templates',
         projects: 'Projects',
       },
@@ -57,7 +57,7 @@ const resources = {
         aria: { show: 'Show password', hide: 'Hide password' },
       },
     },
-    excalidraw: {
+    canvex: {
       title: 'Canvex',
       subtitle: 'Sketch ideas and export diagrams for your listings.',
       loading: 'Loading…',
@@ -879,7 +879,7 @@ const resources = {
         aria: { show: '显示密码', hide: '隐藏密码' },
       },
     },
-    excalidraw: {
+    canvex: {
       title: 'Canvex',
       subtitle: '随手绘制草图并导出用于上架的示意图。',
       loading: '加载中…',

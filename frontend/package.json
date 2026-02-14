@@ -4,12 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "sync:excalidraw-assets": "node ./scripts/sync-excalidraw-assets.mjs",
-    "dev": "npm run sync:excalidraw-assets && vite",
-    "build": "npm run sync:excalidraw-assets && vite build",
+    "sync:canvex-assets": "node ./scripts/sync-canvex-assets.mjs",
+    "dev": "npm run sync:canvex-assets && vite",
+    "build": "npm run sync:canvex-assets && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "postinstall": "npm run sync:excalidraw-assets"
+    "postinstall": "npm run sync:canvex-assets"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

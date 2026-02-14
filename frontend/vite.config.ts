@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const api = env.VITE_API_URL
   const conditions = [mode === 'production' ? 'production' : 'development', 'browser', 'module', 'import']
-  const excalidrawCss = path.resolve(
+  const canvexCss = path.resolve(
     __dirname,
     "node_modules/@excalidraw/excalidraw/dist",
     mode === 'production' ? "prod/index.css" : "dev/index.css"
@@ -23,7 +23,7 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
-        "@excalidraw/excalidraw/index.css": excalidrawCss,
+        "@excalidraw/excalidraw/index.css": canvexCss,
       },
       conditions,
     },

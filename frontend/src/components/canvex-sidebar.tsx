@@ -33,8 +33,8 @@ interface SceneRecord {
   data?: any
 }
 
-export function ExcalidrawSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const { t } = useTranslation('excalidraw')
+export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { t } = useTranslation('canvex')
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const activeId = searchParams.get('scene')
@@ -64,8 +64,8 @@ export function ExcalidrawSidebar({ ...props }: React.ComponentProps<typeof Side
   useEffect(() => {
     loadScenes()
     const handler = () => loadScenes()
-    window.addEventListener('excalidraw:scenes-changed', handler)
-    return () => window.removeEventListener('excalidraw:scenes-changed', handler)
+    window.addEventListener('canvex:scenes-changed', handler)
+    return () => window.removeEventListener('canvex:scenes-changed', handler)
   }, [loadScenes])
 
   useEffect(() => {
@@ -89,7 +89,7 @@ export function ExcalidrawSidebar({ ...props }: React.ComponentProps<typeof Side
   }
 
   const dispatchScenesChanged = () => {
-    window.dispatchEvent(new CustomEvent('excalidraw:scenes-changed'))
+    window.dispatchEvent(new CustomEvent('canvex:scenes-changed'))
   }
 
   const handleDuplicate = async (scene: SceneRecord) => {

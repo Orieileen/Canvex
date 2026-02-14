@@ -1,12 +1,12 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 
 import ErrorPage from '@/pages/error-page'
-import ExcalidrawWorkspacePage from '@/pages/excalidraw-workspace'
+import CanvexWorkspacePage from '@/pages/canvex-workspace'
 
 const router = createBrowserRouter([
   {
     path: '/',
-    element: <ExcalidrawWorkspacePage />,
+    element: <CanvexWorkspacePage />,
     errorElement: <ErrorPage />,
   },
   {
