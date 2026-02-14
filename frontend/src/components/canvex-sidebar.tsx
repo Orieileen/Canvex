@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { IconDotsVertical, IconLoader, IconPencil, IconPlus, IconCopy, IconTrash } from '@tabler/icons-react'
+import {
+  IconBrandGithub,
+  IconBrandX,
+  IconCopy,
+  IconDotsVertical,
+  IconLoader,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+} from '@tabler/icons-react'
 import { toast } from 'sonner'
 
 import { request } from '@/utils/request'
@@ -47,6 +56,8 @@ interface SceneRecord {
 
 export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { t, i18n } = useTranslation('canvex')
+  const twitterUrl = 'https://x.com/Orieileen'
+  const githubRepoUrl = 'https://github.com/Orieileen/Canvex'
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const activeId = searchParams.get('scene')
@@ -228,13 +239,13 @@ export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>
 
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>{t('scenesTitle', { defaultValue: 'Scenes' })}</SidebarGroupLabel>
             <div className="px-2 pb-2">
               <Button variant="outline" size="sm" className="w-full" onClick={handleNew}>
                 <IconPlus className="mr-1 size-4" />
                 {t('newScene', { defaultValue: 'New' })}
               </Button>
             </div>
+            <SidebarGroupLabel>{t('scenesTitle', { defaultValue: 'Scenes' })}</SidebarGroupLabel>
             <SidebarMenu>
               {loading ? (
                 <SidebarMenuItem>
@@ -346,6 +357,18 @@ export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>
               title={lang === 'en' ? 'Switch to Chinese' : 'Switch to English'}
             >
               {lang === 'en' ? <span className="text-xs font-bold">EN</span> : <span className="text-xs font-bold">中文</span>}
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8" asChild>
+              <a href={twitterUrl} target="_blank" rel="noreferrer" aria-label="Open Twitter profile" title="Open Twitter profile">
+                <IconBrandX className="size-4" />
+                <span className="sr-only">Twitter</span>
+              </a>
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8" asChild>
+              <a href={githubRepoUrl} target="_blank" rel="noreferrer" aria-label="Open GitHub repository" title="Open GitHub repository">
+                <IconBrandGithub className="size-4" />
+                <span className="sr-only">GitHub</span>
+              </a>
             </Button>
             <div className="ml-auto">
               <SidebarTrigger className="size-8" />
