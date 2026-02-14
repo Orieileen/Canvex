@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="24" height="24" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round"
+     class="ring-icon">
+  <style>
+    .ring-icon { transform-origin: 12px 12px; }
+    .ring-icon:hover { animation: ring-spin 0.75s linear infinite; }
+    @keyframes ring-spin { to { transform: rotate(360deg); } }
+  </style>
+  <!-- 沿 Y 轴镜像：以 x=12 为中心水平翻转 -->
+  <g transform="translate(12 0) scale(-1 1) translate(-12 0)">
+    <path d="M10.72,19.9a8,8,0,0,1-6.5-9.79A7.77,7.77,0,0,1,10.4,4.16a8,8,0,0,1,9.49,6.52A1.54,1.54,0,0,0,21.38,12h.13a1.37,1.37,0,0,0,1.38-1.54,11,11,0,1,0-12.7,12.39A1.54,1.54,0,0,0,12,21.34h0A1.47,1.47,0,0,0,10.72,19.9Z"/>
+  </g>
+</svg>
+

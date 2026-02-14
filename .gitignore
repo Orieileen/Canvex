@@ -1,0 +1,37 @@
+# Global ignores
+.DS_Store
+node_modules/
+dist/
+
+# Python/venv
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env files (secrets)
+.env
+backend/.env
+deploy/env/mysql.env
+
+# Logs
+*.log
+
+# Build artifacts
+staticfiles/
+media/
+
+# Celery Beat schedule files
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+
+# Debug images
+debug_ori_pattern_*.png
+debug_cv_crop_*.png
+*_step1_5_cv_cropped.png
+*_step1_ori_pattern.png
+*_debug_ori_pattern.png
+
+debug_images/
+backend/db.sqlite3

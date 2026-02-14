@@ -1,0 +1,59 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: canvex_redis
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: canvex_backend
+    env_file:
+      - ./.env
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+    command: bash -lc "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    ports:
+      - "${BACKEND_PORT:-28000}:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: canvex_worker
+    env_file:
+      - ./.env
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+    command: bash -lc "celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --prefetch-multiplier=1"
+    depends_on:
+      - redis
+      - backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: canvex_frontend
+    env_file:
+      - ./.env
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:28000}
+      VITE_EXCALIDRAW_ASSET_PATH: ${VITE_EXCALIDRAW_ASSET_PATH:-/excalidraw-assets/}
+      VITE_WORKSPACE_KEY: ${VITE_WORKSPACE_KEY:-public}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
