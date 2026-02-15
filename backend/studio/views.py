@@ -539,7 +539,7 @@ class ExcalidrawSceneImageEditJobListView(APIView):
 class ExcalidrawVideoGenerateView(APIView):
     permission_classes = [permissions.AllowAny]
     DEFAULT_PROMPT = (
-        "Create a smooth, high-quality showcase video based on the provided images. "
+        "Create a smooth, high-quality showcase video based on the prompt. "
         "Keep colors and details accurate, use gentle camera motion, and avoid adding new elements or text."
     )
 
@@ -559,10 +559,8 @@ class ExcalidrawVideoGenerateView(APIView):
         if not isinstance(image_urls, list):
             image_urls = []
         image_urls = [item for item in image_urls if isinstance(item, str) and item.strip()]
-        if not image_urls:
-            return _error_response("image_urls is required", "image_urls_required", status.HTTP_400_BAD_REQUEST)
 
-        script = _analyze_video_shooting_script(image_urls[0], prompt)
+        script = _analyze_video_shooting_script(image_urls[0], prompt) if image_urls else ""
         if script:
             prompt = f"{prompt}\n\n拍摄脚本：\n{script}\n\n请严格参考拍摄脚本生成视频，不要添加文字或新的元素。"
 

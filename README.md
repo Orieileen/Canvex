@@ -111,6 +111,8 @@ See `.env.example` for full descriptions.
 | Frontend | `VITE_API_URL`, `VITE_CANVEX_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
 | Internal Media Fallback | `INTERNAL_MEDIA_BASE` (default: `http://backend:8000`) |
 
+`MEDIA_OPENAI_BASE_URL` is optional. If empty, media requests fall back to `OPENAI_BASE_URL`, then OpenAI default endpoint.
+
 ## API Overview
 
 | Area | Endpoints |

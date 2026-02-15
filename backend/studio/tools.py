@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import time
 import uuid
 from typing import Any
@@ -19,6 +20,8 @@ from openai import OpenAI
 from PIL import Image
 
 from .models import DataAsset, DataFolder, ExcalidrawScene
+
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
 def _abs_url(url: str | None) -> str | None:
@@ -41,21 +44,26 @@ def _pick_api_key() -> str:
     return os.getenv("MEDIA_OPENAI_API_KEY", "").strip()
 
 
-def _pick_api_base() -> str:
-    return os.getenv("MEDIA_OPENAI_BASE_URL", "").rstrip("/")
+def _pick_api_base() -> str | None:
+    media_base = os.getenv("MEDIA_OPENAI_BASE_URL", "").strip().rstrip("/")
+    if media_base:
+        return media_base
+    chat_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+    return chat_base or None
 
 
 def openai_client_for_media() -> OpenAI:
     api_key = _pick_api_key()
-    base_url = _pick_api_base()
-    if not api_key or not base_url:
-        raise ValueError("MEDIA_OPENAI_BASE_URL/MEDIA_OPENAI_API_KEY is not configured")
+    base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
+    if not api_key:
+        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
     timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", "180")
-    return OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=float(timeout_raw),
-    )
+    params: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": float(timeout_raw),
+    }
+    return OpenAI(**params)
 
 
 def _read_int_env(name: str, default: int) -> int:
@@ -90,22 +98,29 @@ def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -
     return attempts, interval
 
 
-def _normalize_video_seconds(value: Any) -> str:
-    allowed_raw = os.getenv("MEDIA_OPENAI_VIDEO_SECONDS_ALLOWED", "4,8,10,12,15,25")
+def _normalize_video_seconds(value: Any, allowed_override: list[int] | None = None) -> str:
+    allowed_raw = os.getenv("MEDIA_OPENAI_VIDEO_SECONDS_ALLOWED", "4,8,12")
     allowed: list[int] = []
-    for item in allowed_raw.split(","):
-        token = item.strip()
-        if not token:
-            continue
-        try:
-            allowed.append(int(token))
-        except Exception:
-            continue
+    if allowed_override is not None:
+        for item in allowed_override:
+            try:
+                allowed.append(int(item))
+            except Exception:
+                continue
+    else:
+        for item in allowed_raw.split(","):
+            token = item.strip()
+            if not token:
+                continue
+            try:
+                allowed.append(int(token))
+            except Exception:
+                continue
     if not allowed:
-        allowed = [10, 15, 25]
+        allowed = [4, 8, 12]
     allowed = sorted(set(allowed))
 
-    default_seconds = _read_int_env("MEDIA_OPENAI_VIDEO_SECONDS_DEFAULT", 10)
+    default_seconds = _read_int_env("MEDIA_OPENAI_VIDEO_SECONDS_DEFAULT", 12)
     try:
         requested = int(value)
     except Exception:
@@ -116,6 +131,20 @@ def _normalize_video_seconds(value: Any) -> str:
 
     nearest = min(allowed, key=lambda item: abs(item - requested))
     return str(nearest)
+
+
+def _extract_supported_video_seconds_from_error(exc: Exception) -> list[int]:
+    text = str(exc or "")
+    marker = "supported values"
+    idx = text.lower().find(marker)
+    if idx < 0:
+        return []
+    scope = text[idx:]
+    values = [int(token) for token in re.findall(r"\b\d+\b", scope)]
+    if not values:
+        return []
+    # Keep practical video durations only; filters out accidental non-duration integers.
+    return sorted({item for item in values if 1 <= item <= 300})
 
 
 def _resolve_image_bytes(url: str) -> bytes:
@@ -155,117 +184,199 @@ def _resolve_image_bytes(url: str) -> bytes:
     raise ValueError("failed to resolve image bytes")
 
 
-def _as_dict(payload: Any, context: str) -> dict[str, Any]:
-    if isinstance(payload, dict):
-        return payload
-    raise ValueError(f"{context} response is not an object: {payload}")
+_IMAGE_B64_KEYS = ("b64_json", "b64", "base64", "image_base64")
 
 
-def _poll_media_task(client: OpenAI, task_id: str, max_attempts: int = 60, interval: int = 2) -> str:
-    for _ in range(max_attempts):
-        payload = _as_dict(client.get(f"/tasks/{task_id}", cast_to=object), "task status")
-        data = payload.get("data") or {}
-        status = str(data.get("status") or "").lower()
-
-        if status in {"completed", "success"}:
-            result = data.get("result") or {}
-            if isinstance(result, dict):
-                videos = result.get("videos")
-                if isinstance(videos, list) and videos:
-                    first = videos[0]
-                    if isinstance(first, dict):
-                        url = _pick_url(first.get("url") or first.get("urls") or first.get("video_url"))
-                        if url:
-                            return url
-                images = result.get("images")
-                if isinstance(images, list) and images:
-                    first = images[0]
-                    if isinstance(first, dict):
-                        url = _pick_url(first.get("url") or first.get("urls")) or _find_first_url(first)
-                        if url:
-                            return url
-            url = _pick_url(result.get("url") or result.get("urls")) if isinstance(result, dict) else None
-            if url:
-                return url
-            fallback = _find_first_url(result) or _find_first_url(data)
-            if fallback:
-                return fallback
-            raise ValueError(f"Task completed but no url found: {payload}")
-
-        if status in {"failed", "error"}:
-            msg = data.get("error") or data.get("message") or "Unknown error"
-            raise ValueError(f"media task failed: {msg}")
-
-        time.sleep(interval)
-
-    raise TimeoutError(f"Task {task_id} did not complete in time")
+def _decode_image_base64(raw: str) -> bytes:
+    token = (raw or "").strip()
+    if token.startswith("data:") and "," in token:
+        token = token.split(",", 1)[1]
+    token = "".join(token.split())
+    if not token:
+        raise ValueError("empty base64 image payload")
+    return base64.b64decode(token)
 
 
-def _extract_media_data_item(body: dict[str, Any]) -> dict[str, Any]:
-    data = body.get("data")
-    if isinstance(data, list) and data:
-        item = data[0]
-    elif isinstance(data, dict):
-        item = data
-    else:
-        item = None
-    if not isinstance(item, dict):
-        raise ValueError(f"media response missing data: {body}")
-    return item
+def _extract_inline_image_bytes(item: dict[str, Any]) -> bytes | None:
+    decode_error: Exception | None = None
 
+    def _try_value(value: Any) -> bytes | None:
+        nonlocal decode_error
+        if isinstance(value, str) and value.strip():
+            try:
+                return _decode_image_base64(value)
+            except Exception as exc:
+                decode_error = exc
+        return None
 
-def _resolve_media_image_item(client: OpenAI, item: dict[str, Any]) -> bytes:
-    image_url = _pick_url(item.get("url") or item.get("urls"))
-    if not image_url:
-        images = item.get("images")
-        if isinstance(images, list) and images:
-            first = images[0]
-            if isinstance(first, dict):
-                image_url = _pick_url(first.get("url") or first.get("urls")) or _find_first_url(first)
+    for key in _IMAGE_B64_KEYS:
+        content = _try_value(item.get(key))
+        if content:
+            return content
 
-    if image_url:
-        return _resolve_image_bytes(image_url)
+    images = item.get("images")
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            for key in _IMAGE_B64_KEYS:
+                content = _try_value(image.get(key))
+                if content:
+                    return content
 
-    task_id = item.get("task_id") or item.get("id")
-    if not task_id:
-        raise ValueError(f"media task_id missing: {item}")
-
-    result_url = _poll_media_task(client, str(task_id), max_attempts=120, interval=2)
-    if not result_url:
-        raise ValueError("media task completed but no url found")
-    return _resolve_image_bytes(result_url)
+    if decode_error:
+        raise ValueError(f"invalid inline base64 image data: {decode_error}")
+    return None
 
 
 def _generate_image_media(prompt: str, size: str) -> bytes:
     client = openai_client_for_media()
-    payload = {
-        "model": os.getenv("MEDIA_OPENAI_IMAGE_MODEL", ""),
+    model = os.getenv("MEDIA_OPENAI_IMAGE_MODEL", "").strip()
+    response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
+
+    kwargs: dict[str, Any] = {
         "prompt": prompt,
         "size": size,
         "n": 1,
     }
-    body = _as_dict(client.post("/images/generations", cast_to=object, body=payload), "images/generations")
-    item = _extract_media_data_item(body)
-    return _resolve_media_image_item(client, item)
+    if model:
+        kwargs["model"] = model
+    if response_format in {"b64_json", "url"}:
+        kwargs["response_format"] = response_format
+
+    try:
+        response = client.images.generate(**kwargs)
+    except Exception as exc:
+        if "response_format" in str(exc).lower() and "response_format" in kwargs:
+            kwargs.pop("response_format", None)
+            response = client.images.generate(**kwargs)
+        else:
+            raise
+    return _extract_image_bytes_from_openai_response(response)
+
+
+def _to_dict_compatible(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            payload = model_dump()
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+    raw = getattr(value, "__dict__", None)
+    if isinstance(raw, dict):
+        return raw
+    return {}
 
 
 def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
-    data_items = list(getattr(response, "data", []) or [])
+    raw_items: Any = None
+    if isinstance(response, dict):
+        raw_items = response.get("data")
+    else:
+        raw_items = getattr(response, "data", None)
+    if isinstance(raw_items, (list, tuple)):
+        data_items = list(raw_items)
+    elif raw_items:
+        data_items = [raw_items]
+    else:
+        data_items = []
     if not data_items:
         raise ValueError("empty image response")
+
     image_data = data_items[0]
-    b64_json = getattr(image_data, "b64_json", None)
-    if isinstance(b64_json, str) and b64_json:
-        return base64.b64decode(b64_json)
+
+    item_dict = _to_dict_compatible(image_data)
+    if item_dict:
+        inline_bytes = _extract_inline_image_bytes(item_dict)
+        if inline_bytes:
+            return inline_bytes
+        image_url = _pick_url(item_dict.get("url") or item_dict.get("urls"))
+        if image_url:
+            return _resolve_image_bytes(image_url)
+
+    for key in _IMAGE_B64_KEYS:
+        b64_value = getattr(image_data, key, None)
+        if isinstance(b64_value, str) and b64_value.strip():
+            return _decode_image_base64(b64_value)
+
     image_url = getattr(image_data, "url", None)
-    if isinstance(image_url, str) and image_url:
+    if isinstance(image_url, str) and image_url.strip():
         return _resolve_image_bytes(image_url)
+
     raise ValueError("empty image response")
 
 
-def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
-    client = openai_client_for_media()
-    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "")
+def _is_unsupported_image_edit_model_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    if not text:
+        return False
+    if "invalid value" in text and "param" in text and "model" in text:
+        return True
+    if "model_not_found" in text:
+        return True
+    if "value must be 'dall-e-2'" in text:
+        return True
+    return False
+
+
+def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
+    try:
+        with Image.open(io.BytesIO(source_bytes)) as original:
+            image = original.copy()
+    except Exception:
+        return source_bytes
+
+    if image.mode not in {"RGBA", "LA", "L"}:
+        image = image.convert("RGBA")
+
+    output = io.BytesIO()
+    try:
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return source_bytes
+
+
+def _image_bytes_to_data_url(image_bytes: bytes, mime_type: str = "image/png") -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _extract_image_bytes_from_responses_output(response: Any) -> bytes:
+    raw_output: Any = None
+    if isinstance(response, dict):
+        raw_output = response.get("output")
+    else:
+        raw_output = getattr(response, "output", None)
+
+    if not isinstance(raw_output, (list, tuple)):
+        raw_output = [raw_output] if raw_output else []
+
+    for item in raw_output:
+        item_dict = _to_dict_compatible(item)
+        item_type = item_dict.get("type") or getattr(item, "type", None)
+        if item_type != "image_generation_call":
+            continue
+        result = item_dict.get("result") if item_dict else getattr(item, "result", None)
+        if isinstance(result, str) and result.strip():
+            return _decode_image_base64(result)
+
+    raise ValueError("responses image_generation_call result missing")
+
+
+def _edit_image_media_via_images(client: OpenAI, source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
     kwargs: dict[str, Any] = {
         "model": model,
         "image": ("image.png", source_bytes, "image/png"),
@@ -276,6 +387,70 @@ def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
         kwargs["size"] = size
     response = client.images.edit(**kwargs)
     return _extract_image_bytes_from_openai_response(response)
+
+
+def _edit_image_media_via_responses(client: OpenAI, source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
+    responses_model = (
+        os.getenv("MEDIA_OPENAI_RESPONSES_MODEL", "").strip()
+        or os.getenv("EXCALIDRAW_CHAT_MODEL", "").strip()
+        or "gpt-4o-mini"
+    )
+    fidelity = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_INPUT_FIDELITY", "high").strip().lower()
+    if fidelity not in {"high", "low"}:
+        fidelity = "high"
+
+    tool_config: dict[str, Any] = {
+        "type": "image_generation",
+        "action": "edit",
+        "model": model,
+        "output_format": "png",
+        "quality": "high",
+    }
+    if size:
+        tool_config["size"] = size
+    if model.startswith("gpt-image-1.5"):
+        tool_config["input_fidelity"] = fidelity
+
+    response = client.responses.create(
+        model=responses_model,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": _image_bytes_to_data_url(source_bytes),
+                        "detail": "high",
+                    },
+                ],
+            }
+        ],
+        tools=[tool_config],
+        tool_choice={"type": "image_generation"},
+    )
+    return _extract_image_bytes_from_responses_output(response)
+
+
+def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
+    client = openai_client_for_media()
+    fallback_model = (os.getenv("MEDIA_OPENAI_IMAGE_EDIT_FALLBACK_MODEL") or "dall-e-2").strip() or "dall-e-2"
+    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip() or fallback_model
+    normalized_source = _normalize_image_for_edit(source_bytes)
+    use_responses = model.startswith("gpt-image")
+
+    try:
+        if use_responses:
+            return _edit_image_media_via_responses(client, normalized_source, prompt, size, model)
+        return _edit_image_media_via_images(client, normalized_source, prompt, size, model)
+    except Exception as exc:
+        if (
+            fallback_model
+            and fallback_model != model
+            and _is_unsupported_image_edit_model_error(exc)
+        ):
+            return _edit_image_media_via_images(client, normalized_source, prompt, size, fallback_model)
+        raise
 
 
 def _generate_image_bytes(prompt: str, size: str) -> bytes:
@@ -334,28 +509,6 @@ def _find_first_url(obj: Any) -> str | None:
     return None
 
 
-def _poll_media_video_task(client: OpenAI, task_id: str, max_attempts: int = 120, interval: int = 5) -> dict[str, Any]:
-    for _ in range(max_attempts):
-        payload = _as_dict(client.get(f"/tasks/{task_id}", cast_to=object), "task status")
-        data = payload.get("data") or {}
-        status = str(data.get("status") or "").lower()
-
-        if status in {"completed", "success"}:
-            result_data = data.get("result") or {}
-            url, thumb = _extract_video_urls(result_data)
-            if not url:
-                url = _find_first_url(result_data) or _find_first_url(data)
-            return {"status": status, "url": url, "thumbnail_url": thumb, "raw": data}
-
-        if status in {"failed", "error"}:
-            msg = data.get("error") or data.get("message") or "Unknown error"
-            return {"status": status, "error": msg, "raw": data}
-
-        time.sleep(interval)
-
-    return {"status": "timeout", "error": f"Task {task_id} did not complete", "raw": None}
-
-
 def _aspect_ratio_to_video_size(aspect_ratio: str | None) -> str:
     raw = (aspect_ratio or "").strip()
     if "x" in raw and raw.replace("x", "").replace(" ", "").isdigit():
@@ -371,6 +524,44 @@ def _aspect_ratio_to_video_size(aspect_ratio: str | None) -> str:
         except Exception:
             pass
     return os.getenv("MEDIA_OPENAI_VIDEO_SIZE_LANDSCAPE", "1280x720")
+
+
+def _parse_video_size(value: Any) -> tuple[int, int] | None:
+    raw = str(value or "").strip().lower()
+    if "x" not in raw:
+        return None
+    left, right = raw.split("x", 1)
+    try:
+        width = int(float(left.strip()))
+        height = int(float(right.strip()))
+    except Exception:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _normalize_video_reference_image(image_bytes: bytes, size: str) -> bytes:
+    target = _parse_video_size(size)
+    if not target:
+        return image_bytes
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            image = source.copy()
+    except Exception:
+        return image_bytes
+
+    if image.mode not in {"RGB", "RGBA"}:
+        image = image.convert("RGB")
+    if image.size != target:
+        image = image.resize(target, Image.LANCZOS)
+
+    output = io.BytesIO()
+    try:
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return image_bytes
 
 
 def _to_video_bytes(blob: Any) -> bytes:
@@ -394,15 +585,23 @@ def _save_video_to_media(video_bytes: bytes, video_id: str) -> str:
     return _abs_url(default_storage.url(saved)) or ""
 
 
-def _generate_video_official(client: OpenAI, payload: dict[str, Any]) -> dict[str, Any]:
+def _is_sora2_model(model_name: str | None) -> bool:
+    normalized = str(model_name or "").strip().lower()
+    return normalized.startswith("sora-2")
+
+
+def _generate_video_official(
+    client: OpenAI, payload: dict[str, Any], require_reference: bool | None = None
+) -> dict[str, Any]:
     model = payload.get("model") or os.getenv("MEDIA_OPENAI_VIDEO_MODEL", "sora-2-pro")
     prompt = payload.get("prompt") or ""
-    seconds = _normalize_video_seconds(payload.get("duration") or payload.get("seconds") or 10)
+    seconds = _normalize_video_seconds(payload.get("duration") or payload.get("seconds") or 12)
     size = payload.get("size") or _aspect_ratio_to_video_size(payload.get("aspect_ratio"))
     image_urls = payload.get("image_urls") if isinstance(payload.get("image_urls"), list) else []
     first_url = next((u for u in image_urls if isinstance(u, str) and u.strip()), "")
-    require_reference = _read_bool_env("MEDIA_OPENAI_VIDEO_REQUIRE_REFERENCE", True)
-    if require_reference and not first_url:
+    if require_reference is None:
+        require_reference = _read_bool_env("MEDIA_OPENAI_VIDEO_REQUIRE_REFERENCE", False)
+    if require_reference and not first_url and not _is_sora2_model(model):
         return {
             "status": "failed",
             "error": "video generation requires at least one selected image (input_reference)",
@@ -416,9 +615,20 @@ def _generate_video_official(client: OpenAI, payload: dict[str, Any]) -> dict[st
     }
     if first_url:
         image_bytes = _resolve_image_bytes(first_url)
+        image_bytes = _normalize_video_reference_image(image_bytes, size)
         kwargs["input_reference"] = ("input_reference.png", image_bytes, "image/png")
 
-    created = client.videos.create(**kwargs)
+    try:
+        created = client.videos.create(**kwargs)
+    except Exception as exc:
+        supported = _extract_supported_video_seconds_from_error(exc)
+        if not supported:
+            raise
+        adjusted_seconds = _normalize_video_seconds(kwargs.get("seconds"), allowed_override=supported)
+        if str(adjusted_seconds) == str(kwargs.get("seconds")):
+            raise
+        kwargs["seconds"] = adjusted_seconds
+        created = client.videos.create(**kwargs)
     video_id = getattr(created, "id", None)
     if not video_id:
         raw_created = created.to_dict() if hasattr(created, "to_dict") else {}
@@ -458,27 +668,12 @@ def _generate_video_official(client: OpenAI, payload: dict[str, Any]) -> dict[st
 
 
 def _generate_video_legacy(client: OpenAI, payload: dict[str, Any]) -> dict[str, Any]:
-    body = _as_dict(client.post("/videos/generations", cast_to=object, body=payload), "videos/generations")
-    data = body.get("data")
-    if isinstance(data, list) and data:
-        item = data[0]
-    elif isinstance(data, dict):
-        item = data
-    else:
-        raise ValueError(f"Unexpected legacy media response: {body}")
-
-    task_id = item.get("task_id") or item.get("id")
-    if not task_id:
-        raise ValueError("task_id missing in legacy media response")
-
-    max_attempts, interval = _video_poll_limits(default_attempts=120, default_interval=5)
-    polled = _poll_media_video_task(client, task_id, max_attempts=max_attempts, interval=interval)
-    polled["task_id"] = task_id
-    if polled.get("error") and not polled.get("url"):
-        return polled
-    if not polled.get("url"):
-        polled["error"] = "Provider returned no video url"
-    return polled
+    # Legacy fallback now uses the same official SDK flow, but relaxes reference-image requirements.
+    fallback_payload = dict(payload or {})
+    legacy_model = os.getenv("MEDIA_OPENAI_VIDEO_LEGACY_MODEL", "").strip()
+    if legacy_model:
+        fallback_payload["model"] = legacy_model
+    return _generate_video_official(client, fallback_payload, require_reference=False)
 
 
 def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
@@ -583,7 +778,7 @@ def imagetool(
 @tool("videotool")
 def videotool(
     prompt: str,
-    duration: int = 15,
+    duration: int = 12,
     aspect_ratio: str = "16:9",
     image_urls: list[str] | None = None,
     model: str | None = None,
@@ -613,7 +808,7 @@ def videotool(
     try:
         payload["duration"] = int(duration)
     except Exception:
-        payload["duration"] = 15
+        payload["duration"] = 12
 
     if aspect_ratio:
         payload["aspect_ratio"] = aspect_ratio

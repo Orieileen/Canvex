@@ -28,6 +28,8 @@ from .memory import (
 )
 from .tools import imagetool, videotool
 
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
 
 class ChatState(TypedDict):
     scene_id: str
@@ -91,7 +93,7 @@ def _build_chat_model(streaming: bool) -> ChatOpenAI:
         params["max_tokens"] = max_tokens
 
     api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip() or OPENAI_DEFAULT_BASE_URL
     sig = inspect.signature(ChatOpenAI)
 
     if api_key:
@@ -99,11 +101,10 @@ def _build_chat_model(streaming: bool) -> ChatOpenAI:
             params["api_key"] = api_key
         elif "openai_api_key" in sig.parameters:
             params["openai_api_key"] = api_key
-    if base_url:
-        if "base_url" in sig.parameters:
-            params["base_url"] = base_url
-        elif "openai_api_base" in sig.parameters:
-            params["openai_api_base"] = base_url
+    if "base_url" in sig.parameters:
+        params["base_url"] = base_url
+    elif "openai_api_base" in sig.parameters:
+        params["openai_api_base"] = base_url
 
     return ChatOpenAI(**params)
 

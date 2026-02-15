@@ -111,6 +111,8 @@ celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --pre
 | 前端配置 | `VITE_API_URL`, `VITE_CANVEX_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
 | 容器内媒体回源 | `INTERNAL_MEDIA_BASE`（默认 `http://backend:8000`） |
 
+`MEDIA_OPENAI_BASE_URL` 为可选项。留空时媒体请求会先回落到 `OPENAI_BASE_URL`，再回落到 OpenAI 默认地址。
+
 ## API 概览
 
 | 模块 | 接口 |
