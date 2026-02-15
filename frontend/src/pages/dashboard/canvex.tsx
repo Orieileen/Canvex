@@ -147,6 +147,18 @@ const IMAGE_EDIT_SIZE_MAP: Record<string, string> = {
 
 const resolveImageEditSize = (value: string) => IMAGE_EDIT_SIZE_MAP[value] || value
 
+const isPregeneratedKeyword = (raw: unknown) => {
+  const value = String(raw || '').trim().toLowerCase()
+  if (!value) return false
+  if (value.includes('预生成')) return true
+  const normalized = value.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ')
+  return (
+    normalized.includes('pregenerate')
+    || normalized.includes('pregenerated')
+    || normalized.includes('pre generate')
+  )
+}
+
 const getFontFamilyName = (family: number) => {
   switch (family) {
     case 1:
@@ -402,14 +414,8 @@ export default function CanvexPage() {
   )
 
   const isPregeneratedSpace = useMemo(() => {
-    const name = String(activeScene?.title || '').trim().toLowerCase()
-    if (!name) return false
-    return (
-      name.includes('预生成')
-      || name.includes('pregenerate')
-      || name.includes('pre-generate')
-      || name.includes('pre generated')
-    )
+    if (isPregeneratedKeyword(WORKSPACE_KEY)) return true
+    return isPregeneratedKeyword(activeScene?.title)
   }, [activeScene?.title])
 
   const canShowAiEditBar = !!activeSceneId && !isPregeneratedSpace
@@ -3239,11 +3245,12 @@ export default function CanvexPage() {
 
       for (const job of jobs) {
         const jobId = job?.id ? String(job.id) : ''
-        const status = job?.status
+        const status = String(job?.status || '').toUpperCase()
         if (!jobId || !status) continue
         if (imagePollInFlightRef.current.has(`${sceneId}:${jobId}`)) continue
         let placeholders = findImageEditPlaceholdersByJobId(sceneId, jobId)
-        if (!placeholders.length && orphanPlaceholders.length) {
+        const canBindOrphanPlaceholders = status === 'QUEUED' || status === 'RUNNING'
+        if (!placeholders.length && canBindOrphanPlaceholders && orphanPlaceholders.length) {
           const needed = Math.max(1, Number(job?.num_images) || 1)
           if (orphanPlaceholders.length - orphanIndex >= needed) {
             placeholders = orphanPlaceholders.slice(orphanIndex, orphanIndex + needed)
@@ -3514,10 +3521,6 @@ export default function CanvexPage() {
         if (ay !== by) return ay - by
         return String(a?.id || '').localeCompare(String(b?.id || ''))
       })
-    if (!imageElements.length) {
-      setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
-      return
-    }
 
     setImageEditError(null)
     setVideoEditErrorByKey(prev => ({ ...prev, [selectionKey]: null }))
@@ -3531,27 +3534,28 @@ export default function CanvexPage() {
       t('editVideoPlaceholderQueued', { defaultValue: '视频排队中…' }),
       { kind: 'video' },
     )
-    const resolved = await resolveVideoImageUrls(sceneId, imageElements)
-    const imageUrls = resolved.urls.filter((url: string) => typeof url === 'string' && url.startsWith('http'))
-    if (!resolved.allResolved || !imageUrls.length || imageUrls.length !== imageElements.length) {
-      const errorMessage = t('editImageUrlMissing', { defaultValue: 'Selected images must have public URLs.' })
-      setImageEditError(errorMessage)
-      updateVideoEditStatus(selectionKey, 'FAILED', errorMessage)
-      decrementVideoPending(selectionKey)
-      if (placeholder) {
-        updatePlaceholderText(placeholder, toVideoFailureLabel(errorMessage))
+    let imageUrls: string[] = []
+    if (imageElements.length) {
+      const resolved = await resolveVideoImageUrls(sceneId, imageElements)
+      imageUrls = resolved.urls.filter((url: string) => typeof url === 'string' && url.startsWith('http'))
+      if (!resolved.allResolved || !imageUrls.length || imageUrls.length !== imageElements.length) {
+        const errorMessage = t('editImageUrlMissing', { defaultValue: 'Selected images must have public URLs.' })
+        setImageEditError(errorMessage)
+        updateVideoEditStatus(selectionKey, 'FAILED', errorMessage)
+        decrementVideoPending(selectionKey)
+        if (placeholder) {
+          updatePlaceholderText(placeholder, toVideoFailureLabel(errorMessage))
+        }
+        return
       }
-      return
     }
     if (placeholder) {
       updatePlaceholderText(placeholder, t('editVideoPlaceholderWorking', { defaultValue: '视频生成中…' }))
     }
     let submittedJobId = ''
     try {
-      const res = await request.post(`/api/v1/excalidraw/scenes/${sceneId}/video/`, {
-        prompt,
-        image_urls: imageUrls,
-      })
+      const requestPayload = imageUrls.length ? { prompt, image_urls: imageUrls } : { prompt }
+      const res = await request.post(`/api/v1/excalidraw/scenes/${sceneId}/video/`, requestPayload)
       const jobId = res.data?.job_id ? String(res.data.job_id) : ''
       if (!jobId) {
         throw new Error('job id missing')
