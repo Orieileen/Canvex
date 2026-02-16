@@ -314,24 +314,6 @@ def _post_images_generations_compat(
     return _extract_image_bytes_from_openai_response(data)
 
 
-def _generate_image_media_via_compat_endpoint(prompt: str, size: str, model: str) -> bytes:
-    response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
-    if response_format not in {"b64_json", "url"}:
-        response_format = "b64_json"
-
-    payload: dict[str, Any] = {
-        "prompt": prompt,
-        "n": 1,
-        "response_format": response_format,
-    }
-    if model:
-        payload["model"] = model
-    if size:
-        payload["size"] = size
-
-    return _post_images_generations_compat(json_payload=payload)
-
-
 def _edit_image_media_via_compat_endpoint(source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
     response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
     if response_format not in {"b64_json", "url"}:
@@ -383,14 +365,11 @@ def _edit_image_media_via_compat_endpoint(source_bytes: bytes, prompt: str, size
         except Exception as json_exc:
             json_errors.append(f"{image_key}: {json_exc}")
 
-    # Last fallback: prompt-only generations.
-    try:
-        return _generate_image_media_via_compat_endpoint(prompt, size, model)
-    except Exception as prompt_exc:
-        message = "; ".join(json_errors) if json_errors else "no json image attempts"
-        raise RuntimeError(
-            f"compat /images/generations with image failed ({message}); prompt-only fallback also failed: {prompt_exc}"
-        ) from prompt_exc
+    message = "; ".join(json_errors) if json_errors else "no json image attempts"
+    raise RuntimeError(
+        f"compat /images/generations with image failed ({message}). "
+        "Text-only fallback is disabled because it ignores source image."
+    )
 
 
 def _to_dict_compatible(value: Any) -> dict[str, Any]:
