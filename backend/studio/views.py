@@ -43,7 +43,8 @@ Extract ONLY the actual subject indicated by the user-drawn dashed bounding box.
 The dashed bounding box is a guide only and must NOT appear in the output.
 
 Remove and discard all other content, including the dashed bounding box itself.
-Place the extracted subject on a solid pure background color (#FFFFFF).
+Set all non-subject pixels to fully transparent alpha (A=0).
+Output a PNG with transparent background (RGBA), not a solid color background.
 
 Do NOT add, hallucinate, reconstruct, or extend any part of the subject.
 Do NOT include shadows, gradients, textures, or environmental context.
@@ -51,7 +52,7 @@ Preserve the subject’s original shape, proportions, colors, and fine details.
 Edges must be clean and accurate, with no halos, fringing, or color bleeding.
 
 If the subject touches the dashed bounding box edge, keep only the visible portion and do not complete missing areas.
-The final image must contain only the subject on a uniform pure background color.
+The final image must contain only the subject with a transparent background.
 """
 
 EXCALIDRAW_EDIT_DEFAULT_PROMPT = "Refine the image while preserving content and layout."

@@ -222,7 +222,7 @@ def _remove_white_background(image_bytes: bytes) -> bytes:
     remove_inner = str(os.getenv("EXCALIDRAW_CUTOUT_REMOVE_INNER_WHITE", "1")).lower() in ("1", "true", "yes", "on")
     inner_max_area = int(os.getenv("EXCALIDRAW_CUTOUT_INNER_MAX_AREA", "0"))
     target_color = _parse_hex_color(os.getenv("EXCALIDRAW_CUTOUT_BG_COLOR", "#FFFFFF"))
-    color_tolerance = int(os.getenv("EXCALIDRAW_CUTOUT_BG_COLOR_TOLERANCE", "30"))
+    color_tolerance = int(os.getenv("EXCALIDRAW_CUTOUT_BG_COLOR_TOLERANCE", "5"))
 
     def is_background(px: tuple[int, int, int, int]) -> bool:
         r, g, b, a = px
@@ -414,13 +414,10 @@ def run_excalidraw_image_edit_job(self, job_id: str):
         image_bytes_list = image_bytes_list[:requested]
 
     if job.is_cutout:
-        cleaned: list[bytes] = []
-        for image_bytes in image_bytes_list:
-            try:
-                cleaned.append(_remove_white_background(image_bytes))
-            except Exception:
-                cleaned.append(image_bytes)
-        image_bytes_list = cleaned
+        logger.info(
+            "Cutout job %s skips _remove_white_background; expecting transparent output from model prompt.",
+            job.id,
+        )
 
     try:
         folder_id = _resolve_excalidraw_asset_folder_id(

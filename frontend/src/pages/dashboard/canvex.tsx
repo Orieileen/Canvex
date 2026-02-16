@@ -121,7 +121,7 @@ type VideoOverlayItem = {
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 const WORKSPACE_KEY = import.meta.env.VITE_WORKSPACE_KEY || 'public'
-const MAX_INSERT_IMAGE_DIM = 512
+const MAX_VIDEO_POSTER_DIM = 512
 const parsePositiveIntEnv = (raw: unknown, fallback: number) => {
   const value = Number(raw)
   if (!Number.isFinite(value) || value <= 0) return fallback
@@ -2432,7 +2432,7 @@ export default function CanvexPage() {
     return placeholders
   }, [createRectElement, createTextElement, flashPinnedElement, getSceneElementsSafe])
 
-  const loadImageDataUrl = useCallback(async (url: string, maxDim = MAX_INSERT_IMAGE_DIM) => {
+  const loadImageDataUrl = useCallback(async (url: string, maxDim?: number | null) => {
     if (url.startsWith('data:')) {
       return { dataUrl: url, width: null, height: null }
     }
@@ -2448,12 +2448,13 @@ export default function CanvexPage() {
     try {
       const bitmap = await createImageBitmap(blob)
       const maxSide = Math.max(bitmap.width, bitmap.height)
-      if (!maxDim || maxSide <= maxDim) {
+      const limit = Number.isFinite(Number(maxDim)) && Number(maxDim) > 0 ? Number(maxDim) : 0
+      if (!limit || maxSide <= limit) {
         const dataUrl = await toDataUrl(blob)
         bitmap.close?.()
         return { dataUrl, width: bitmap.width, height: bitmap.height }
       }
-      const scale = maxDim / maxSide
+      const scale = limit / maxSide
       const targetWidth = Math.max(1, Math.round(bitmap.width * scale))
       const targetHeight = Math.max(1, Math.round(bitmap.height * scale))
       const canvas = document.createElement('canvas')
@@ -3771,7 +3772,7 @@ export default function CanvexPage() {
     const shouldPersistThumbnail = Boolean(thumbnailUrl && /^https?:\/\//.test(thumbnailUrl))
     let resolvedPosterUrl = shouldPersistThumbnail ? thumbnailUrl! : buildVideoPosterDataUrl()
     try {
-      const loaded = await loadImageDataUrl(resolvedPosterUrl)
+      const loaded = await loadImageDataUrl(resolvedPosterUrl, MAX_VIDEO_POSTER_DIM)
       dataURL = loaded.dataUrl
       decodedWidth = loaded.width
       decodedHeight = loaded.height
@@ -3779,7 +3780,7 @@ export default function CanvexPage() {
       if (thumbnailUrl) {
         try {
           resolvedPosterUrl = buildVideoPosterDataUrl()
-          const fallback = await loadImageDataUrl(resolvedPosterUrl)
+          const fallback = await loadImageDataUrl(resolvedPosterUrl, MAX_VIDEO_POSTER_DIM)
           dataURL = fallback.dataUrl
           decodedWidth = fallback.width
           decodedHeight = fallback.height
