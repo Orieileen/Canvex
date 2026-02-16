@@ -1464,6 +1464,64 @@ export default function CanvexPage() {
     return []
   }, [])
 
+  const getElementSceneBounds = useCallback((element: any) => {
+    if (!element || element.isDeleted) return null
+    const rawX = Number(element.x)
+    const rawY = Number(element.y)
+    const rawWidth = Number(element.width)
+    const rawHeight = Number(element.height)
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || !Number.isFinite(rawWidth) || !Number.isFinite(rawHeight)) {
+      return null
+    }
+    const width = Math.abs(rawWidth)
+    const height = Math.abs(rawHeight)
+    if (width <= 0 || height <= 0) return null
+    const left = rawWidth >= 0 ? rawX : rawX + rawWidth
+    const top = rawHeight >= 0 ? rawY : rawY + rawHeight
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+    }
+  }, [])
+
+  const findNonOverlappingPinPosition = useCallback((
+    elements: any[],
+    x: number,
+    startY: number,
+    width: number,
+    height: number,
+    gap = 16,
+  ) => {
+    const safeGap = Number.isFinite(gap) && gap > 0 ? gap : 16
+    const rectWidth = Math.max(1, Number(width) || 1)
+    const rectHeight = Math.max(1, Number(height) || 1)
+    const left = Number.isFinite(Number(x)) ? Number(x) : 0
+    const right = left + rectWidth
+    let y = Number.isFinite(Number(startY)) ? Number(startY) : 0
+
+    for (let step = 0; step < 400; step += 1) {
+      const top = y
+      const bottom = y + rectHeight
+      let collided = false
+      let nextY = y
+      for (const element of elements || []) {
+        const bounds = getElementSceneBounds(element)
+        if (!bounds) continue
+        const overlapsX = left < (bounds.right + safeGap) && right > (bounds.left - safeGap)
+        if (!overlapsX) continue
+        const overlapsY = top < (bounds.bottom + safeGap) && bottom > (bounds.top - safeGap)
+        if (!overlapsY) continue
+        collided = true
+        nextY = Math.max(nextY, bounds.bottom + safeGap)
+      }
+      if (!collided) break
+      y = nextY > y ? nextY : y + safeGap
+    }
+    return { x: left, y }
+  }, [getElementSceneBounds])
+
   useEffect(() => {
     let cancelled = false
     const api = canvexApiRef.current
@@ -1858,7 +1916,6 @@ export default function CanvexPage() {
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState) return
     const existing = getSceneElementsSafe()
     const appState = api.getAppState()
-    const noteTexts = (existing || []).filter((item: any) => String(item?.customData?.aiChatType || '').startsWith('note-') && !item?.isDeleted)
     const gap = 16
     let origin = pinOriginRef.current
     if (!origin) {
@@ -1874,9 +1931,16 @@ export default function CanvexPage() {
     const fontSize = 18
     const fixedWidth = 320
     const layout = measurePinnedText(message.content, fixedWidth, fontSize, 5)
-    const stackedHeight = noteTexts.reduce((total, item: any) => total + (item.height || 0) + gap, 0)
-    const x = baseX
-    const y = baseY + stackedHeight
+    const placement = findNonOverlappingPinPosition(
+      existing,
+      baseX,
+      baseY,
+      fixedWidth,
+      Math.max(20, layout.textHeight),
+      gap,
+    )
+    const x = placement.x
+    const y = placement.y
     const groupId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -1941,7 +2005,7 @@ export default function CanvexPage() {
       api.refresh()
     }
     return text.id
-  }, [captureSceneSnapshot, createTextElement, flashPinnedElement, getSceneElementsSafe, measurePinnedText, persistLastPinnedForScene, persistPinOriginForScene])
+  }, [captureSceneSnapshot, createTextElement, findNonOverlappingPinPosition, flashPinnedElement, getSceneElementsSafe, measurePinnedText, persistLastPinnedForScene, persistPinOriginForScene])
 
   const updatePinnedNoteMeta = useCallback((noteId: string, content: string, meta?: Record<string, any>) => {
     const api = canvexApiRef.current
@@ -1982,7 +2046,6 @@ export default function CanvexPage() {
     if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState) return null
     const existing = getSceneElementsSafe()
     const appState = api.getAppState()
-    const pinnedItems = (existing || []).filter((item: any) => String(item?.customData?.aiChatType || '').startsWith('note-') && !item?.isDeleted)
     const gap = 16
     let origin = pinOriginRef.current
     if (!origin) {
@@ -1995,10 +2058,10 @@ export default function CanvexPage() {
     }
     const baseX = origin.x
     const baseY = origin.y
-    const stackedHeight = pinnedItems.reduce((total, item: any) => total + (item.height || 0) + gap, 0)
 
     const width = 400
     const height = 400
+    const placement = findNonOverlappingPinPosition(existing, baseX, baseY, width, height, gap)
     const groupId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -2007,8 +2070,8 @@ export default function CanvexPage() {
     const jobId = options?.jobId ? String(options.jobId) : null
 
     const rect = createRectElement({
-      x: baseX,
-      y: baseY + stackedHeight,
+      x: placement.x,
+      y: placement.y,
       width,
       height,
       groupIds: [groupId],
@@ -2021,8 +2084,8 @@ export default function CanvexPage() {
     })
     const fontSize = 16
     const text = createTextElement({
-      x: baseX + 12,
-      y: baseY + stackedHeight + 12,
+      x: placement.x + 12,
+      y: placement.y + 12,
       width: width - 24,
       height: 24,
       fontSize,
@@ -2057,7 +2120,7 @@ export default function CanvexPage() {
       flashPinnedElement(rect)
     }, 120)
     return { sceneId, groupId, rectId: rect.id, textId: text.id }
-  }, [createRectElement, createTextElement, flashPinnedElement, getSceneElementsSafe, persistLastPinnedForScene, persistPinOriginForScene])
+  }, [createRectElement, createTextElement, findNonOverlappingPinPosition, flashPinnedElement, getSceneElementsSafe, persistLastPinnedForScene, persistPinOriginForScene])
 
   const updatePlaceholderMeta = useCallback((placeholder: ImagePlaceholder, meta: Record<string, any>) => {
     const api = canvexApiRef.current
@@ -3689,7 +3752,6 @@ export default function CanvexPage() {
       x = (placeholderRect.x || 0) + (targetWidth - width) / 2
       y = (placeholderRect.y || 0) + (targetHeight - height) / 2
     } else {
-      const pinnedItems = (existing || []).filter((item: any) => String(item?.customData?.aiChatType || '').startsWith('note-') && !item?.isDeleted)
       const gap = 16
       let origin = pinOriginRef.current
       if (!origin) {
@@ -3703,14 +3765,14 @@ export default function CanvexPage() {
 
       const baseX = origin.x
       const baseY = origin.y
-      const stackedHeight = pinnedItems.reduce((total, item: any) => total + (item.height || 0) + gap, 0)
 
       const maxWidth = 400
       const scale = naturalWidth > 0 ? Math.min(1, maxWidth / naturalWidth) : 1
       width = Math.max(120, Math.round(naturalWidth * scale))
       height = Math.max(120, Math.round(naturalHeight * scale))
-      x = baseX
-      y = baseY + stackedHeight
+      const placement = findNonOverlappingPinPosition(existing, baseX, baseY, width, height, gap)
+      x = placement.x
+      y = placement.y
     }
 
     const imageElement = createImageElement({
@@ -3748,7 +3810,7 @@ export default function CanvexPage() {
       flashPinnedElement(imageElement)
     }, 120)
     return true
-  }, [captureSceneSnapshot, createImageElement, flashPinnedElement, getSceneElementsSafe, loadImageDataUrl, persistLastPinnedForScene, persistPinOriginForScene, queueUrgentSave])
+  }, [captureSceneSnapshot, createImageElement, findNonOverlappingPinPosition, flashPinnedElement, getSceneElementsSafe, loadImageDataUrl, persistLastPinnedForScene, persistPinOriginForScene, queueUrgentSave])
 
   useEffect(() => {
     createPinnedImageRef.current = createPinnedImage
@@ -3825,7 +3887,6 @@ export default function CanvexPage() {
       x = placeholderRect.x || 0
       y = placeholderRect.y || 0
     } else {
-      const pinnedItems = (existing || []).filter((item: any) => String(item?.customData?.aiChatType || '').startsWith('note-') && !item?.isDeleted)
       const gap = 16
       let origin = pinOriginRef.current
       if (!origin) {
@@ -3838,13 +3899,13 @@ export default function CanvexPage() {
       }
       const baseX = origin.x
       const baseY = origin.y
-      const stackedHeight = pinnedItems.reduce((total, item: any) => total + (item.height || 0) + gap, 0)
       const maxWidth = 400
       const scale = naturalWidth > 0 ? Math.min(1, maxWidth / naturalWidth) : 1
       width = Math.max(160, Math.round(naturalWidth * scale))
       height = Math.max(90, Math.round(naturalHeight * scale))
-      x = baseX
-      y = baseY + stackedHeight
+      const placement = findNonOverlappingPinPosition(existing, baseX, baseY, width, height, gap)
+      x = placement.x
+      y = placement.y
     }
 
     const imageElement = createImageElement({
@@ -3897,6 +3958,7 @@ export default function CanvexPage() {
     persistPinOriginForScene,
     queueUrgentSave,
     removeElementsById,
+    findNonOverlappingPinPosition,
   ])
 
   useEffect(() => {
