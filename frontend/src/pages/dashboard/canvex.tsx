@@ -1766,7 +1766,6 @@ export default function CanvexPage() {
   const toErrorLabel = useCallback((value: any) => {
     if (!value) return '生成失败'
     const text = String(value)
-    if (text.length > 60) return `生成失败：${text.slice(0, 60)}…`
     return `生成失败：${text}`
   }, [])
 
@@ -2765,8 +2764,10 @@ export default function CanvexPage() {
     const pollKey = `${sceneId}:${jobId}`
     if (imagePollInFlightRef.current.has(pollKey)) return
     imagePollInFlightRef.current.add(pollKey)
-    const maxAttempts = 60
-    const delayMs = 2000
+    const maxAttemptsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_MAX_ATTEMPTS ?? 600)
+    const delayMsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_INTERVAL_MS ?? 3000)
+    const maxAttempts = Number.isFinite(maxAttemptsEnv) && maxAttemptsEnv > 0 ? Math.floor(maxAttemptsEnv) : 600
+    const delayMs = Number.isFinite(delayMsEnv) && delayMsEnv > 0 ? Math.floor(delayMsEnv) : 3000
     try {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
@@ -2837,8 +2838,10 @@ export default function CanvexPage() {
     const pollKey = `${sceneId}:${jobId}`
     if (imagePollInFlightRef.current.has(pollKey)) return
     imagePollInFlightRef.current.add(pollKey)
-    const maxAttempts = 60
-    const delayMs = 2000
+    const maxAttemptsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_MAX_ATTEMPTS ?? 600)
+    const delayMsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_INTERVAL_MS ?? 3000)
+    const maxAttempts = Number.isFinite(maxAttemptsEnv) && maxAttemptsEnv > 0 ? Math.floor(maxAttemptsEnv) : 600
+    const delayMs = Number.isFinite(delayMsEnv) && delayMsEnv > 0 ? Math.floor(delayMsEnv) : 3000
     try {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
@@ -2893,8 +2896,10 @@ export default function CanvexPage() {
     const pollKey = `${sceneId}:${jobId}:recover`
     if (imagePollInFlightRef.current.has(pollKey) || imagePollInFlightRef.current.has(`${sceneId}:${jobId}`)) return
     imagePollInFlightRef.current.add(pollKey)
-    const maxAttempts = 60
-    const delayMs = 2000
+    const maxAttemptsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_MAX_ATTEMPTS ?? 600)
+    const delayMsEnv = Number(import.meta.env.VITE_IMAGE_EDIT_POLL_INTERVAL_MS ?? 3000)
+    const maxAttempts = Number.isFinite(maxAttemptsEnv) && maxAttemptsEnv > 0 ? Math.floor(maxAttemptsEnv) : 600
+    const delayMs = Number.isFinite(delayMsEnv) && delayMsEnv > 0 ? Math.floor(delayMsEnv) : 3000
     try {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
