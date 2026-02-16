@@ -376,15 +376,6 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Dict[str, str]]]:
                     image_sent = True
                     yield {"tool_results": [result]}
 
-            if video_queue and not video_sent:
-                try:
-                    result = video_queue.get_nowait()
-                except queue.Empty:
-                    result = None
-                if result:
-                    video_sent = True
-                    yield {"tool_results": [result]}
-
             delta = _chunk_content(getattr(chunk, "content", ""))
             if not delta:
                 continue
