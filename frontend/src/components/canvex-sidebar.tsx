@@ -56,7 +56,7 @@ interface SceneRecord {
 
 export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { t, i18n } = useTranslation('canvex')
-  const twitterUrl = 'https://x.com/Orieileen'
+  const twitterUrl = 'https://x.com/real_meired'
   const githubRepoUrl = 'https://github.com/Orieileen/Canvex'
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
