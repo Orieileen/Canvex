@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from django.http import StreamingHttpResponse
@@ -56,6 +57,7 @@ The final image must contain only the subject with a transparent background.
 """
 
 EXCALIDRAW_EDIT_DEFAULT_PROMPT = "Refine the image while preserving content and layout."
+_DURATION_HINT_RE = re.compile(r"(?P<value>\d{1,3})\s*(?:s|sec|secs|second|seconds|秒)", re.IGNORECASE)
 
 
 def _flatten_llm_content(raw) -> str:
@@ -94,6 +96,52 @@ def _read_positive_int_env(name: str, default: int) -> int:
     except Exception:
         pass
     return default
+
+
+def _read_video_default_seconds() -> int:
+    raw = os.getenv("MEDIA_OPENAI_VIDEO_SECONDS_DEFAULT", "12")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 12
+    return max(1, min(300, value))
+
+
+def _extract_duration_seconds_from_text(text: str) -> int | None:
+    if not text:
+        return None
+    match = _DURATION_HINT_RE.search(text)
+    if not match:
+        return None
+    try:
+        value = int(match.group("value"))
+    except Exception:
+        return None
+    if value <= 0:
+        return None
+    return min(300, value)
+
+
+def _resolve_video_duration_seconds(payload: Any, prompt: str) -> tuple[int, str]:
+    raw_duration = None
+    if payload is not None and hasattr(payload, "get"):
+        try:
+            raw_duration = payload.get("duration")
+        except Exception:
+            raw_duration = None
+    if raw_duration is not None and str(raw_duration).strip() != "":
+        try:
+            value = int(str(raw_duration).strip())
+            if value > 0:
+                return min(300, value), "request"
+        except Exception:
+            pass
+
+    prompt_duration = _extract_duration_seconds_from_text(prompt)
+    if prompt_duration:
+        return prompt_duration, "prompt"
+
+    return _read_video_default_seconds(), "default"
 
 
 def _build_inline_image_data_url(image_url: str) -> str | None:
@@ -150,11 +198,18 @@ def _request_video_shooting_script(client: Any, model_name: str, system_prompt: 
     return _flatten_llm_content(response.choices[0].message.content).strip()
 
 
-def _analyze_video_shooting_script(image_url: str, prompt: str) -> str:
+def _analyze_video_shooting_script(image_url: str, prompt: str, duration_seconds: int, duration_source: str = "request") -> str:
     if not image_url or not isinstance(image_url, str):
         return ""
     if not image_url.lower().startswith(("http://", "https://")):
         return ""
+
+    duration_seconds = max(1, min(300, int(duration_seconds or _read_video_default_seconds())))
+    duration_source_text = {
+        "request": "用户参数指定",
+        "prompt": "用户文本指定",
+        "default": "系统默认配置",
+    }.get(duration_source, "用户参数指定")
 
     system_prompt = (
         "你是 Canvex 的资深产品视频导演与分镜师。"
@@ -164,14 +219,24 @@ def _analyze_video_shooting_script(image_url: str, prompt: str) -> str:
         "1) 严格保留原图主体，不改变品牌识别、外形比例、关键颜色与纹理；"
         "2) 禁止添加文字、Logo、水印、字幕、UI、新物体或无关场景元素；"
         "3) 禁止夸张跳切和不连贯运动，镜头运动要平滑、真实可实现。"
+        "时间轴规则："
+        "1) 必须覆盖从 0 秒到总时长结束的完整区间，不能有缺口或重叠；"
+        "2) 必须按时间段写分镜，每段使用“起始秒~结束秒”；"
+        "3) 示例：若总时长为 8 秒，可写 0~3 秒、4~6 秒、7~8 秒；"
+        "4) 每个时间段都要写清镜头语言：景别、机位/运动、灯光/质感重点、主体表现与卖点。"
         "输出要求："
         "1) 仅输出脚本正文，不要标题、解释、前后缀、Markdown；"
-        "2) 以 3-6 个镜头编号输出，每个镜头单独一行；"
-        "3) 每行使用固定字段：[镜头N][时长Xs][景别][机位/运动][主体表现][光线/质感重点]；"
+        "2) 以 3-6 个时间段镜头输出，每个镜头单独一行；"
+        "3) 每行固定格式：[镜头N][起始~结束秒][景别][机位/运动][主体表现][光线/质感重点]；"
         "4) 若用户给出时长、节奏、风格、构图、运动方向等要求，必须优先遵循；"
         "5) 在最后追加一行“全局限制：...”总结不加新元素与不加文字等限制。"
     )
-    user_text = "请分析这张图片并生成拍摄脚本。"
+    user_text = (
+        "请分析这张图片并生成拍摄脚本。"
+        f"\n目标总时长：{duration_seconds} 秒。"
+        f"\n时长来源：{duration_source_text}。"
+        f"\n请按 {duration_seconds} 秒的总时长进行时间段分镜，时间段必须连续覆盖 0~{duration_seconds} 秒。"
+    )
     if prompt:
         user_text = f"{user_text}\n用户需求：{prompt}"
 
@@ -590,6 +655,7 @@ class ExcalidrawVideoGenerateView(APIView):
         prompt = prompt.strip() if isinstance(prompt, str) else ""
         if not prompt:
             prompt = self.DEFAULT_PROMPT
+        duration, duration_source = _resolve_video_duration_seconds(request.data or {}, prompt)
 
         image_urls = (request.data or {}).get("image_urls") or []
         if isinstance(image_urls, str):
@@ -598,15 +664,9 @@ class ExcalidrawVideoGenerateView(APIView):
             image_urls = []
         image_urls = [item for item in image_urls if isinstance(item, str) and item.strip()]
 
-        script = _analyze_video_shooting_script(image_urls[0], prompt) if image_urls else ""
+        script = _analyze_video_shooting_script(image_urls[0], prompt, duration, duration_source) if image_urls else ""
         if script:
             prompt = f"{prompt}\n\n拍摄脚本：\n{script}\n\n请严格参考拍摄脚本生成视频，不要添加文字或新的元素。"
-
-        duration = (request.data or {}).get("duration", 15)
-        try:
-            duration = int(duration)
-        except Exception:
-            duration = 15
 
         aspect_ratio = (request.data or {}).get("aspect_ratio") or "16:9"
         if not isinstance(aspect_ratio, str) or not aspect_ratio.strip():
