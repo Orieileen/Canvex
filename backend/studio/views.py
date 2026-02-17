@@ -157,10 +157,19 @@ def _analyze_video_shooting_script(image_url: str, prompt: str) -> str:
         return ""
 
     system_prompt = (
-        "你是高级产品视频设计导演。请基于给定图片输出一段高级产品视频拍摄脚本，"
-        "包含镜头顺序、景别、机位/运动、时长或节奏提示，并突出产品卖点与质感。"
-        "只输出脚本正文，不要添加解释或标题。"
-        "脚本需遵循用户的补充需求（若有）。"
+        "你是 Canvex 的资深产品视频导演与分镜师。"
+        "任务：基于给定单张产品图，生成可直接用于视频生成模型的拍摄脚本。"
+        "目标：画面高级、稳定、可执行，突出产品材质、结构与卖点。"
+        "硬性约束："
+        "1) 严格保留原图主体，不改变品牌识别、外形比例、关键颜色与纹理；"
+        "2) 禁止添加文字、Logo、水印、字幕、UI、新物体或无关场景元素；"
+        "3) 禁止夸张跳切和不连贯运动，镜头运动要平滑、真实可实现。"
+        "输出要求："
+        "1) 仅输出脚本正文，不要标题、解释、前后缀、Markdown；"
+        "2) 以 3-6 个镜头编号输出，每个镜头单独一行；"
+        "3) 每行使用固定字段：[镜头N][时长Xs][景别][机位/运动][主体表现][光线/质感重点]；"
+        "4) 若用户给出时长、节奏、风格、构图、运动方向等要求，必须优先遵循；"
+        "5) 在最后追加一行“全局限制：...”总结不加新元素与不加文字等限制。"
     )
     user_text = "请分析这张图片并生成拍摄脚本。"
     if prompt:
@@ -247,6 +256,33 @@ class ExcalidrawSceneChatView(APIView):
         for i in range(0, len(text), size):
             yield text[i : i + size]
 
+    @staticmethod
+    def _fallback_text_from_tool_results(tool_results: list[dict[str, Any]] | None) -> str | None:
+        if not tool_results:
+            return None
+        has_video_url = False
+        has_video_task = False
+        has_image_url = False
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            tool_name = item.get("tool")
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            if tool_name == "videotool":
+                if result.get("url"):
+                    has_video_url = True
+                elif result.get("task_id") or result.get("job_id") or str(result.get("status", "")).upper() in {"QUEUED", "RUNNING"}:
+                    has_video_task = True
+            if tool_name == "imagetool" and result.get("url"):
+                has_image_url = True
+        if has_video_url:
+            return "视频已生成。"
+        if has_video_task:
+            return "视频任务已提交。"
+        if has_image_url:
+            return "图片已生成。"
+        return None
+
     def get(self, request, scene_id):
         scene = self.get_scene(scene_id)
         try:
@@ -316,7 +352,7 @@ class ExcalidrawSceneChatView(APIView):
         assistant_payload = (result or {}).get("assistant") or {}
         assistant_content = (assistant_payload.get("content") or "").strip()
         if not assistant_content and tool_results:
-            assistant_content = "视频已生成。" if any(item.get("tool") == "videotool" for item in tool_results) else "图片已生成。"
+            assistant_content = self._fallback_text_from_tool_results(tool_results) or ""
         if not assistant_content:
             assistant_content = "LLM 返回为空，请检查模型或网络配置。"
 
@@ -338,8 +374,8 @@ class ExcalidrawSceneChatView(APIView):
         def event_stream():
             assistant_content = ""
             sent_tool_keys = set()
-            sent_tool_names = set()
             sent_intents = set()
+            tool_results: list[dict[str, Any]] = []
             yield ":\n\n"
             try:
                 for update in call_llm(state):
@@ -355,9 +391,8 @@ class ExcalidrawSceneChatView(APIView):
                             if key in sent_tool_keys:
                                 continue
                             sent_tool_keys.add(key)
-                            tool_name = item.get("tool")
-                            if tool_name:
-                                sent_tool_names.add(tool_name)
+                            if isinstance(item, dict):
+                                tool_results.append(item)
                             payload = {
                                 "tool": item.get("tool"),
                                 "result": item.get("result"),
@@ -381,9 +416,11 @@ class ExcalidrawSceneChatView(APIView):
 
             if not assistant_content.strip():
                 if sent_tool_keys:
-                    assistant_content = "视频已生成。" if "videotool" in sent_tool_names else "图片已生成。"
+                    assistant_content = self._fallback_text_from_tool_results(tool_results) or ""
                 else:
                     assistant_content = "LLM 返回为空，请检查模型或网络配置。"
+            if not assistant_content.strip():
+                assistant_content = "LLM 返回为空，请检查模型或网络配置。"
 
             state["assistant"] = {"role": "assistant", "content": assistant_content.strip()}
             try:

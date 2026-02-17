@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from .models import ExcalidrawVideoJob
 from .memory import (
     MEMORY_STABILITY_MIN_COUNT,
     MEMORY_STABILITY_WINDOW,
@@ -26,7 +27,8 @@ from .memory import (
     set_memory_state,
     set_summary_state,
 )
-from .tools import imagetool, videotool
+from .tasks import run_excalidraw_video_job
+from .tools import imagetool
 
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -45,7 +47,7 @@ class ChatState(TypedDict):
 
 
 def _get_model_name() -> str:
-    return os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4.1-mini")
+    return os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4o-mini")
 
 
 def _get_temperature() -> float:
@@ -67,18 +69,30 @@ def _get_max_tokens() -> int | None:
 
 def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory_state: Dict[str, Any]) -> str:
     parts = [
-        "You are an assistant helping users brainstorm and refine ideas for Excalidraw.",
-        "Keep responses concise, actionable, and structured.",
+        "You are Canvex Copilot, an AI assistant embedded in an Excalidraw-style canvas workspace.",
+        "Your job is to help users brainstorm, make decisions, and produce concrete next actions for the current scene.",
+        "Response policy:",
+        "1) Match the user's language and terminology.",
+        "2) Keep responses concise, specific, and actionable.",
+        "3) Prefer practical structure (short bullets or numbered steps) when it improves clarity.",
+        "4) If key information is missing, ask at most 1-2 focused clarification questions; otherwise proceed with explicit assumptions.",
+        "5) Stay consistent with confirmed constraints and decisions; do not reopen settled choices unless requested.",
+        "6) Do not output tool-call syntax, XML tags, or fake execution traces.",
+        "7) Do not output raw JSON unless the user explicitly asks for JSON.",
+        "8) Do not claim image/video generation is finished unless completion is explicit in context.",
         f"Scene: {scene_title or 'Untitled'}",
     ]
     summary_text = render_summary_state(summary_state)
     if summary_text:
-        parts.extend(["Summary state (JSON):", summary_text])
+        parts.extend(["Scene summary state (JSON):", summary_text])
     memory_guidelines = render_memory_guidelines(memory_state)
     if memory_guidelines:
-        parts.extend(["Behavior guidelines derived from memory:", memory_guidelines])
-    parts.append("If user asks for an image or visual output, call imagetool.")
-    parts.append("If user asks for a video, call videotool.")
+        parts.extend(["Persistent user preferences and constraints:", memory_guidelines])
+    parts.append("Image and video generation are orchestrated by backend workflows based on user intent.")
+    parts.append(
+        "When users request image/video, provide brief prompt refinement and quality constraints "
+        "(style, subject, camera/motion, duration, aspect ratio, do/don't)."
+    )
     return "\n".join(parts)
 
 
@@ -151,6 +165,9 @@ _VIDEO_KEYWORDS = (
 _ASPECT_RATIO_RE = re.compile(r"(16\s*:\s*9|9\s*:\s*16)")
 _DURATION_RE = re.compile(r"(\d{1,3})\s*(s|sec|secs|seconds|秒)")
 _URL_RE = re.compile(r"https?://\S+")
+_IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
+_ASPECT_RATIO_VALUE_RE = re.compile(r"^\d{1,2}:\d{1,2}$")
+_MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video"}
 
 
 def _extract_urls(text: str) -> List[str]:
@@ -235,6 +252,212 @@ def _classify_image_intent(state: ChatState) -> Dict[str, Any] | None:
     return _invoke_json(llm, "You are an image intent classifier.", prompt)
 
 
+def _normalize_image_size(value: Any, default: str = "1024x1024") -> str:
+    raw = str(value or "").strip().lower().replace(" ", "")
+    if not raw:
+        return default
+    if _IMAGE_SIZE_RE.match(raw):
+        return raw
+    return default
+
+
+def _normalize_aspect_ratio(value: Any, default: str = "16:9") -> str:
+    raw = str(value or "").strip().replace(" ", "")
+    if not raw:
+        return default
+    if _ASPECT_RATIO_VALUE_RE.match(raw):
+        return raw
+    return default
+
+
+def _bounded_int(value: Any, default: int, minimum: int = 1, maximum: int = 180) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = default
+    number = max(minimum, number)
+    if maximum > 0:
+        number = min(maximum, number)
+    return number
+
+
+def _build_media_action_prompt(state: ChatState) -> str:
+    schema = {
+        "action": "chat | clarify | generate_image | generate_video",
+        "assistant": "string",
+        "image": {"prompt": "string", "size": "1024x1024"},
+        "video": {
+            "prompt": "string",
+            "duration": 10,
+            "aspect_ratio": "16:9",
+            "image_urls": ["https://example.com/a.png"],
+        },
+    }
+    summary_text = render_summary_state(state.get("summary_state") or {}) or "(none)"
+    memory_text = render_memory_guidelines(state.get("memory_state") or {}) or "(none)"
+    last_user = (state.get("last_user") or "").strip()
+    return (
+        "Decide backend action for the latest user message. Return JSON only.\n"
+        "Action rules:\n"
+        "- Use generate_image / generate_video only when the user is explicitly asking to create image/video.\n"
+        "- Use clarify only when media generation is requested but blocked by missing critical information.\n"
+        "- Do NOT ask clarification for optional preferences if reasonable defaults are enough.\n"
+        "- Otherwise use chat.\n"
+        "Generation rules:\n"
+        "- For generate_image, fill image.prompt and optional image.size (default 1024x1024).\n"
+        "- For generate_video, fill video.prompt and optional video.duration/video.aspect_ratio/video.image_urls "
+        "(defaults: duration=10, aspect_ratio=16:9).\n"
+        "Assistant text rules:\n"
+        "- assistant must be concise and in the user's language.\n"
+        "- If action is clarify, assistant should be a short question.\n"
+        "- If action is generate_image/generate_video, assistant should be a short acknowledgement sentence, not a question.\n"
+        "- Never claim generation is already finished.\n\n"
+        f"Schema:\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+        f"Summary context:\n{summary_text}\n\n"
+        f"Memory guidelines:\n{memory_text}\n\n"
+        f"Latest user message:\n{last_user}\n\n"
+        "JSON:"
+    )
+
+
+def _decide_media_action(state: ChatState) -> Dict[str, Any] | None:
+    last_user = (state.get("last_user") or "").strip()
+    if not last_user:
+        return None
+
+    llm = _build_chat_model(streaming=False)
+    decision_raw = _invoke_json(
+        llm,
+        "You are Canvex media action router. Output strict JSON only.",
+        _build_media_action_prompt(state),
+    )
+    if not decision_raw:
+        return None
+
+    action = str(decision_raw.get("action") or "").strip().lower()
+    if action not in _MEDIA_ACTIONS:
+        return None
+
+    decision: Dict[str, Any] = {"action": action}
+    assistant = str(decision_raw.get("assistant") or "").strip()
+    if assistant:
+        decision["assistant"] = assistant
+
+    if action == "clarify":
+        if not assistant:
+            decision["assistant"] = "为了准确执行，请补充关键要求（如主体、风格或画幅）。"
+        return decision
+
+    if action == "generate_image":
+        image_payload = decision_raw.get("image") if isinstance(decision_raw.get("image"), dict) else {}
+        prompt = str(image_payload.get("prompt") or last_user).strip() or last_user
+        size = _normalize_image_size(image_payload.get("size"), default="1024x1024")
+        decision["image_args"] = {
+            "prompt": prompt,
+            "size": size,
+            "scene_id": state.get("scene_id"),
+        }
+        if not assistant:
+            decision["assistant"] = "好的，正在生成图片。"
+        return decision
+
+    if action == "generate_video":
+        video_payload = decision_raw.get("video") if isinstance(decision_raw.get("video"), dict) else {}
+        fallback_video = _detect_video_intent(state) or {}
+        prompt = str(video_payload.get("prompt") or fallback_video.get("prompt") or last_user).strip() or last_user
+        duration = _bounded_int(video_payload.get("duration") or fallback_video.get("duration"), default=10)
+        aspect_ratio = _normalize_aspect_ratio(
+            video_payload.get("aspect_ratio") or fallback_video.get("aspect_ratio") or "16:9",
+            default="16:9",
+        )
+        image_urls = _normalize_image_urls(video_payload.get("image_urls")) or _normalize_image_urls(
+            fallback_video.get("image_urls")
+        )
+        decision["video_args"] = {
+            "prompt": prompt,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "image_urls": image_urls,
+            "scene_id": state.get("scene_id"),
+        }
+        if not assistant:
+            decision["assistant"] = "好的，视频任务已提交。"
+        return decision
+
+    # chat
+    return decision
+
+
+def _normalize_image_urls(value: Any) -> List[str] | None:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    output = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return output or None
+
+
+def _queue_get_with_timeout(result_queue: queue.Queue, tool_name: str, timeout_seconds: float) -> Dict[str, Any]:
+    try:
+        if timeout_seconds <= 0:
+            return result_queue.get_nowait()
+        return result_queue.get(timeout=timeout_seconds)
+    except queue.Empty:
+        seconds_label = f"{timeout_seconds:g}"
+        return {
+            "tool": tool_name,
+            "result": {"error": f"{tool_name} timed out after {seconds_label}s"},
+        }
+
+
+def _image_tool_wait_timeout_seconds() -> float:
+    raw = os.getenv("EXCALIDRAW_IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200")
+    try:
+        value = float(raw)
+        return max(0.0, value)
+    except Exception:
+        return 1200
+
+
+def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = str(args.get("prompt") or "").strip()
+    scene_id = str(args.get("scene_id") or "").strip()
+    if not prompt:
+        return {"error": "prompt is required"}
+    if not scene_id:
+        return {"error": "scene_id is required"}
+
+    try:
+        duration = int(args.get("duration") or 10)
+    except Exception:
+        duration = 10
+    aspect_ratio = str(args.get("aspect_ratio") or "16:9").strip() or "16:9"
+    image_urls = _normalize_image_urls(args.get("image_urls"))
+    model_name = str(args.get("model") or "").strip()
+
+    try:
+        job = ExcalidrawVideoJob.objects.create(
+            scene_id=scene_id,
+            prompt=prompt,
+            image_urls=image_urls or [],
+            duration=max(1, duration),
+            aspect_ratio=aspect_ratio,
+            model_name=model_name,
+            status=ExcalidrawVideoJob.Status.QUEUED,
+        )
+        run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    return {
+        "job_id": str(job.id),
+        "task_id": str(job.id),
+        "status": job.status,
+        "scene_id": scene_id,
+        "poll_url": f"/api/v1/excalidraw/video-jobs/{job.id}/",
+    }
+
+
 def _start_image_job(args: Dict[str, Any]) -> queue.Queue:
     q: queue.Queue = queue.Queue(maxsize=1)
 
@@ -244,20 +467,6 @@ def _start_image_job(args: Dict[str, Any]) -> queue.Queue:
         except Exception as exc:
             output = {"error": str(exc)}
         q.put({"tool": imagetool.name, "result": output})
-
-    threading.Thread(target=worker, daemon=True).start()
-    return q
-
-
-def _start_video_job(args: Dict[str, Any]) -> queue.Queue:
-    q: queue.Queue = queue.Queue(maxsize=1)
-
-    def worker():
-        try:
-            output = videotool.invoke(args)
-        except Exception as exc:
-            output = {"error": str(exc)}
-        q.put({"tool": videotool.name, "result": output})
 
     threading.Thread(target=worker, daemon=True).start()
     return q
@@ -328,7 +537,7 @@ def load_memory(state: ChatState) -> Dict[str, Any]:
     }
 
 
-def call_llm(state: ChatState) -> Iterator[Dict[str, Dict[str, str]]]:
+def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
     system_prompt = _build_system_prompt(
         state.get("scene_title", ""),
         state.get("summary_state") or {},
@@ -338,23 +547,83 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Dict[str, str]]]:
     lc_messages = _to_langchain_messages(system_prompt, state["messages"])
 
     content = ""
-    image_queue: queue.Queue | None = None
-    video_queue: queue.Queue | None = None
-    image_sent = False
-    video_sent = False
 
-    video_intent = _detect_video_intent(state)
-    if video_intent:
-        yield {"intent": "video"}
-        args = {
-            "prompt": video_intent.get("prompt") or state.get("last_user") or "",
-            "duration": video_intent.get("duration") or 10,
-            "aspect_ratio": video_intent.get("aspect_ratio") or "16:9",
-            "image_urls": video_intent.get("image_urls"),
-            "scene_id": state.get("scene_id"),
+    media_action = _decide_media_action(state)
+    if media_action and media_action.get("action") == "clarify":
+        assistant_text = str(media_action.get("assistant") or "").strip()
+        yield {
+            "assistant": {
+                "role": "assistant",
+                "content": assistant_text,
+            }
         }
-        video_queue = _start_video_job(args)
-    else:
+        return
+
+    if media_action and media_action.get("action") == "generate_video":
+        yield {"intent": "video"}
+        args = media_action.get("video_args") if isinstance(media_action.get("video_args"), dict) else {}
+        yield {
+            "tool_results": [
+                {
+                    "tool": "videotool",
+                    "result": _enqueue_video_job(args),
+                }
+            ]
+        }
+        assistant_text = str(media_action.get("assistant") or "好的，视频任务已提交。").strip()
+        yield {
+            "assistant": {
+                "role": "assistant",
+                "content": assistant_text,
+            }
+        }
+        return
+
+    if media_action and media_action.get("action") == "generate_image":
+        yield {"intent": "image"}
+        args = media_action.get("image_args") if isinstance(media_action.get("image_args"), dict) else {}
+        image_queue = _start_image_job(args)
+        assistant_text = str(media_action.get("assistant") or "好的，正在生成图片。").strip()
+        content = assistant_text
+        yield {
+            "assistant": {
+                "role": "assistant",
+                "content": assistant_text,
+            }
+        }
+        timeout_seconds = _image_tool_wait_timeout_seconds()
+        yield {"tool_results": [_queue_get_with_timeout(image_queue, imagetool.name, timeout_seconds)]}
+        return
+
+    if not media_action:
+        # Fallback only when planner fails: retain old heuristic behavior.
+        video_intent = _detect_video_intent(state)
+        if video_intent:
+            yield {"intent": "video"}
+            args = {
+                "prompt": video_intent.get("prompt") or state.get("last_user") or "",
+                "duration": video_intent.get("duration") or 10,
+                "aspect_ratio": video_intent.get("aspect_ratio") or "16:9",
+                "image_urls": video_intent.get("image_urls"),
+                "scene_id": state.get("scene_id"),
+            }
+            yield {
+                "tool_results": [
+                    {
+                        "tool": "videotool",
+                        "result": _enqueue_video_job(args),
+                    }
+                ]
+            }
+            content = "好的，视频任务已提交。"
+            yield {
+                "assistant": {
+                    "role": "assistant",
+                    "content": content,
+                }
+            }
+            return
+
         intent = _classify_image_intent(state) or {}
         if intent.get("use_image") is True:
             yield {"intent": "image"}
@@ -364,18 +633,19 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Dict[str, str]]]:
                 "scene_id": state.get("scene_id"),
             }
             image_queue = _start_image_job(args)
+            content = "好的，正在生成图片。"
+            yield {
+                "assistant": {
+                    "role": "assistant",
+                    "content": content,
+                }
+            }
+            timeout_seconds = _image_tool_wait_timeout_seconds()
+            yield {"tool_results": [_queue_get_with_timeout(image_queue, imagetool.name, timeout_seconds)]}
+            return
 
     try:
         for chunk in llm.stream(lc_messages):
-            if image_queue and not image_sent:
-                try:
-                    result = image_queue.get_nowait()
-                except queue.Empty:
-                    result = None
-                if result:
-                    image_sent = True
-                    yield {"tool_results": [result]}
-
             delta = _chunk_content(getattr(chunk, "content", ""))
             if not delta:
                 continue
@@ -388,12 +658,6 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Dict[str, str]]]:
             }
     except Exception:
         content = ""
-
-    if image_queue and not image_sent:
-        yield {"tool_results": [image_queue.get()]}
-
-    if video_queue and not video_sent:
-        yield {"tool_results": [video_queue.get()]}
 
     if not content:
         yield {
