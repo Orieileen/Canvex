@@ -108,10 +108,12 @@ See `.env.example` for full descriptions.
 | Chat Agent | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EXCALIDRAW_CHAT_MODEL` |
 | Media Provider | `MEDIA_OPENAI_BASE_URL`, `MEDIA_OPENAI_API_KEY`, `MEDIA_OPENAI_IMAGE_MODEL`, `MEDIA_OPENAI_IMAGE_EDIT_MODEL`, `MEDIA_OPENAI_VIDEO_MODEL` |
 | Video Polling | `MEDIA_OPENAI_VIDEO_TIMEOUT_SECONDS`, `MEDIA_OPENAI_VIDEO_POLL_MAX_ATTEMPTS`, `MEDIA_OPENAI_VIDEO_POLL_INTERVAL` |
+| Video Compat Fallback | `MEDIA_OPENAI_VIDEO_ENABLE_COMPAT_FALLBACK` |
 | Frontend | `VITE_API_URL`, `VITE_CANVEX_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
 | Internal Media Fallback | `INTERNAL_MEDIA_BASE` (default: `http://backend:8000`) |
 
 `MEDIA_OPENAI_BASE_URL` is optional. If empty, media requests fall back to `OPENAI_BASE_URL`, then OpenAI default endpoint.
+If a provider rejects `POST /v1/videos`, set `MEDIA_OPENAI_VIDEO_ENABLE_COMPAT_FALLBACK=true` to auto-fallback to `POST /v1/videos/generations`.
 
 ## API Overview
 

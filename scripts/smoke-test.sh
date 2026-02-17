@@ -109,7 +109,7 @@ IMAGE_JOB=$(curl -sS -X POST "${BASE_URL}/api/v1/excalidraw/scenes/${SCENE_ID}/i
 set -e
 echo "$IMAGE_JOB" | python3 -m json.tool || echo "$IMAGE_JOB"
 
-echo "[7] Video job (requires MEDIA_OPENAI_API_KEY; MEDIA_OPENAI_BASE_URL optional, falls back to OPENAI_BASE_URL/OpenAI default)"
+echo "[7] Video job (requires MEDIA_OPENAI_API_KEY; supports compat fallback /videos/generations when enabled)"
 set +e
 VIDEO_JOB=$(curl -sS -X POST "${BASE_URL}/api/v1/excalidraw/scenes/${SCENE_ID}/video/" \
   -H "Content-Type: application/json" \

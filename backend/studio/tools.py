@@ -314,6 +314,335 @@ def _post_images_generations_compat(
     return _extract_image_bytes_from_openai_response(data)
 
 
+def _videos_generations_compat_endpoint(base_url: str) -> str:
+    root = (base_url or "").strip().rstrip("/")
+    if not root:
+        root = OPENAI_DEFAULT_BASE_URL
+    if root.endswith("/videos/generations"):
+        return root
+    if root.endswith("/v1"):
+        return f"{root}/videos/generations"
+    return f"{root}/v1/videos/generations"
+
+
+def _dedupe_text_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+    return ordered
+
+
+def _videos_compat_status_endpoints(base_url: str, video_id: str) -> list[str]:
+    root = (base_url or "").strip().rstrip("/")
+    if not root:
+        root = OPENAI_DEFAULT_BASE_URL
+    if root.endswith("/videos/generations"):
+        endpoints = [f"{root}/{video_id}", f"{root.rsplit('/generations', 1)[0]}/{video_id}"]
+    elif root.endswith("/v1"):
+        endpoints = [f"{root}/videos/{video_id}", f"{root}/videos/generations/{video_id}"]
+    else:
+        endpoints = [f"{root}/v1/videos/{video_id}", f"{root}/v1/videos/generations/{video_id}"]
+    return _dedupe_text_values(endpoints)
+
+
+def _videos_compat_content_endpoints(base_url: str, video_id: str) -> list[str]:
+    endpoints: list[str] = []
+    for endpoint in _videos_compat_status_endpoints(base_url, video_id):
+        endpoints.append(f"{endpoint}/content")
+        endpoints.append(f"{endpoint}/download")
+    return _dedupe_text_values(endpoints)
+
+
+def _extract_video_task_id(result_data: Any) -> str | None:
+    if isinstance(result_data, (list, tuple)):
+        for item in result_data:
+            nested = _extract_video_task_id(item)
+            if nested:
+                return nested
+        return None
+    if not isinstance(result_data, dict):
+        return None
+    for key in ("id", "task_id", "job_id", "video_id"):
+        value = result_data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    for nested_key in ("data", "result", "video", "task", "job"):
+        nested = _extract_video_task_id(result_data.get(nested_key))
+        if nested:
+            return nested
+    return None
+
+
+def _extract_video_status(result_data: Any) -> str:
+    if isinstance(result_data, (list, tuple)):
+        for item in result_data:
+            nested = _extract_video_status(item)
+            if nested:
+                return nested
+        return ""
+    if not isinstance(result_data, dict):
+        return ""
+    for key in ("status", "state", "phase"):
+        value = result_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    for nested_key in ("data", "result", "video", "task", "job"):
+        nested = _extract_video_status(result_data.get(nested_key))
+        if nested:
+            return nested
+    return ""
+
+
+def _extract_video_error_text(result_data: Any) -> str:
+    if isinstance(result_data, (list, tuple)):
+        for item in result_data:
+            nested = _extract_video_error_text(item)
+            if nested:
+                return nested
+        return ""
+    if not isinstance(result_data, dict):
+        return ""
+    error = result_data.get("error")
+    if isinstance(error, dict):
+        detail = error.get("message") or error.get("error") or error.get("detail")
+        if detail is not None and str(detail).strip():
+            return str(detail).strip()
+    elif error is not None and str(error).strip():
+        return str(error).strip()
+
+    for key in ("message", "detail"):
+        value = result_data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+
+    for nested_key in ("data", "result", "video", "task", "job"):
+        nested = _extract_video_error_text(result_data.get(nested_key))
+        if nested:
+            return nested
+    return ""
+
+
+def _read_media_timeout_seconds(default_seconds: float = 180.0) -> float:
+    timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", str(default_seconds))
+    try:
+        return max(1.0, float(timeout_raw))
+    except Exception:
+        return default_seconds
+
+
+def _post_videos_generations_compat(
+    *,
+    base_url: str,
+    request_payload: dict[str, Any],
+    input_reference_bytes: bytes | None = None,
+    input_reference_url: str | None = None,
+) -> dict[str, Any]:
+    api_key = _pick_api_key()
+    if not api_key:
+        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
+    endpoint = _videos_generations_compat_endpoint(base_url)
+    timeout_seconds = _read_media_timeout_seconds()
+
+    def _parse_response(response: requests.Response) -> dict[str, Any]:
+        if response.status_code >= 400:
+            body = (response.text or "").strip()
+            snippet = f"{body[:1200]}..." if len(body) > 1200 else body
+            raise RuntimeError(
+                f"compat /videos/generations returned {response.status_code}: {snippet or 'empty response body'}"
+            )
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"compat /videos/generations returned invalid json: {exc}") from exc
+        return data if isinstance(data, dict) else {"data": data}
+
+    json_payload = dict(request_payload or {})
+    if input_reference_bytes:
+        # Prefer JSON for compat gateways that do not parse multipart fields.
+        json_payload["input_reference"] = _image_bytes_to_data_url(input_reference_bytes)
+    elif input_reference_url:
+        json_payload["input_reference"] = str(input_reference_url).strip()
+
+    json_headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        json_response = requests.post(endpoint, headers=json_headers, json=json_payload, timeout=timeout_seconds)
+        return _parse_response(json_response)
+    except Exception as json_exc:
+        if not input_reference_bytes:
+            raise RuntimeError(f"compat /videos/generations request failed: {json_exc}") from json_exc
+
+    multipart_headers = {"Authorization": f"Bearer {api_key}"}
+    multipart_data = dict(request_payload or {})
+    if input_reference_url:
+        multipart_data["input_reference_url"] = str(input_reference_url).strip()
+    try:
+        multipart_response = requests.post(
+            endpoint,
+            headers=multipart_headers,
+            data=multipart_data,
+            files={"input_reference": ("input_reference.png", input_reference_bytes, "image/png")},
+            timeout=timeout_seconds,
+        )
+        return _parse_response(multipart_response)
+    except Exception as multipart_exc:
+        raise RuntimeError(
+            "compat /videos/generations request failed: "
+            f"json attempt error={json_exc}; multipart attempt error={multipart_exc}"
+        ) from multipart_exc
+
+
+def _looks_like_mp4(blob: bytes) -> bool:
+    if len(blob) < 12:
+        return False
+    return blob[4:8] == b"ftyp"
+
+
+def _get_video_status_via_compat(base_url: str, video_id: str) -> dict[str, Any]:
+    api_key = _pick_api_key()
+    if not api_key:
+        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
+    timeout_seconds = _read_media_timeout_seconds()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    errors: list[str] = []
+
+    for endpoint in _videos_compat_status_endpoints(base_url, video_id):
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=timeout_seconds)
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+            continue
+
+        if response.status_code == 404:
+            continue
+        if response.status_code >= 400:
+            body = (response.text or "").strip()
+            snippet = f"{body[:300]}..." if len(body) > 300 else body
+            errors.append(f"{endpoint}: {response.status_code} {snippet or 'empty body'}")
+            continue
+
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "json" in content_type:
+            try:
+                data = response.json()
+                return data if isinstance(data, dict) else {"data": data}
+            except Exception as exc:
+                errors.append(f"{endpoint}: invalid json ({exc})")
+                continue
+
+        body = response.content or b""
+        if body and _looks_like_mp4(body):
+            saved_url = _save_video_to_media(body, video_id)
+            return {"id": str(video_id), "status": "completed", "video_url": saved_url}
+
+        text = (response.text or "").strip()
+        if text.lower().startswith(("http://", "https://")):
+            return {"id": str(video_id), "status": "completed", "video_url": text}
+        if text.startswith("{") or text.startswith("["):
+            try:
+                data = response.json()
+                return data if isinstance(data, dict) else {"data": data}
+            except Exception as exc:
+                errors.append(f"{endpoint}: invalid json body ({exc})")
+                continue
+        errors.append(f"{endpoint}: unsupported response content type ({content_type or 'unknown'})")
+
+    if errors:
+        raise RuntimeError("compat video status request failed: " + "; ".join(errors))
+    raise RuntimeError("compat video status endpoint not found (all 404)")
+
+
+def _download_video_url_content(video_url: str, api_key: str, timeout_seconds: float) -> bytes:
+    last_error: Exception | None = None
+    for headers in (None, {"Authorization": f"Bearer {api_key}"}):
+        kwargs: dict[str, Any] = {"timeout": timeout_seconds}
+        if headers:
+            kwargs["headers"] = headers
+        try:
+            response = requests.get(video_url, **kwargs)
+            response.raise_for_status()
+            if response.content:
+                return response.content
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise ValueError("video download returned empty content")
+
+
+def _download_video_content_via_compat(base_url: str, video_id: str, status_data: dict[str, Any]) -> bytes:
+    api_key = _pick_api_key()
+    if not api_key:
+        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
+    timeout_seconds = _read_media_timeout_seconds()
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    video_url, _ = _extract_video_urls(status_data)
+    if not video_url:
+        candidate = _find_first_url(status_data)
+        if candidate and ".mp4" in candidate.lower():
+            video_url = candidate
+    if video_url:
+        return _download_video_url_content(video_url, api_key, timeout_seconds)
+
+    errors: list[str] = []
+    for endpoint in _videos_compat_content_endpoints(base_url, video_id):
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=timeout_seconds)
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+            continue
+
+        if response.status_code == 404:
+            continue
+        if response.status_code >= 400:
+            body = (response.text or "").strip()
+            snippet = f"{body[:300]}..." if len(body) > 300 else body
+            errors.append(f"{endpoint}: {response.status_code} {snippet or 'empty body'}")
+            continue
+
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        body = response.content or b""
+        if body and ("json" not in content_type) and (_looks_like_mp4(body) or "video/" in content_type):
+            return body
+
+        if "json" in content_type or (response.text or "").strip().startswith(("{", "[")):
+            try:
+                data = response.json()
+            except Exception as exc:
+                errors.append(f"{endpoint}: invalid json ({exc})")
+                continue
+            if not isinstance(data, dict):
+                data = {"data": data}
+            nested_url, _ = _extract_video_urls(data)
+            if nested_url:
+                return _download_video_url_content(nested_url, api_key, timeout_seconds)
+            errors.append(f"{endpoint}: json response missing video url")
+            continue
+
+        errors.append(f"{endpoint}: unsupported response content type ({content_type or 'unknown'})")
+
+    if errors:
+        raise RuntimeError("compat video download failed: " + "; ".join(errors))
+    raise RuntimeError("compat video download endpoint not found (all 404)")
+
+
+_VIDEO_SUCCESS_STATUSES = {"completed", "succeeded", "success"}
+_VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+
+
+def _is_video_success_status(status: str) -> bool:
+    return str(status or "").strip().lower() in _VIDEO_SUCCESS_STATUSES
+
+
+def _is_video_failed_status(status: str) -> bool:
+    return str(status or "").strip().lower() in _VIDEO_FAILED_STATUSES
+
+
 def _edit_image_media_via_compat_endpoint(source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
     response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
     if response_format not in {"b64_json", "url"}:
@@ -776,7 +1105,7 @@ def _generate_video_official(
         current = client.videos.retrieve(video_id)
         raw = current.to_dict() if hasattr(current, "to_dict") else {}
         status = str(getattr(current, "status", "") or raw.get("status") or "").lower()
-        if status in {"completed", "succeeded", "success"}:
+        if _is_video_success_status(status):
             url, thumb = _extract_video_urls(raw)
             if not url:
                 video_blob = client.videos.download_content(video_id)
@@ -789,13 +1118,146 @@ def _generate_video_official(
                 "thumbnail_url": thumb,
                 "raw": raw,
             }
-        if status in {"failed", "error", "cancelled", "canceled"}:
+        if _is_video_failed_status(status):
             error = getattr(current, "error", None) or raw.get("error") or "video generation failed"
             return {
                 "status": status,
                 "task_id": str(video_id),
                 "error": str(error),
                 "raw": raw,
+            }
+        time.sleep(interval)
+
+    return {"status": "timeout", "task_id": str(video_id), "error": f"Task {video_id} did not complete", "raw": None}
+
+
+def _generate_video_compat(payload: dict[str, Any], require_reference: bool | None = None) -> dict[str, Any]:
+    base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
+    model = payload.get("model") or os.getenv("MEDIA_OPENAI_VIDEO_MODEL", "sora-2-pro")
+    prompt = payload.get("prompt") or ""
+    duration_seconds = int(_normalize_video_seconds(payload.get("duration") or payload.get("seconds") or 12))
+    aspect_ratio = str(payload.get("aspect_ratio") or "").strip() or "16:9"
+    size = payload.get("size") or _aspect_ratio_to_video_size(aspect_ratio)
+    image_urls_raw = payload.get("image_urls") if isinstance(payload.get("image_urls"), list) else []
+    image_urls = [str(item).strip() for item in image_urls_raw if isinstance(item, str) and item.strip()]
+    first_url = next((u for u in image_urls if isinstance(u, str) and u.strip()), "")
+
+    if require_reference is None:
+        require_reference = _read_bool_env("MEDIA_OPENAI_VIDEO_REQUIRE_REFERENCE", False)
+    if require_reference and not first_url and not _is_sora2_model(model):
+        return {
+            "status": "failed",
+            "error": "video generation requires at least one selected image (input_reference)",
+            "raw": None,
+        }
+
+    request_payload: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "duration": duration_seconds,
+        "aspect_ratio": aspect_ratio,
+    }
+    if image_urls:
+        request_payload["image_urls"] = image_urls
+    for key in ("watermark", "thumbnail", "private", "storyboard"):
+        if payload.get(key) is not None:
+            request_payload[key] = bool(payload.get(key))
+    for key in ("style", "character_url", "character_timestamps"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            request_payload[key] = value.strip()
+
+    input_reference_bytes: bytes | None = None
+    if first_url:
+        image_bytes = _resolve_image_bytes(first_url)
+        input_reference_bytes = _normalize_video_reference_image(image_bytes, size)
+
+    try:
+        created_raw = _post_videos_generations_compat(
+            base_url=base_url,
+            request_payload=request_payload,
+            input_reference_bytes=input_reference_bytes,
+            input_reference_url=first_url,
+        )
+    except Exception as exc:
+        supported = _extract_supported_video_seconds_from_error(exc)
+        if not supported:
+            raise
+        adjusted_seconds = int(_normalize_video_seconds(request_payload.get("duration"), allowed_override=supported))
+        if adjusted_seconds == int(request_payload.get("duration", 0)):
+            raise
+        request_payload["duration"] = adjusted_seconds
+        created_raw = _post_videos_generations_compat(
+            base_url=base_url,
+            request_payload=request_payload,
+            input_reference_bytes=input_reference_bytes,
+            input_reference_url=first_url,
+        )
+
+    status = _extract_video_status(created_raw)
+    video_id = _extract_video_task_id(created_raw)
+    url, thumb = _extract_video_urls(created_raw)
+    if not url:
+        candidate_url = _find_first_url(created_raw)
+        if candidate_url and ".mp4" in candidate_url.lower():
+            url = candidate_url
+
+    if _is_video_failed_status(status):
+        error = _extract_video_error_text(created_raw) or "video generation failed"
+        return {
+            "status": status or "failed",
+            "task_id": str(video_id or ""),
+            "error": error,
+            "raw": created_raw,
+        }
+
+    if url and (_is_video_success_status(status) or not status):
+        return {
+            "status": status or "completed",
+            "task_id": str(video_id or ""),
+            "url": url,
+            "thumbnail_url": thumb,
+            "raw": created_raw,
+        }
+
+    if not video_id:
+        raise ValueError(f"compat /videos/generations response missing id/url: {created_raw}")
+
+    max_attempts, interval = _video_poll_limits(default_attempts=120, default_interval=5)
+    for _ in range(max_attempts):
+        current_raw = _get_video_status_via_compat(base_url, str(video_id))
+        status = _extract_video_status(current_raw)
+        current_url, current_thumb = _extract_video_urls(current_raw)
+        if not current_url:
+            candidate_url = _find_first_url(current_raw)
+            if candidate_url and ".mp4" in candidate_url.lower():
+                current_url = candidate_url
+        if current_url and not status:
+            return {
+                "status": "completed",
+                "task_id": str(video_id),
+                "url": current_url,
+                "thumbnail_url": current_thumb,
+                "raw": current_raw,
+            }
+        if _is_video_success_status(status):
+            if not current_url:
+                video_bytes = _download_video_content_via_compat(base_url, str(video_id), current_raw)
+                current_url = _save_video_to_media(video_bytes, str(video_id))
+            return {
+                "status": status,
+                "task_id": str(video_id),
+                "url": current_url,
+                "thumbnail_url": current_thumb,
+                "raw": current_raw,
+            }
+        if _is_video_failed_status(status):
+            error = _extract_video_error_text(current_raw) or "video generation failed"
+            return {
+                "status": status,
+                "task_id": str(video_id),
+                "error": error,
+                "raw": current_raw,
             }
         time.sleep(interval)
 
@@ -821,6 +1283,15 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
             return result
     except Exception as exc:
         fallback_reason = str(exc)
+        if _read_bool_env("MEDIA_OPENAI_VIDEO_ENABLE_COMPAT_FALLBACK", True):
+            try:
+                compat_result = _generate_video_compat(payload)
+                if compat_result.get("error") and not compat_result.get("url"):
+                    return compat_result
+                if compat_result.get("url"):
+                    return compat_result
+            except Exception as compat_exc:
+                fallback_reason = f"{fallback_reason}; compat /videos/generations fallback failed: {compat_exc}"
         if _read_bool_env("MEDIA_OPENAI_VIDEO_ENABLE_LEGACY_FALLBACK", False):
             try:
                 legacy_result = _generate_video_legacy(client, payload)
