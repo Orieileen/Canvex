@@ -34,6 +34,9 @@ type ChatMessage = {
   created_at: string
 }
 
+type ChatResultStatus = 'success' | 'error' | 'interrupted'
+type ChatStatus = 'idle' | ChatResultStatus | 'exiting'
+
 type PinOrigin = {
   x: number
   y: number
@@ -201,8 +204,8 @@ export default function CanvexPage() {
   const [chatInput, setChatInput] = useState('')
   const [chatLoadingByScene, setChatLoadingByScene] = useState<Record<string, boolean>>({})
   const [loadingIconIndex, setLoadingIconIndex] = useState(0)
-  const [chatStatusByScene, setChatStatusByScene] = useState<Record<string, 'idle' | 'success' | 'error' | 'exiting'>>({})
-  const [exitingStatusByScene, setExitingStatusByScene] = useState<Record<string, 'success' | 'error' | null>>({})
+  const [chatStatusByScene, setChatStatusByScene] = useState<Record<string, ChatStatus>>({})
+  const [exitingStatusByScene, setExitingStatusByScene] = useState<Record<string, ChatResultStatus | null>>({})
   const [lastPinnedId, setLastPinnedId] = useState<string | null>(null)
   const [pinFlashRect, setPinFlashRect] = useState<PinRect | null>(null)
   const [selectedEditIds, setSelectedEditIds] = useState<string[]>([])
@@ -265,6 +268,8 @@ export default function CanvexPage() {
   const chatLoadTokenRef = useRef(0)
   const videoPollInFlightRef = useRef<Set<string>>(new Set())
   const imagePollInFlightRef = useRef<Set<string>>(new Set())
+  const chatAbortControllersRef = useRef<Record<string, AbortController>>({})
+  const chatInterruptedScenesRef = useRef<Set<string>>(new Set())
 
   const setSceneChatLoading = useCallback((sceneId: string | null, value: boolean) => {
     if (!sceneId) return
@@ -272,7 +277,7 @@ export default function CanvexPage() {
   }, [])
 
   const setSceneChatStatus = useCallback(
-    (sceneId: string | null, value: 'idle' | 'success' | 'error' | 'exiting') => {
+    (sceneId: string | null, value: ChatStatus) => {
       if (!sceneId) return
       setChatStatusByScene(prev => ({ ...prev, [sceneId]: value }))
     },
@@ -280,7 +285,7 @@ export default function CanvexPage() {
   )
 
   const setSceneExitingStatus = useCallback(
-    (sceneId: string | null, value: 'success' | 'error' | null) => {
+    (sceneId: string | null, value: ChatResultStatus | null) => {
       if (!sceneId) return
       setExitingStatusByScene(prev => ({ ...prev, [sceneId]: value }))
     },
@@ -290,6 +295,14 @@ export default function CanvexPage() {
   const chatLoading = activeSceneId ? !!chatLoadingByScene[activeSceneId] : false
   const chatStatus = activeSceneId ? chatStatusByScene[activeSceneId] ?? 'idle' : 'idle'
   const exitingStatus = activeSceneId ? exitingStatusByScene[activeSceneId] ?? null : null
+
+  const stopMessage = useCallback((sceneId: string | null = activeSceneId) => {
+    if (!sceneId) return
+    const controller = chatAbortControllersRef.current[sceneId]
+    if (!controller) return
+    chatInterruptedScenesRef.current.add(sceneId)
+    controller.abort()
+  }, [activeSceneId])
 
   const isVideoElement = useCallback((item: any) => {
     if (!item || item.type !== 'image') return false
@@ -345,6 +358,19 @@ export default function CanvexPage() {
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
       if (raf) cancelAnimationFrame(raf)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      for (const controller of Object.values(chatAbortControllersRef.current)) {
+        try {
+          controller.abort()
+        } catch {
+          // ignore abort cleanup errors
+        }
+      }
+      chatAbortControllersRef.current = {}
     }
   }, [])
 
@@ -1168,8 +1194,6 @@ export default function CanvexPage() {
     }
   }, [applyScene, clearLocalCache, fetchUserKey, getLastKey, normalizeScenePayload, readLocalCache, sceneParam, selectScene, updateSceneParam])
 
-  // Cycle through loading icons
-  const loadingIcons = useMemo(() => [IconCat, IconButterfly, IconDog, IconFish, IconPaw], [])
   const chatSuccessRef = useRef(false)
   const chatStartTimeRef = useRef<number>(0)
   const [chatElapsedTime, setChatElapsedTime] = useState<number>(0)
@@ -1178,7 +1202,7 @@ export default function CanvexPage() {
   useEffect(() => {
     if (!activeSceneId) return
     if (chatStatus === 'idle' || chatStatus === 'exiting') return
-    setSceneExitingStatus(activeSceneId, chatStatus as 'success' | 'error')
+    setSceneExitingStatus(activeSceneId, chatStatus as ChatResultStatus)
     const exitTimeout = window.setTimeout(() => {
       setSceneChatStatus(activeSceneId, 'exiting')
       window.setTimeout(() => setSceneChatStatus(activeSceneId, 'idle'), 300)
@@ -1186,15 +1210,17 @@ export default function CanvexPage() {
     return () => window.clearTimeout(exitTimeout)
   }, [activeSceneId, chatStatus, setSceneChatStatus, setSceneExitingStatus])
 
+  const loadingIcons = useMemo(() => [IconCat, IconButterfly, IconDog, IconFish, IconPaw], [])
+
   useEffect(() => {
     if (!chatLoading) {
       setLoadingIconIndex(0)
       return
     }
-    const interval = setInterval(() => {
-      setLoadingIconIndex((prev) => (prev + 1) % loadingIcons.length)
+    const interval = window.setInterval(() => {
+      setLoadingIconIndex(prev => (prev + 1) % loadingIcons.length)
     }, 500)
-    return () => clearInterval(interval)
+    return () => window.clearInterval(interval)
   }, [chatLoading, loadingIcons.length])
 
   useEffect(() => {
@@ -4104,6 +4130,10 @@ export default function CanvexPage() {
     setSceneChatLoading(sceneId, true)
     chatSuccessRef.current = false
     chatStartTimeRef.current = Date.now()
+    const abortController = new AbortController()
+    chatAbortControllersRef.current[sceneId] = abortController
+    let finalChatStatus: ChatResultStatus = 'error'
+    let finalPlaceholderLabel = '生成失败'
     let backendContent = trimmed
     try {
       backendContent = await buildChatContentWithSelection(sceneId, trimmed)
@@ -4123,6 +4153,7 @@ export default function CanvexPage() {
             'ngrok-skip-browser-warning': 'true',
           },
           body: JSON.stringify({ content: backendContent }),
+          signal: abortController.signal,
         })
       }
       const response = await makeStreamRequest()
@@ -4346,8 +4377,16 @@ export default function CanvexPage() {
         appendAssistantMessage()
       }
       chatSuccessRef.current = true
-      markPendingPlaceholdersFailed(sceneId, '生成失败')
+      finalChatStatus = 'success'
     } catch (error) {
+      const aborted = abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')
+      if (aborted) {
+        if (chatInterruptedScenesRef.current.has(sceneId)) {
+          finalChatStatus = 'interrupted'
+          finalPlaceholderLabel = '已中断'
+        }
+        return
+      }
       console.error('Chat request failed', error)
       try {
         const res = await request.post(`/api/v1/excalidraw/scenes/${sceneId}/chat/`, { content: backendContent })
@@ -4362,6 +4401,7 @@ export default function CanvexPage() {
           createPinnedNote(sceneId, assistantMessage)
         }
         chatSuccessRef.current = true
+        finalChatStatus = 'success'
         const toolResults = Array.isArray(res.data?.tool_results) ? res.data.tool_results : []
         for (const item of toolResults) {
           if (item?.result) {
@@ -4372,14 +4412,23 @@ export default function CanvexPage() {
         console.error('Chat fallback failed', fallbackError)
       }
     } finally {
+      if (chatAbortControllersRef.current[sceneId] === abortController) {
+        delete chatAbortControllersRef.current[sceneId]
+      }
+      const wasInterrupted = chatInterruptedScenesRef.current.has(sceneId)
+      chatInterruptedScenesRef.current.delete(sceneId)
+      if (wasInterrupted && finalChatStatus === 'error') {
+        finalChatStatus = 'interrupted'
+        finalPlaceholderLabel = '已中断'
+      }
       queueUrgentSave()
       setSceneChatLoading(sceneId, false)
-      if (chatSuccessRef.current) {
+      if (finalChatStatus === 'success') {
         const elapsed = ((Date.now() - chatStartTimeRef.current) / 1000).toFixed(1)
         setChatElapsedTime(parseFloat(elapsed))
       }
-      setSceneChatStatus(sceneId, chatSuccessRef.current ? 'success' : 'error')
-      markPendingPlaceholdersFailed(sceneId, '生成失败')
+      setSceneChatStatus(sceneId, finalChatStatus)
+      markPendingPlaceholdersFailed(sceneId, finalPlaceholderLabel)
     }
   }, [activeSceneId, appendChatMessageForScene, buildChatContentWithSelection, chatInput, chatLoading, createImagePlaceholder, createPinnedImage, createPinnedNote, createPinnedVideo, enqueueImagePlaceholder, flushSave, isImageSpecPayload, markPendingPlaceholdersFailed, queueUrgentSave, removeElementsById, setSceneChatLoading, setSceneChatStatus, takeNextImagePlaceholder, toErrorLabel, toVideoFailureLabel, updatePlaceholderText, updatePinnedNoteText])
 
@@ -4767,7 +4816,11 @@ export default function CanvexPage() {
                   className="pointer-events-auto w-full max-w-xl"
                   onSubmit={(event) => {
                     event.preventDefault()
-                    sendMessage()
+                    if (chatLoading) {
+                      stopMessage()
+                    } else {
+                      sendMessage()
+                    }
                   }}
                 >
                   {(chatLoading || chatStatus !== 'idle') && (
@@ -4781,6 +4834,8 @@ export default function CanvexPage() {
                           ? 'text-muted-foreground'
                           : (chatStatus === 'success' || exitingStatus === 'success')
                             ? 'text-green-600 dark:text-green-400'
+                            : (chatStatus === 'interrupted' || exitingStatus === 'interrupted')
+                              ? 'text-amber-600 dark:text-amber-400'
                             : (chatStatus === 'error' || exitingStatus === 'error')
                               ? 'text-red-500 dark:text-red-400'
                               : 'text-muted-foreground'
@@ -4795,6 +4850,11 @@ export default function CanvexPage() {
                         <>
                           <IconCheck className="size-3" />
                           <span>{t('aiCompleted', { defaultValue: '已回复', time: chatElapsedTime })}</span>
+                        </>
+                      ) : (chatStatus === 'interrupted' || (chatStatus === 'exiting' && exitingStatus === 'interrupted')) ? (
+                        <>
+                          <IconX className="size-3" />
+                          <span>{t('aiInterrupted', { defaultValue: '已中断' })}</span>
                         </>
                       ) : (
                         <>
@@ -4811,7 +4871,11 @@ export default function CanvexPage() {
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' && !event.shiftKey) {
                           event.preventDefault()
-                          sendMessage()
+                          if (chatLoading) {
+                            stopMessage()
+                          } else {
+                            sendMessage()
+                          }
                         }
                       }}
                       placeholder={t('aiPlaceholder')}
@@ -4824,15 +4888,15 @@ export default function CanvexPage() {
                       variant={chatLoading ? 'secondary' : chatInput.trim() ? 'default' : 'ghost'}
                       className="absolute right-1.5 top-1/2 -translate-y-1/2 size-8 rounded-lg transition-all duration-150"
                       disabled={!chatInput.trim() && !chatLoading}
+                      title={chatLoading ? t('aiStop', { defaultValue: '中断' }) : t('aiSend', { defaultValue: '发送' })}
+                      aria-label={chatLoading ? t('aiStop', { defaultValue: '中断' }) : t('aiSend', { defaultValue: '发送' })}
                     >
                       <span className="relative size-4">
-                        {/* Message icon - shown when not loading */}
                         <IconMessage2
                           className={`absolute inset-0 size-4 transition-all duration-300 ${
                             chatLoading ? 'opacity-0 scale-50' : 'opacity-100 scale-100'
                           }`}
                         />
-                        {/* Loading icons - stacked with crossfade */}
                         {loadingIcons.map((Icon, index) => (
                           <Icon
                             key={index}
