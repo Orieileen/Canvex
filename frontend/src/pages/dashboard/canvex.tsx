@@ -1830,6 +1830,17 @@ export default function CanvexPage() {
     const wrappedText = wrapChatText(content, width - 8, fontSize, target.fontFamily || 5)
     const lineCount = wrappedText.split('\n').length
     const textHeight = Math.max(24, Math.round(lineCount * fontSize * lineHeight + fontSize))
+    const currentText = typeof target.text === 'string' ? target.text : ''
+    const currentOriginalText = typeof target.originalText === 'string' ? target.originalText : ''
+    const currentHeight = Number(target.height) || 0
+    // Avoid mutating scene when placeholder text/size is unchanged.
+    if (
+      currentText === wrappedText
+      && currentOriginalText === wrappedText
+      && Math.abs(currentHeight - textHeight) < 0.5
+    ) {
+      return
+    }
     const updated = {
       ...target,
       text: wrappedText,
