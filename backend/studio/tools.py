@@ -775,7 +775,7 @@ def _is_unsupported_image_edit_model_error(exc: Exception) -> bool:
         return True
     if "model_not_found" in text:
         return True
-    if "value must be 'dall-e-2'" in text:
+    if "value must be" in text and "model" in text:
         return True
     return False
 
@@ -883,8 +883,11 @@ def _edit_image_media_via_responses(client: OpenAI, source_bytes: bytes, prompt:
 
 def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     client = openai_client_for_media()
-    fallback_model = (os.getenv("MEDIA_OPENAI_IMAGE_EDIT_FALLBACK_MODEL") or "dall-e-2").strip() or "dall-e-2"
-    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip() or fallback_model
+    configured_model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
+    fallback_model = (os.getenv("MEDIA_OPENAI_IMAGE_EDIT_FALLBACK_MODEL") or configured_model).strip()
+    model = configured_model or fallback_model
+    if not model:
+        raise RuntimeError("image edit model is not configured; set MEDIA_OPENAI_IMAGE_EDIT_MODEL")
     compat_model = model
     normalized_source = _normalize_image_for_edit(source_bytes)
     use_responses = model.startswith("gpt-image")
