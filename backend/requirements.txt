@@ -9,5 +9,6 @@ langchain-openai
 langgraph
 requests
 Pillow
+rembg[cpu]
 python-dotenv
 gunicorn

@@ -212,6 +212,46 @@ def _parse_hex_color(value: str | None) -> tuple[int, int, int] | None:
 
 
 def _remove_white_background(image_bytes: bytes) -> bytes:
+    # If provider already returned real transparency, keep as-is to avoid quality loss.
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            image = source.copy()
+        if "A" in image.getbands():
+            alpha_min, alpha_max = image.getchannel("A").getextrema()
+            if alpha_min < alpha_max:
+                return image_bytes
+    except Exception:
+        pass
+
+    try:
+        from rembg import remove
+
+        use_alpha_matting = str(os.getenv("EXCALIDRAW_CUTOUT_REMBG_ALPHA_MATTING", "1")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        kwargs: dict[str, object] = {}
+        if use_alpha_matting:
+            kwargs = {
+                "alpha_matting": True,
+                "alpha_matting_foreground_threshold": _read_int_env(
+                    "EXCALIDRAW_CUTOUT_REMBG_FOREGROUND_THRESHOLD",
+                    240,
+                ),
+                "alpha_matting_background_threshold": _read_int_env(
+                    "EXCALIDRAW_CUTOUT_REMBG_BACKGROUND_THRESHOLD",
+                    10,
+                ),
+                "alpha_matting_erode_size": _read_int_env("EXCALIDRAW_CUTOUT_REMBG_ERODE_SIZE", 6),
+            }
+        rembg_bytes = remove(image_bytes, **kwargs)
+        if rembg_bytes:
+            return rembg_bytes
+    except Exception as exc:
+        logger.warning("Cutout rembg failed, fallback to legacy white-background remover: %s", exc)
+
     threshold = int(os.getenv("EXCALIDRAW_CUTOUT_BG_THRESHOLD", "240"))
     tolerance = int(os.getenv("EXCALIDRAW_CUTOUT_BG_TOLERANCE", "15"))
     blur = int(os.getenv("EXCALIDRAW_CUTOUT_BG_BLUR", "1"))
@@ -414,10 +454,8 @@ def run_excalidraw_image_edit_job(self, job_id: str):
         image_bytes_list = image_bytes_list[:requested]
 
     if job.is_cutout:
-        logger.info(
-            "Cutout job %s skips _remove_white_background; expecting transparent output from model prompt.",
-            job.id,
-        )
+        logger.info("Cutout job %s applies _remove_white_background on white-background outputs.", job.id)
+        image_bytes_list = [_remove_white_background(image_bytes) for image_bytes in image_bytes_list]
 
     try:
         folder_id = _resolve_excalidraw_asset_folder_id(
