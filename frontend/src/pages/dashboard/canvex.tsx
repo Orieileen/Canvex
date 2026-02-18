@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
-import { CaptureUpdateAction, Excalidraw, MainMenu, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
+import { CaptureUpdateAction, Excalidraw, MainMenu, convertToExcalidrawElements, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX } from '@tabler/icons-react'
@@ -75,7 +75,18 @@ type ToolResult = {
     task_id?: string
     status?: string
     error?: string
+    mermaid?: string
+    format?: string
+    diagram_type?: string
+    direction?: string
+    [key: string]: any
   }
+}
+
+type MermaidInsertResult = {
+  ok: boolean
+  insertedCount?: number
+  error?: string
 }
 
 type ImagePlaceholder = {
@@ -2044,6 +2055,129 @@ export default function CanvexPage() {
     return text.id
   }, [captureSceneSnapshot, createTextElement, findNonOverlappingPinPosition, flashPinnedElement, getSceneElementsSafe, measurePinnedText, persistLastPinnedForScene, persistPinOriginForScene])
 
+  const insertMermaidFlowchartToCanvas = useCallback(async (
+    sceneId: string | null,
+    mermaidText: string,
+  ): Promise<MermaidInsertResult> => {
+    if (!sceneId || sceneId !== sceneIdRef.current) {
+      return { ok: false, error: 'scene_mismatch' }
+    }
+    const api = canvexApiRef.current
+    if (!api?.updateScene || !api?.getSceneElements || !api?.getAppState) {
+      return { ok: false, error: 'canvas_api_unavailable' }
+    }
+    const source = String(mermaidText || '').trim()
+    if (!source) {
+      return { ok: false, error: 'empty_mermaid' }
+    }
+
+    let parsed: any = null
+    try {
+      const { parseMermaidToExcalidraw } = await import('@excalidraw/mermaid-to-excalidraw')
+      parsed = await parseMermaidToExcalidraw(source, {
+        flowchart: { curve: 'linear' },
+      })
+    } catch (error) {
+      return { ok: false, error: (error as Error)?.message || 'parse_failed' }
+    }
+
+    const skeleton = Array.isArray(parsed?.elements) ? parsed.elements : []
+    if (!skeleton.length) {
+      return { ok: false, error: 'no_elements_generated' }
+    }
+
+    let importedElements: any[] = []
+    try {
+      importedElements = convertToExcalidrawElements(skeleton, { regenerateIds: true }) as any[]
+    } catch (error) {
+      return { ok: false, error: (error as Error)?.message || 'convert_failed' }
+    }
+    if (!importedElements.length) {
+      return { ok: false, error: 'no_elements_converted' }
+    }
+
+    const now = Date.now()
+    if (api?.addFiles && parsed?.files && typeof parsed.files === 'object') {
+      const fileList = Object.values(parsed.files)
+        .filter((item: any) => item && typeof item.id === 'string' && typeof item.dataURL === 'string')
+        .map((item: any) => ({
+          ...item,
+          created: Number(item.created) || now,
+          lastRetrieved: now,
+        }))
+      if (fileList.length) {
+        api.addFiles(fileList)
+      }
+    }
+
+    let minX = 0
+    let minY = 0
+    let maxX = 0
+    let maxY = 0
+    try {
+      ;[minX, minY, maxX, maxY] = getCommonBounds(importedElements)
+    } catch {
+      return { ok: false, error: 'bounds_failed' }
+    }
+    const width = Math.max(1, maxX - minX)
+    const height = Math.max(1, maxY - minY)
+
+    const existing = getSceneElementsSafe()
+    const appState = api.getAppState()
+    let origin = pinOriginRef.current
+    if (!origin) {
+      origin = {
+        x: -(appState.scrollX || 0) + 32,
+        y: -(appState.scrollY || 0) + 32,
+      }
+      pinOriginRef.current = origin
+      persistPinOriginForScene(sceneId, origin)
+    }
+    const placement = findNonOverlappingPinPosition(existing, origin.x, origin.y, width, height, 24)
+    const offsetX = placement.x - minX
+    const offsetY = placement.y - minY
+    const createdAt = new Date().toISOString()
+
+    const shiftedElements = importedElements.map((element: any) => ({
+      ...element,
+      x: (Number(element.x) || 0) + offsetX,
+      y: (Number(element.y) || 0) + offsetY,
+      index: null,
+      customData: {
+        ...(element.customData || {}),
+        aiChatType: 'mermaid-flowchart',
+        aiChatCreatedAt: createdAt,
+      },
+    }))
+
+    api.updateScene({
+      elements: [...(existing || []), ...shiftedElements],
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    })
+    captureSceneSnapshot()
+
+    if (typeof api.scrollToContent === 'function') {
+      try {
+        api.scrollToContent(shiftedElements, { fitToViewport: false })
+      } catch {}
+    }
+
+    const latestInserted = shiftedElements[shiftedElements.length - 1]
+    if (latestInserted?.id) {
+      lastPinnedIdRef.current = latestInserted.id
+      setLastPinnedId(latestInserted.id)
+      persistLastPinnedForScene(sceneId, latestInserted.id)
+      window.setTimeout(() => {
+        flashPinnedElement(latestInserted)
+      }, 120)
+    }
+
+    return {
+      ok: true,
+      insertedCount: shiftedElements.length,
+    }
+  }, [captureSceneSnapshot, findNonOverlappingPinPosition, flashPinnedElement, getSceneElementsSafe, persistLastPinnedForScene, persistPinOriginForScene])
+
   const updatePinnedNoteMeta = useCallback((noteId: string, content: string, meta?: Record<string, any>) => {
     const api = canvexApiRef.current
     if (!api?.updateScene || !api?.getSceneElements) return
@@ -3246,7 +3380,7 @@ export default function CanvexPage() {
         }
       }
 
-      let orphanPlaceholder = findOrphanVideoPlaceholder(sceneId, 10000)
+      const orphanPlaceholder = findOrphanVideoPlaceholder(sceneId, 10000)
       let orphanUsed = false
 
       for (const job of jobs) {
@@ -4260,6 +4394,54 @@ export default function CanvexPage() {
         return
       }
 
+      if (toolName === 'mermaid_flowchart') {
+        if (payload.result.error) {
+          const failedMessage: ChatMessage = {
+            id: `flowchart-error-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            role: 'assistant',
+            content: t('aiFlowchartGenerateFailed', {
+              defaultValue: '流程图生成失败：{{error}}',
+              error: String(payload.result.error),
+            }),
+            created_at: new Date().toISOString(),
+          }
+          appendChatMessageForScene(sceneId, failedMessage)
+          createPinnedNote(sceneId, failedMessage)
+          return
+        }
+
+        const mermaid = String(payload.result.mermaid || '').trim()
+        if (!mermaid) {
+          const invalidMessage: ChatMessage = {
+            id: `flowchart-empty-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            role: 'assistant',
+            content: t('aiFlowchartEmpty', {
+              defaultValue: '流程图已生成，但返回的 Mermaid 为空。',
+            }),
+            created_at: new Date().toISOString(),
+          }
+          appendChatMessageForScene(sceneId, invalidMessage)
+          createPinnedNote(sceneId, invalidMessage)
+          return
+        }
+
+        const inserted = await insertMermaidFlowchartToCanvas(sceneId, mermaid)
+        if (!inserted.ok) {
+          const failedMessage: ChatMessage = {
+            id: `flowchart-insert-failed-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            role: 'assistant',
+            content: t('aiFlowchartInsertFailed', {
+              defaultValue: '流程图已生成，但插入画布失败：{{error}}',
+              error: inserted.error || 'unknown',
+            }),
+            created_at: new Date().toISOString(),
+          }
+          appendChatMessageForScene(sceneId, failedMessage)
+          createPinnedNote(sceneId, failedMessage)
+        }
+        return
+      }
+
       if (payload.result.url) {
         const fallbackMessage: ChatMessage = {
           id: `tool-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -4441,7 +4623,7 @@ export default function CanvexPage() {
       setSceneChatStatus(sceneId, finalChatStatus)
       markPendingPlaceholdersFailed(sceneId, finalPlaceholderLabel)
     }
-  }, [activeSceneId, appendChatMessageForScene, buildChatContentWithSelection, chatInput, chatLoading, createImagePlaceholder, createPinnedImage, createPinnedNote, createPinnedVideo, enqueueImagePlaceholder, flushSave, isImageSpecPayload, markPendingPlaceholdersFailed, queueUrgentSave, removeElementsById, setSceneChatLoading, setSceneChatStatus, takeNextImagePlaceholder, toErrorLabel, toVideoFailureLabel, updatePlaceholderText, updatePinnedNoteText])
+  }, [activeSceneId, appendChatMessageForScene, buildChatContentWithSelection, chatInput, chatLoading, createImagePlaceholder, createPinnedImage, createPinnedNote, createPinnedVideo, enqueueImagePlaceholder, flushSave, insertMermaidFlowchartToCanvas, isImageSpecPayload, markPendingPlaceholdersFailed, queueUrgentSave, removeElementsById, setSceneChatLoading, setSceneChatStatus, t, takeNextImagePlaceholder, toErrorLabel, toVideoFailureLabel, updatePlaceholderText, updatePinnedNoteText])
 
   return (
     <div className="flex flex-1 flex-col min-h-0">

@@ -469,10 +469,12 @@ def _post_videos_generations_compat(
         json_payload["input_reference"] = str(input_reference_url).strip()
 
     json_headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    json_exc: Exception | None = None
     try:
         json_response = requests.post(endpoint, headers=json_headers, json=json_payload, timeout=timeout_seconds)
         return _parse_response(json_response)
-    except Exception as json_exc:
+    except Exception as exc:
+        json_exc = exc
         if not input_reference_bytes:
             raise RuntimeError(f"compat /videos/generations request failed: {json_exc}") from json_exc
 
@@ -490,9 +492,10 @@ def _post_videos_generations_compat(
         )
         return _parse_response(multipart_response)
     except Exception as multipart_exc:
+        json_message = str(json_exc) if json_exc is not None else "not attempted"
         raise RuntimeError(
             "compat /videos/generations request failed: "
-            f"json attempt error={json_exc}; multipart attempt error={multipart_exc}"
+            f"json attempt error={json_message}; multipart attempt error={multipart_exc}"
         ) from multipart_exc
 
 
@@ -1015,14 +1018,27 @@ def _normalize_video_reference_image(image_bytes: bytes, size: str) -> bytes:
     except Exception:
         return image_bytes
 
-    if image.mode not in {"RGB", "RGBA"}:
-        image = image.convert("RGB")
-    if image.size != target:
-        image = image.resize(target, Image.LANCZOS)
+    target_w, target_h = target
+    src_w, src_h = image.size
+    if src_w <= 0 or src_h <= 0:
+        return image_bytes
+
+    # Preserve product geometry: fit inside target and letterbox instead of stretching.
+    image_rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+    scale = min(target_w / float(src_w), target_h / float(src_h))
+    resized_w = max(1, int(round(src_w * scale)))
+    resized_h = max(1, int(round(src_h * scale)))
+    if (resized_w, resized_h) != image_rgba.size:
+        image_rgba = image_rgba.resize((resized_w, resized_h), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+    paste_x = (target_w - resized_w) // 2
+    paste_y = (target_h - resized_h) // 2
+    canvas.paste(image_rgba, (paste_x, paste_y), image_rgba)
 
     output = io.BytesIO()
     try:
-        image.save(output, format="PNG")
+        canvas.save(output, format="PNG")
         return output.getvalue()
     except Exception:
         return image_bytes
@@ -1082,17 +1098,20 @@ def _generate_video_official(
         image_bytes = _normalize_video_reference_image(image_bytes, size)
         kwargs["input_reference"] = ("input_reference.png", image_bytes, "image/png")
 
-    try:
-        created = client.videos.create(**kwargs)
-    except Exception as exc:
-        supported = _extract_supported_video_seconds_from_error(exc)
-        if not supported:
-            raise
-        adjusted_seconds = _normalize_video_seconds(kwargs.get("seconds"), allowed_override=supported)
-        if str(adjusted_seconds) == str(kwargs.get("seconds")):
-            raise
-        kwargs["seconds"] = adjusted_seconds
-        created = client.videos.create(**kwargs)
+    def _create_with_seconds_retry(request_kwargs: dict[str, Any]):
+        try:
+            return client.videos.create(**request_kwargs)
+        except Exception as exc:
+            supported = _extract_supported_video_seconds_from_error(exc)
+            if not supported:
+                raise
+            adjusted_seconds = _normalize_video_seconds(request_kwargs.get("seconds"), allowed_override=supported)
+            if str(adjusted_seconds) == str(request_kwargs.get("seconds")):
+                raise
+            request_kwargs["seconds"] = adjusted_seconds
+            return client.videos.create(**request_kwargs)
+
+    created = _create_with_seconds_retry(kwargs)
     video_id = getattr(created, "id", None)
     if not video_id:
         raw_created = created.to_dict() if hasattr(created, "to_dict") else {}

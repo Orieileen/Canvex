@@ -13,7 +13,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from .models import ExcalidrawVideoJob
 from .memory import (
     MEMORY_STABILITY_MIN_COUNT,
     MEMORY_STABILITY_WINDOW,
@@ -27,6 +26,7 @@ from .memory import (
     set_memory_state,
     set_summary_state,
 )
+from .models import ExcalidrawVideoJob
 from .tasks import run_excalidraw_video_job
 from .tools import imagetool
 
@@ -167,7 +167,13 @@ _DURATION_RE = re.compile(r"(\d{1,3})\s*(s|sec|secs|seconds|秒)")
 _URL_RE = re.compile(r"https?://\S+")
 _IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
 _ASPECT_RATIO_VALUE_RE = re.compile(r"^\d{1,2}:\d{1,2}$")
-_MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video"}
+_MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video", "generate_flowchart"}
+_FLOWCHART_MERMAID_BLOCK_RE = re.compile(r"```(?:\w+)?\s*([\s\S]*?)```", re.IGNORECASE)
+_FLOWCHART_EDGE_RE = re.compile(r"(-->|---|==>|-.->)")
+_FLOWCHART_NODE_DEF_RE = re.compile(r"(?m)\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^}]*\})")
+_FLOWCHART_MAX_CHARS = 16000
+_FLOWCHART_MAX_NODES = 120
+_FLOWCHART_MAX_EDGES = 240
 
 
 def _extract_urls(text: str) -> List[str]:
@@ -270,6 +276,154 @@ def _normalize_aspect_ratio(value: Any, default: str = "16:9") -> str:
     return default
 
 
+def _extract_mermaid_block(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _FLOWCHART_MERMAID_BLOCK_RE.search(text)
+    if match:
+        return (match.group(1) or "").strip()
+    return text
+
+
+def _normalize_flowchart_mermaid(value: str) -> str:
+    text = _extract_mermaid_block(value)
+    if not text:
+        return ""
+    lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return ""
+
+    head = lines[0].strip()
+    lower_head = head.lower()
+    if lower_head.startswith("graph"):
+        lines[0] = "flowchart TD"
+    elif lower_head.startswith("flowchart"):
+        lines[0] = "flowchart TD"
+    else:
+        lines.insert(0, "flowchart TD")
+    return "\n".join(lines)
+
+
+def _count_flowchart_nodes(mermaid_text: str) -> int:
+    node_ids = {match.group(1) for match in _FLOWCHART_NODE_DEF_RE.finditer(mermaid_text or "")}
+    return len(node_ids)
+
+
+def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
+    text = (mermaid_text or "").strip()
+    if not text:
+        return "empty mermaid"
+    if len(text) > _FLOWCHART_MAX_CHARS:
+        return f"diagram too large ({len(text)} chars)"
+    if "```" in text:
+        return "contains markdown code fence"
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "empty mermaid"
+    if lines[0].lower() != "flowchart td":
+        return "first line must be flowchart TD"
+    if re.search(r"(?mi)^\s*(classDef|click|style|linkStyle)\b", text):
+        return "contains unsupported directives"
+
+    edge_count = len(_FLOWCHART_EDGE_RE.findall(text))
+    if edge_count > _FLOWCHART_MAX_EDGES:
+        return f"too many edges ({edge_count})"
+
+    node_count = _count_flowchart_nodes(text)
+    if node_count > _FLOWCHART_MAX_NODES:
+        return f"too many nodes ({node_count})"
+    return None
+
+
+def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None = None) -> str:
+    existing = (current_mermaid or "").strip()
+    existing_text = existing if existing else "(none)"
+    schema = {
+        "mermaid": "string (pure mermaid only, no markdown fences)",
+    }
+    return (
+        "Generate Mermaid diagram JSON only.\n"
+        "Schema:\n"
+        f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+        "Requirements:\n"
+        "- Output Mermaid flowchart only.\n"
+        "- First line must be exactly: flowchart TD\n"
+        "- Keep node identifiers concise and stable, such as A1, A2, B1.\n"
+        "- Keep labels concise and practical.\n"
+        "- Avoid classDef/click/style/linkStyle directives.\n"
+        "- Do not wrap Mermaid in markdown code fences.\n\n"
+        f"Existing Mermaid (if any):\n{existing_text}\n\n"
+        f"User request:\n{prompt}\n\n"
+        "JSON:"
+    )
+
+
+def _build_flowchart_repair_prompt(candidate: str, validation_error: str, user_prompt: str) -> str:
+    schema = {
+        "mermaid": "string (valid flowchart TD mermaid)",
+    }
+    return (
+        "Repair Mermaid and return JSON only.\n"
+        "Schema:\n"
+        f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+        "Constraints:\n"
+        "- First line must be exactly: flowchart TD\n"
+        "- Keep semantic meaning of user request.\n"
+        "- Avoid classDef/click/style/linkStyle directives.\n"
+        "- No markdown code fences.\n\n"
+        f"Validation error:\n{validation_error}\n\n"
+        f"User request:\n{user_prompt}\n\n"
+        f"Candidate Mermaid:\n{candidate}\n\n"
+        "JSON:"
+    )
+
+
+def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[str, Any]:
+    prompt = str(args.get("prompt") or state.get("last_user") or "").strip()
+    if not prompt:
+        return {"error": "prompt is required"}
+
+    current_mermaid = _normalize_flowchart_mermaid(str(args.get("current_mermaid") or ""))
+    llm = _build_chat_model(streaming=False)
+    generation_raw = _invoke_json(
+        llm,
+        "You are a Mermaid flowchart author. Output strict JSON only.",
+        _build_flowchart_generation_prompt(prompt, current_mermaid),
+    )
+    candidate = _normalize_flowchart_mermaid(str((generation_raw or {}).get("mermaid") or ""))
+    validation_error = _validate_flowchart_td_mermaid(candidate)
+
+    if validation_error:
+        repair_raw = _invoke_json(
+            llm,
+            "You repair Mermaid flowchart TD. Output strict JSON only.",
+            _build_flowchart_repair_prompt(candidate, validation_error, prompt),
+        )
+        repaired = _normalize_flowchart_mermaid(str((repair_raw or {}).get("mermaid") or ""))
+        repaired_error = _validate_flowchart_td_mermaid(repaired)
+        if not repaired_error:
+            candidate = repaired
+            validation_error = None
+        else:
+            validation_error = repaired_error
+
+    if validation_error:
+        return {"error": f"failed to generate Mermaid flowchart TD: {validation_error}"}
+
+    return {
+        "format": "mermaid",
+        "diagram_type": "flowchart",
+        "direction": "TD",
+        "mermaid": candidate,
+    }
+
+
 def _bounded_int(value: Any, default: int, minimum: int = 1, maximum: int = 180) -> int:
     try:
         number = int(value)
@@ -283,7 +437,7 @@ def _bounded_int(value: Any, default: int, minimum: int = 1, maximum: int = 180)
 
 def _build_media_action_prompt(state: ChatState) -> str:
     schema = {
-        "action": "chat | clarify | generate_image | generate_video",
+        "action": "chat | clarify | generate_image | generate_video | generate_flowchart",
         "assistant": "string",
         "image": {"prompt": "string", "size": "1024x1024"},
         "video": {
@@ -292,6 +446,10 @@ def _build_media_action_prompt(state: ChatState) -> str:
             "aspect_ratio": "16:9",
             "image_urls": ["https://example.com/a.png"],
         },
+        "flowchart": {
+            "prompt": "string",
+            "current_mermaid": "string (optional)",
+        },
     }
     summary_text = render_summary_state(state.get("summary_state") or {}) or "(none)"
     memory_text = render_memory_guidelines(state.get("memory_state") or {}) or "(none)"
@@ -299,6 +457,7 @@ def _build_media_action_prompt(state: ChatState) -> str:
     return (
         "Decide backend action for the latest user message. Return JSON only.\n"
         "Action rules:\n"
+        "- Use generate_flowchart when the user asks for diagram/flowchart generation or Mermaid flowchart.\n"
         "- Use generate_image / generate_video only when the user is explicitly asking to create image/video.\n"
         "- Use clarify only when media generation is requested but blocked by missing critical information.\n"
         "- Do NOT ask clarification for optional preferences if reasonable defaults are enough.\n"
@@ -307,10 +466,11 @@ def _build_media_action_prompt(state: ChatState) -> str:
         "- For generate_image, fill image.prompt and optional image.size (default 1024x1024).\n"
         "- For generate_video, fill video.prompt and optional video.duration/video.aspect_ratio/video.image_urls "
         "(defaults: duration=10, aspect_ratio=16:9).\n"
+        "- For generate_flowchart, fill flowchart.prompt and optional flowchart.current_mermaid.\n"
         "Assistant text rules:\n"
         "- assistant must be concise and in the user's language.\n"
         "- If action is clarify, assistant should be a short question.\n"
-        "- If action is generate_image/generate_video, assistant should be a short acknowledgement sentence, not a question.\n"
+        "- If action is generate_image/generate_video/generate_flowchart, assistant should be a short acknowledgement sentence, not a question.\n"
         "- Never claim generation is already finished.\n\n"
         f"Schema:\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
         f"Summary context:\n{summary_text}\n\n"
@@ -382,6 +542,18 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any] | None:
         }
         if not assistant:
             decision["assistant"] = "好的，视频任务已提交。"
+        return decision
+
+    if action == "generate_flowchart":
+        flowchart_payload = decision_raw.get("flowchart") if isinstance(decision_raw.get("flowchart"), dict) else {}
+        prompt = str(flowchart_payload.get("prompt") or last_user).strip() or last_user
+        current_mermaid = _normalize_flowchart_mermaid(str(flowchart_payload.get("current_mermaid") or ""))
+        flowchart_args: Dict[str, Any] = {"prompt": prompt}
+        if current_mermaid:
+            flowchart_args["current_mermaid"] = current_mermaid
+        decision["flowchart_args"] = flowchart_args
+        if not assistant:
+            decision["assistant"] = "好的，正在生成 Mermaid 流程图。"
         return decision
 
     # chat
@@ -551,6 +723,30 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
     media_action = _decide_media_action(state)
     if media_action and media_action.get("action") == "clarify":
         assistant_text = str(media_action.get("assistant") or "").strip()
+        yield {
+            "assistant": {
+                "role": "assistant",
+                "content": assistant_text,
+            }
+        }
+        return
+
+    if media_action and media_action.get("action") == "generate_flowchart":
+        args = media_action.get("flowchart_args") if isinstance(media_action.get("flowchart_args"), dict) else {}
+        flowchart_result = _generate_flowchart_result(args, state)
+        yield {
+            "tool_results": [
+                {
+                    "tool": "mermaid_flowchart",
+                    "result": flowchart_result,
+                }
+            ]
+        }
+        assistant_text = str(media_action.get("assistant") or "").strip()
+        if flowchart_result.get("error"):
+            assistant_text = "流程图生成失败，请重试。"
+        elif not assistant_text:
+            assistant_text = "好的，已生成 Mermaid flowchart TD，可插入到画布。"
         yield {
             "assistant": {
                 "role": "assistant",

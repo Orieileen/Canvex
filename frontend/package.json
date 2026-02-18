@@ -17,6 +17,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@excalidraw/excalidraw": "^0.18.0",
+    "@excalidraw/mermaid-to-excalidraw": "^2.0.0",
     "@gsap/react": "^2.1.2",
     "@number-flow/react": "^0.5.10",
     "@radix-ui/react-alert-dialog": "^1.1.15",

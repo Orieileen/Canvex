@@ -212,24 +212,27 @@ def _analyze_video_shooting_script(image_url: str, prompt: str, duration_seconds
     }.get(duration_source, "用户参数指定")
 
     system_prompt = (
-        "你是 Canvex 的资深产品视频导演与分镜师。"
+        "你是资深产品视频导演与分镜师。"
         "任务：基于给定单张产品图，生成可直接用于视频生成模型的拍摄脚本。"
         "目标：画面高级、稳定、可执行，突出产品材质、结构与卖点。"
         "硬性约束："
         "1) 严格保留原图主体，不改变品牌识别、外形比例、关键颜色与纹理；"
-        "2) 禁止添加文字、Logo、水印、字幕、UI、新物体或无关场景元素；"
-        "3) 禁止夸张跳切和不连贯运动，镜头运动要平滑、真实可实现。"
+        "2) 若原图已有清晰背景，严格保持产品背景图语义一致，允许轻微景深与透视变化；"
+        "若原图背景缺失、纯色或抠图状态，可补充与产品用途一致的写实背景，但不得喧宾夺主或引入无关主体；"
+        "3) 光影必须与原图一致并做自然适配：保持主光方向、色温与强弱关系，阴影接触关系真实，不得出现漂浮、穿帮或不合理反射；"
+        "4) 禁止添加文字、Logo、水印、字幕、UI、新物体或无关场景元素；"
+        "5) 禁止夸张跳切和不连贯运动，镜头运动要平滑、真实可实现。"
         "时间轴规则："
         "1) 必须覆盖从 0 秒到总时长结束的完整区间，不能有缺口或重叠；"
         "2) 必须按时间段写分镜，每段使用“起始秒~结束秒”；"
         "3) 示例：若总时长为 8 秒，可写 0~3 秒、4~6 秒、7~8 秒；"
-        "4) 每个时间段都要写清镜头语言：景别、机位/运动、灯光/质感重点、主体表现与卖点。"
+        "4) 每个时间段都要写清镜头语言：景别、机位/运动、主体表现与卖点、背景处理、光影适配要点。"
         "输出要求："
         "1) 仅输出脚本正文，不要标题、解释、前后缀、Markdown；"
         "2) 以 3-6 个时间段镜头输出，每个镜头单独一行；"
-        "3) 每行固定格式：[镜头N][起始~结束秒][景别][机位/运动][主体表现][光线/质感重点]；"
+        "3) 每行固定格式：[镜头N][起始~结束秒][景别][机位/运动][主体表现][背景处理(保留/新增写实背景)][光影适配]；"
         "4) 若用户给出时长、节奏、风格、构图、运动方向等要求，必须优先遵循；"
-        "5) 在最后追加一行“全局限制：...”总结不加新元素与不加文字等限制。"
+        "5) 在最后追加一行“全局限制：...”总结不加新元素、不加文字、背景处理策略、光影真实适配等限制。"
     )
     user_text = (
         "请分析这张图片并生成拍摄脚本。"
@@ -328,6 +331,7 @@ class ExcalidrawSceneChatView(APIView):
         has_video_url = False
         has_video_task = False
         has_image_url = False
+        has_flowchart = False
         for item in tool_results:
             if not isinstance(item, dict):
                 continue
@@ -340,12 +344,16 @@ class ExcalidrawSceneChatView(APIView):
                     has_video_task = True
             if tool_name == "imagetool" and result.get("url"):
                 has_image_url = True
+            if tool_name == "mermaid_flowchart" and result.get("mermaid"):
+                has_flowchart = True
         if has_video_url:
             return "视频已生成。"
         if has_video_task:
             return "视频任务已提交。"
         if has_image_url:
             return "图片已生成。"
+        if has_flowchart:
+            return "流程图已生成。"
         return None
 
     def get(self, request, scene_id):
@@ -641,10 +649,6 @@ class ExcalidrawSceneImageEditJobListView(APIView):
 
 class ExcalidrawVideoGenerateView(APIView):
     permission_classes = [permissions.AllowAny]
-    DEFAULT_PROMPT = (
-        "Create a smooth, high-quality showcase video based on the prompt. "
-        "Keep colors and details accurate, use gentle camera motion, and avoid adding new elements or text."
-    )
 
     def get_scene(self, scene_id):
         return get_object_or_404(ExcalidrawScene, id=scene_id)
@@ -653,9 +657,6 @@ class ExcalidrawVideoGenerateView(APIView):
         scene = self.get_scene(scene_id)
         prompt = (request.data or {}).get("prompt", "")
         prompt = prompt.strip() if isinstance(prompt, str) else ""
-        if not prompt:
-            prompt = self.DEFAULT_PROMPT
-        duration, duration_source = _resolve_video_duration_seconds(request.data or {}, prompt)
 
         image_urls = (request.data or {}).get("image_urls") or []
         if isinstance(image_urls, str):
@@ -664,9 +665,27 @@ class ExcalidrawVideoGenerateView(APIView):
             image_urls = []
         image_urls = [item for item in image_urls if isinstance(item, str) and item.strip()]
 
-        script = _analyze_video_shooting_script(image_urls[0], prompt, duration, duration_source) if image_urls else ""
-        if script:
-            prompt = f"{prompt}\n\n拍摄脚本：\n{script}\n\n请严格参考拍摄脚本生成视频，不要添加文字或新的元素。"
+        duration, duration_source = _resolve_video_duration_seconds(request.data or {}, prompt)
+
+        # Prompt priority:
+        # 1) user prompt -> use directly
+        # 2) empty prompt -> derive script via system_prompt (requires at least one image url)
+        if not prompt:
+            if not image_urls:
+                return _error_response(
+                    "prompt is required when image_urls is empty",
+                    "video_prompt_required",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            script = _analyze_video_shooting_script(image_urls[0], "", duration, duration_source)
+            script = script.strip() if isinstance(script, str) else ""
+            if not script:
+                return _error_response(
+                    "failed to generate video script from image",
+                    "video_script_generation_failed",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            prompt = script
 
         aspect_ratio = (request.data or {}).get("aspect_ratio") or "16:9"
         if not isinstance(aspect_ratio, str) or not aspect_ratio.strip():
