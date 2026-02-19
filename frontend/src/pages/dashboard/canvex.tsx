@@ -202,6 +202,49 @@ const getLatestElements = (elements: any[]) => {
   }
 }
 
+const normalizeFlowchartLabelText = (value: string) => {
+  let text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return 'Node'
+  text = text
+    .replace(/`/g, '')
+    .replace(/\{+/g, '(')
+    .replace(/\}+/g, ')')
+    .replace(/\[\[/g, '(')
+    .replace(/\]\]/g, ')')
+    .replace(/->/g, '→')
+    .replace(/<-/g, '←')
+    .replace(/\|/g, '¦')
+    .replace(/"/g, '\\"')
+  return text
+}
+
+const normalizeMermaidForCanvasParser = (value: string) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const output: string[] = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (!line.trim()) {
+      output.push(line)
+      continue
+    }
+    if (i === 0) {
+      output.push(line)
+      continue
+    }
+    let next = line
+    next = next.replace(/([A-Za-z][A-Za-z0-9_]*)\[(.*?)\]/g, (_match, id: string, label: string) => {
+      return `${id}["${normalizeFlowchartLabelText(label)}"]`
+    })
+    next = next.replace(/([A-Za-z][A-Za-z0-9_]*)\{([^{}]*?)\}/g, (_match, id: string, label: string) => {
+      return `${id}["${normalizeFlowchartLabelText(label)}"]`
+    })
+    output.push(next)
+  }
+  return output.join('\n')
+}
+
 export default function CanvexPage() {
   const { t, i18n } = useTranslation('canvex')
   const [scenes, setScenes] = useState<SceneRecord[]>([])
@@ -2072,11 +2115,22 @@ export default function CanvexPage() {
     }
 
     let parsed: any = null
+    let sourceForInsert = source
+    const parseOptions = {
+      flowchart: { curve: 'linear' as const },
+    }
     try {
       const { parseMermaidToExcalidraw } = await import('@excalidraw/mermaid-to-excalidraw')
-      parsed = await parseMermaidToExcalidraw(source, {
-        flowchart: { curve: 'linear' },
-      })
+      try {
+        parsed = await parseMermaidToExcalidraw(source, parseOptions)
+      } catch (error) {
+        const fallbackSource = normalizeMermaidForCanvasParser(source)
+        if (!fallbackSource || fallbackSource === source) {
+          return { ok: false, error: (error as Error)?.message || 'parse_failed' }
+        }
+        sourceForInsert = fallbackSource
+        parsed = await parseMermaidToExcalidraw(fallbackSource, parseOptions)
+      }
     } catch (error) {
       return { ok: false, error: (error as Error)?.message || 'parse_failed' }
     }
@@ -2147,6 +2201,7 @@ export default function CanvexPage() {
         ...(element.customData || {}),
         aiChatType: 'mermaid-flowchart',
         aiChatCreatedAt: createdAt,
+        aiMermaidSource: sourceForInsert,
       },
     }))
 
