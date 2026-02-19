@@ -1,194 +1,110 @@
-# Canvex
+<div align="center">
+  <h1>Canvex</h1>
+  <p>Canvex是从MeiRed(https://meired.com)独立出来的场景创作功能</p>
+  <p>
+    <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
+    <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
+    <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
+  </p>
+</div>
 
-[![前端](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB)](https://react.dev/)
-[![后端](https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20)](https://www.djangoproject.com/)
-[![队列](https://img.shields.io/badge/Queue-Redis-DC382D)](https://redis.io/)
-[![运行方式](https://img.shields.io/badge/Runtime-Docker%20Compose-2496ED)](https://docs.docker.com/compose/)
+主 README: [README.md](./README.md)
 
-Canvex 是一个独立的 **Excalidraw + AI** 工作区，支持场景管理、流式聊天、图片编辑和视频生成。
+## 基本功能
 
-Language: [English](./README.md)
+- 画布场景管理：创建、保存、读取场景数据。
+- 流程图：支持在画布中快速搭建流程图与结构关系。
+- 自由绘画：使用画笔工具进行手绘创作。
+- 导入导出功能：支持画布内容导入与导出。
+- AI Agent：在场景中通过自然语言驱动编辑流程。
+- 图片生成与编辑：支持文生图、图生图、抠图等图片处理能力。
+- 视频生成：基于提示词或参考图生成视频并支持任务轮询。
+- 文本编辑: 在任意位置添加文本
+- 媒体任务管理：统一查询图片/视频任务状态与结果地址。
 
-## 目录
-
-- [项目简介](#项目简介)
-- [核心能力](#核心能力)
-- [架构图](#架构图)
-- [快速启动（Docker）](#快速启动docker)
-- [本地开发](#本地开发)
-- [环境变量](#环境变量)
-- [API 概览](#api-概览)
-- [SSE 事件格式](#sse-事件格式)
-- [最小自测](#最小自测)
-- [目录结构](#目录结构)
-- [常见问题](#常见问题)
-- [GitHub 发布前检查](#github-发布前检查)
-
-## 项目简介
-
-Canvex 是一个基于 Excalidraw 的 AI 工作区，聚焦画布创作、图片编辑、视频生成和素材管理，开箱即用且无需账号登录。
-
-## 核心能力
-
-- Excalidraw 场景 CRUD（新建、重命名、复制、删除）
-- AI 聊天（SSE 流式 + 非流式回退）
-- 工具回调（生图/生视频）并自动 pin 到画布
-- 图片编辑（含抠图）与异步视频轮询
-- Data Library 文件夹与素材管理
-- Excalidraw 资源本地托管（字体/语言包）
-
-## 架构图
+## AI Agent Graph 架构
 
 ```mermaid
-flowchart LR
-  U["浏览器 (React + Vite)"] -->|"REST + SSE"| B["Django + DRF"]
-  B -->|"任务入队"| C["Celery Worker"]
-  C -->|"任务状态"| R["Redis"]
-  C -->|"媒体生成"| P["媒体服务 API"]
-  B -->|"文件存储"| M["本地媒体目录 (backend/media)"]
+flowchart TD
+  A["chat msg"] --> B["load_memory"]
+  B --> C["call_llm"]
+  C --> D{"action router"}
+  D -->|chat| E["stream assistant"]
+  D -->|generate_image| F["imagetool"]
+  D -->|generate_video| G["videotool job queue"]
+  D -->|generate_flowchart| H["mermaid flowchart"]
+  D -->|clarify| I["clarify question"]
+  F --> E
+  G --> E
+  H --> E
+  I --> E
+  E --> J["update_memory"]
+  J --> K["rolling summary"]
+  K --> L["summary_history"]
+  L --> M{"stable entries"}
+  M -->|yes| N["memory_state"]
+  M -->|no| O["skip memory update"]
+  N --> P["redis persist"]
+  O --> P
 ```
 
-## 快速启动（Docker）
+- 主干节点固定为：`load_memory -> call_llm -> update_memory`。
+- `call_llm` 内先做 action 路由，再决定是普通对话还是触发图片/视频/流程图工具。
+- `rolling summary` 每轮更新 `summary_state`，并写入 `summary_history`（滑动窗口）。
+- 只有当条目在窗口内达到稳定阈值时，才会提升为长期 `memory_state`，避免把一次性聊天噪声写入记忆。
 
-前置要求：
-- Docker
-- Docker Compose
+## 1 分钟启动
+### docker 部署
+前置要求：`Docker`、`Docker Compose`
+
+- Docker Desktop 下载：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
+- Docker Compose 安装说明：[https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
+### 使用前必配环境变量
 
-默认地址：
-- 前端: [http://localhost:5173](http://localhost:5173)
-- 后端 API: [http://localhost:28000](http://localhost:28000)
+在`.env`中，通常只要先配下面这些：
 
-常用命令：
+| 变量 | 备注 | 示例 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | llm agent使用的API Key。 | `sk-xxxx` |
+| `OPENAI_BASE_URL` | llm agent接口地址（OpenAI 或兼容网关）。 | `https://api.openai.com/v1` |
+| `EXCALIDRAW_CHAT_MODEL` | llm agent使用的模型名。 | `gpt-4o-mini` |
+| `MEDIA_OPENAI_API_KEY` | 图片/视频任务使用的 API Key。可与 `OPENAI_API_KEY` 相同。 | `sk-xxxx` |
+| `MEDIA_OPENAI_BASE_URL` | 图片/视频任务接口地址（媒体网关）。 | `https://api.openai.com/v1` |
+| `MEDIA_OPENAI_IMAGE_EDIT_MODEL` | 图片编辑/抠图流程使用的模型名。 | `gpt-image-1.5` |
+| `MEDIA_OPENAI_VIDEO_MODEL` | 视频生成使用的模型名。 | `sora-2` |
 
-```bash
-# 查看日志
-docker compose logs -f backend worker frontend
+说明：
 
-# 停止服务
-docker compose down
-```
+- 你使用第三方兼容网关时，`*_BASE_URL` 和模型名要按该网关支持列表填写。
+- 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_OPENAI_*` 使用同一套配置。
 
-## 本地开发
+启动后访问：
 
-前端：
+- 前端：[http://localhost:5173](http://localhost:5173)
+- 后端 API：[http://localhost:28000](http://localhost:28000)
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
 
-后端：
+## 常用 API
 
-```bash
-cd backend
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver 0.0.0.0:8000
-```
+- 场景：`/api/v1/excalidraw/scenes/`
+- 聊天：`/api/v1/excalidraw/scenes/{id}/chat/`
+- 图片编辑：`/api/v1/excalidraw/scenes/{id}/image-edit/`
+- 视频生成：`/api/v1/excalidraw/scenes/{id}/video/`
+- 任务查询：`/api/v1/excalidraw/image-edit-jobs/{job_id}/`、`/api/v1/excalidraw/video-jobs/{job_id}/`
 
-Worker：
-
-```bash
-cd backend
-celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --prefetch-multiplier=1
-```
-
-## 环境变量
-
-完整说明见 `.env.example`。
-
-| 分类 | 关键变量 |
-| --- | --- |
-| 聊天模型 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EXCALIDRAW_CHAT_MODEL` |
-| 媒体生成 | `MEDIA_OPENAI_BASE_URL`, `MEDIA_OPENAI_API_KEY`, `MEDIA_OPENAI_IMAGE_MODEL`, `MEDIA_OPENAI_IMAGE_EDIT_MODEL`, `MEDIA_OPENAI_VIDEO_MODEL` |
-| 视频轮询 | `MEDIA_OPENAI_VIDEO_TIMEOUT_SECONDS`, `MEDIA_OPENAI_VIDEO_POLL_MAX_ATTEMPTS`, `MEDIA_OPENAI_VIDEO_POLL_INTERVAL` |
-| 视频兼容回退 | `MEDIA_OPENAI_VIDEO_ENABLE_COMPAT_FALLBACK` |
-| 前端配置 | `VITE_API_URL`, `VITE_CANVEX_ASSET_PATH`, `VITE_VIDEO_POLL_MAX_ATTEMPTS`, `VITE_VIDEO_POLL_INTERVAL_MS` |
-| 容器内媒体回源 | `INTERNAL_MEDIA_BASE`（默认 `http://backend:8000`） |
-
-`MEDIA_OPENAI_BASE_URL` 为可选项。留空时媒体请求会先回落到 `OPENAI_BASE_URL`，再回落到 OpenAI 默认地址。
-如果服务商不支持 `POST /v1/videos`，可设 `MEDIA_OPENAI_VIDEO_ENABLE_COMPAT_FALLBACK=true`，自动回退到 `POST /v1/videos/generations`。
-
-## API 概览
-
-| 模块 | 接口 |
-| --- | --- |
-| 场景 | `GET/POST /api/v1/excalidraw/scenes/`，`GET/PATCH/DELETE /api/v1/excalidraw/scenes/{id}/` |
-| 聊天 | `GET/POST /api/v1/excalidraw/scenes/{id}/chat/`（`?stream=1` 为 SSE） |
-| 图片编辑 | `POST /api/v1/excalidraw/scenes/{id}/image-edit/` |
-| 视频生成 | `POST /api/v1/excalidraw/scenes/{id}/video/` |
-| 素材库 | `GET/POST /api/v1/library/folders/`、`GET/PATCH/DELETE /api/v1/library/folders/{id}/`、`GET/POST /api/v1/library/assets/`、`GET/PATCH/DELETE /api/v1/library/assets/{id}/` |
-| 任务轮询 | `GET /api/v1/excalidraw/image-edit-jobs/{job_id}/`、`GET /api/v1/excalidraw/scenes/{id}/image-edit-jobs/`、`GET /api/v1/excalidraw/video-jobs/{job_id}/`、`GET /api/v1/excalidraw/scenes/{id}/video-jobs/` |
-
-## SSE 事件格式
-
-`/api/v1/excalidraw/scenes/{id}/chat/?stream=1` 返回 `text/event-stream`。
-
-常见 `data:` 载荷：
-
-- `{"intent":"image"|"video"}`
-- `{"delta":"..."}`
-- `{"tool-result":{...},"tool":"...","result":{...}}`
-- `{"message":{...},"done":true}`
-- `{"error":"..."}`
-
-## 最小自测
-
-```bash
-./scripts/smoke-test.sh
-# 或
-./scripts/smoke-test.sh http://localhost:28000
-```
-
-建议手动检查：
-
-1. 场景 CRUD
-2. 流式聊天
-3. 生图 + pin
-4. 图片编辑/抠图
-5. 视频状态流转（排队/运行/成功/失败）
-6. Data Library 上传与列表
-
-## 目录结构
-
-```text
-.
-├─ docker-compose.yml
-├─ .env.example
-├─ scripts/
-│  └─ smoke-test.sh
-├─ backend/
-│  ├─ config/
-│  ├─ studio/
-│  ├─ media/
-│  └─ requirements.txt
-└─ frontend/
-   ├─ src/
-   ├─ public/canvex-assets/
-   └─ scripts/sync-canvex-assets.mjs
-```
 
 ## 常见问题
 
-- `process is not defined`
-  - 确认前端 `window.process` shim 与 Vite `define.process.env` 配置已生效。
-- CORS 预检失败
-  - 确认后端允许 `ngrok-skip-browser-warning` 等请求头。
-- 媒体生成 4xx/5xx
-  - 优先查看 `backend` / `worker` 日志，并检查 provider 密钥与 base URL。
+- 媒体任务失败：查看日志
 
-## GitHub 发布前检查
+```bash
+docker compose logs -f backend worker frontend
+```
 
-发布到 GitHub 前建议完成：
-
-1. 确认 `.env` 不会被提交，仅保留 `.env.example`。
-2. 若密钥曾暴露，先全部轮换。
-3. 核对 CORS/域名等公开部署安全配置。
-4. 如需开源，补充 `LICENSE` 文件。
-5. 可选：在 `docs/` 下补充截图或动图。
+- 图片/视频结果与预期不一致：优先检查模型配置与接口url与 `MEDIA_OPENAI_*` 变量。
+- 前端请求报跨域：检查后端 CORS 配置。
