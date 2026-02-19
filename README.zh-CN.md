@@ -54,7 +54,14 @@ flowchart TD
 - 只有当条目在窗口内达到稳定阈值时，才会提升为长期 `memory_state`，避免把一次性聊天噪声写入记忆。
 
 ## 1 分钟启动
-### docker 部署
+### 1) 克隆仓库
+
+```bash
+git clone https://github.com/Orieileen/Canvex.git
+cd Canvex
+```
+
+### 2) 使用 Docker 部署
 前置要求：`Docker`、`Docker Compose`
 
 - Docker Desktop 下载：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)

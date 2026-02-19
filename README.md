@@ -54,7 +54,14 @@ flowchart TD
 - Entries are promoted to long-term `memory_state` only after reaching the stability threshold within the window, which avoids one-off chat noise.
 
 ## 1-Minute Setup
-### Docker Deployment
+### 1) Clone the Repository
+
+```bash
+git clone https://github.com/Orieileen/Canvex.git
+cd Canvex
+```
+
+### 2) Docker Deployment
 Prerequisites: `Docker`, `Docker Compose`
 
 - Docker Desktop: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
