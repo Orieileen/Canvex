@@ -3,10 +3,9 @@ from __future__ import annotations
 import io
 import logging
 import os
-from collections import deque
 
 from celery import shared_task
-from PIL import Image, ImageFilter
+from PIL import Image
 
 from .models import ExcalidrawImageEditJob, ExcalidrawImageEditResult, ExcalidrawVideoJob
 from .tools import _edit_image_media, _generate_image_media, _generate_video_media, _resolve_excalidraw_asset_folder_id, _save_asset
@@ -193,24 +192,6 @@ def _schedule_video_retry(job: ExcalidrawVideoJob, attempt: int, reason: str, ta
     )
     return True
 
-
-def _parse_hex_color(value: str | None) -> tuple[int, int, int] | None:
-    if not value:
-        return None
-    raw = value.strip()
-    if raw.startswith("#"):
-        raw = raw[1:]
-    if len(raw) != 6:
-        return None
-    try:
-        r = int(raw[0:2], 16)
-        g = int(raw[2:4], 16)
-        b = int(raw[4:6], 16)
-        return (r, g, b)
-    except Exception:
-        return None
-
-
 def _remove_white_background(image_bytes: bytes) -> bytes:
     # If provider already returned real transparency, keep as-is to avoid quality loss.
     try:
@@ -250,129 +231,11 @@ def _remove_white_background(image_bytes: bytes) -> bytes:
         if rembg_bytes:
             return rembg_bytes
     except Exception as exc:
-        logger.warning("Cutout rembg failed, fallback to legacy white-background remover: %s", exc)
+        logger.warning("Cutout rembg failed; returning original image without legacy fallback: %s", exc)
+        return image_bytes
 
-    threshold = int(os.getenv("EXCALIDRAW_CUTOUT_BG_THRESHOLD", "240"))
-    tolerance = int(os.getenv("EXCALIDRAW_CUTOUT_BG_TOLERANCE", "15"))
-    blur = int(os.getenv("EXCALIDRAW_CUTOUT_BG_BLUR", "1"))
-    alpha_erode = int(os.getenv("EXCALIDRAW_CUTOUT_ALPHA_ERODE", "2"))
-    despill = str(os.getenv("EXCALIDRAW_CUTOUT_DESPILL", "1")).lower() in ("1", "true", "yes", "on")
-    despill_threshold = int(os.getenv("EXCALIDRAW_CUTOUT_DESPILL_THRESHOLD", "60"))
-    despill_strength = float(os.getenv("EXCALIDRAW_CUTOUT_DESPILL_STRENGTH", "0.8"))
-    remove_inner = str(os.getenv("EXCALIDRAW_CUTOUT_REMOVE_INNER_WHITE", "1")).lower() in ("1", "true", "yes", "on")
-    inner_max_area = int(os.getenv("EXCALIDRAW_CUTOUT_INNER_MAX_AREA", "0"))
-    target_color = _parse_hex_color(os.getenv("EXCALIDRAW_CUTOUT_BG_COLOR", "#FFFFFF"))
-    color_tolerance = int(os.getenv("EXCALIDRAW_CUTOUT_BG_COLOR_TOLERANCE", "5"))
-
-    def is_background(px: tuple[int, int, int, int]) -> bool:
-        r, g, b, a = px
-        if a == 0:
-            return False
-        if target_color:
-            tr, tg, tb = target_color
-            return max(abs(r - tr), abs(g - tg), abs(b - tb)) <= color_tolerance
-        max_v = max(r, g, b)
-        min_v = min(r, g, b)
-        return max_v >= threshold and (max_v - min_v) <= tolerance
-
-    with Image.open(io.BytesIO(image_bytes)) as im:
-        im = im.convert("RGBA")
-        width, height = im.size
-        px = im.load()
-        background = [[False] * width for _ in range(height)]
-        near_white = [[False] * width for _ in range(height)]
-        for y in range(height):
-            for x in range(width):
-                near_white[y][x] = is_background(px[x, y])
-
-        q = deque()
-        for x in range(width):
-            if near_white[0][x]:
-                background[0][x] = True
-                q.append((x, 0))
-            if near_white[height - 1][x]:
-                background[height - 1][x] = True
-                q.append((x, height - 1))
-        for y in range(height):
-            if near_white[y][0]:
-                background[y][0] = True
-                q.append((0, y))
-            if near_white[y][width - 1]:
-                background[y][width - 1] = True
-                q.append((width - 1, y))
-
-        while q:
-            x, y = q.popleft()
-            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if 0 <= nx < width and 0 <= ny < height and not background[ny][nx] and near_white[ny][nx]:
-                    background[ny][nx] = True
-                    q.append((nx, ny))
-
-        for y in range(height):
-            for x in range(width):
-                if background[y][x]:
-                    r, g, b, _ = px[x, y]
-                    px[x, y] = (r, g, b, 0)
-
-        if remove_inner:
-            visited = [[False] * width for _ in range(height)]
-            for y in range(height):
-                for x in range(width):
-                    if not near_white[y][x] or background[y][x] or visited[y][x]:
-                        continue
-                    component = []
-                    q = deque()
-                    q.append((x, y))
-                    visited[y][x] = True
-                    while q:
-                        cx, cy = q.popleft()
-                        component.append((cx, cy))
-                        for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
-                            if 0 <= nx < width and 0 <= ny < height and not visited[ny][nx]:
-                                if near_white[ny][nx] and not background[ny][nx]:
-                                    visited[ny][nx] = True
-                                    q.append((nx, ny))
-                    if inner_max_area == 0 or len(component) <= inner_max_area:
-                        for cx, cy in component:
-                            r, g, b, _ = px[cx, cy]
-                            px[cx, cy] = (r, g, b, 0)
-
-        if alpha_erode > 0:
-            r, g, b, a = im.split()
-            size = max(1, alpha_erode) * 2 + 1
-            a = a.filter(ImageFilter.MinFilter(size))
-            im = Image.merge("RGBA", (r, g, b, a))
-
-        if despill:
-            tr, tg, tb = target_color if target_color else (255, 255, 255)
-            mean_t = (tr + tg + tb) / 3
-            for y in range(height):
-                for x in range(width):
-                    r, g, b, a = px[x, y]
-                    if a == 0:
-                        continue
-                    dist = max(abs(r - tr), abs(g - tg), abs(b - tb))
-                    if dist > despill_threshold:
-                        continue
-                    factor = (despill_threshold - dist) / max(1, despill_threshold)
-                    factor *= max(0.0, min(1.0, despill_strength))
-                    avg = (r + g + b) / 3
-                    if tr > mean_t:
-                        r = int(r + factor * (avg - r))
-                    if tg > mean_t:
-                        g = int(g + factor * (avg - g))
-                    if tb > mean_t:
-                        b = int(b + factor * (avg - b))
-                    px[x, y] = (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)), a)
-
-        if blur > 0:
-            r, g, b, a = im.split()
-            a = a.filter(ImageFilter.GaussianBlur(radius=blur))
-            im = Image.merge("RGBA", (r, g, b, a))
-
-        out = io.BytesIO()
-        im.save(out, format="PNG")
-        return out.getvalue()
+    logger.warning("Cutout rembg returned empty result; returning original image without legacy fallback.")
+    return image_bytes
 
 
 @shared_task(bind=True, name="studio.image_edit_job")
