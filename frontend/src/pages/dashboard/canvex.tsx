@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
-import { CaptureUpdateAction, Excalidraw, MainMenu, convertToExcalidrawElements, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
+import { CaptureUpdateAction, DefaultSidebar, Excalidraw, MainMenu, Sidebar, convertToExcalidrawElements, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh } from '@tabler/icons-react'
 import { request } from '@/utils/request'
 import { Button } from '@/components/ui/button'
 
@@ -133,6 +133,24 @@ type VideoOverlayItem = {
   thumbnailUrl?: string | null
 }
 
+type MediaLibraryImageItem = {
+  id: string
+  url: string
+  filename: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  createdAt: string | null
+}
+
+type MediaLibraryVideoItem = {
+  id: string
+  url: string
+  thumbnailUrl: string | null
+  taskId: string | null
+  createdAt: string | null
+}
+
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 const WORKSPACE_KEY = import.meta.env.VITE_WORKSPACE_KEY || 'public'
 const MAX_VIDEO_POSTER_DIM = 512
@@ -160,6 +178,12 @@ const IMAGE_EDIT_SIZE_MAP: Record<string, string> = {
 }
 
 const resolveImageEditSize = (value: string) => IMAGE_EDIT_SIZE_MAP[value] || value
+
+const toListPayload = <T = any,>(payload: any): T[] => {
+  if (Array.isArray(payload)) return payload as T[]
+  if (payload && Array.isArray(payload.results)) return payload.results as T[]
+  return []
+}
 
 const isPregeneratedKeyword = (raw: unknown) => {
   const value = String(raw || '').trim().toLowerCase()
@@ -280,6 +304,11 @@ export default function CanvexPage() {
   const [videoEditPendingCountByKey, setVideoEditPendingCountByKey] = useState<Record<string, number>>({})
   const [videoEditStatusByKey, setVideoEditStatusByKey] = useState<Record<string, string | null>>({})
   const [videoEditErrorByKey, setVideoEditErrorByKey] = useState<Record<string, string | null>>({})
+  const [mediaLibraryImages, setMediaLibraryImages] = useState<MediaLibraryImageItem[]>([])
+  const [mediaLibraryVideos, setMediaLibraryVideos] = useState<MediaLibraryVideoItem[]>([])
+  const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false)
+  const [mediaLibraryError, setMediaLibraryError] = useState<string | null>(null)
+  const [mediaSidebarOpen, setMediaSidebarOpen] = useState(false)
   const untitledRef = useRef('Untitled')
 
   const canvexApiRef = useRef<any>(null)
@@ -324,6 +353,7 @@ export default function CanvexPage() {
   const imagePollInFlightRef = useRef<Set<string>>(new Set())
   const chatAbortControllersRef = useRef<Record<string, AbortController>>({})
   const chatInterruptedScenesRef = useRef<Set<string>>(new Set())
+  const mediaLibraryRequestTokenRef = useRef(0)
 
   const setSceneChatLoading = useCallback((sceneId: string | null, value: boolean) => {
     if (!sceneId) return
@@ -4191,6 +4221,108 @@ export default function CanvexPage() {
     createPinnedVideoRef.current = createPinnedVideo
   }, [createPinnedVideo])
 
+  const loadMediaLibrary = useCallback(async (sceneId: string | null) => {
+    const requestToken = Date.now()
+    mediaLibraryRequestTokenRef.current = requestToken
+    setMediaLibraryLoading(true)
+    setMediaLibraryError(null)
+    try {
+      const [imageRes, videoRes] = await Promise.all([
+        request.get('/api/v1/library/assets/'),
+        sceneId
+          ? request.get(`/api/v1/excalidraw/scenes/${sceneId}/video-jobs/?limit=50`)
+          : Promise.resolve({ data: [] }),
+      ])
+
+      const nextImages = toListPayload<any>(imageRes.data)
+        .filter((item: any) => typeof item?.url === 'string' && item.url)
+        .map((item: any) => ({
+          id: String(item.id || ''),
+          url: String(item.url || ''),
+          filename: String(item.filename || item.id || 'image'),
+          mimeType: String(item.mime_type || 'image/png'),
+          width: Number.isFinite(Number(item.width)) ? Number(item.width) : null,
+          height: Number.isFinite(Number(item.height)) ? Number(item.height) : null,
+          createdAt: item.created_at ? String(item.created_at) : null,
+        }))
+
+      const nextVideos = toListPayload<any>(videoRes.data)
+        .filter((item: any) => {
+          const status = String(item?.status || '').toUpperCase()
+          return status === 'SUCCEEDED' && typeof item?.result_url === 'string' && item.result_url
+        })
+        .map((item: any) => ({
+          id: String(item.id || item.task_id || item.result_url),
+          url: String(item.result_url || ''),
+          thumbnailUrl: item.thumbnail_url ? String(item.thumbnail_url) : null,
+          taskId: item.task_id ? String(item.task_id) : null,
+          createdAt: item.created_at ? String(item.created_at) : null,
+        }))
+
+      if (mediaLibraryRequestTokenRef.current !== requestToken) return
+      setMediaLibraryImages(nextImages)
+      setMediaLibraryVideos(nextVideos)
+    } catch (error) {
+      if (mediaLibraryRequestTokenRef.current !== requestToken) return
+      console.error('Load media library failed', error)
+      setMediaLibraryError(t('mediaLibraryLoadFailed', { defaultValue: '素材库加载失败，请稍后重试。' }))
+    } finally {
+      if (mediaLibraryRequestTokenRef.current === requestToken) {
+        setMediaLibraryLoading(false)
+      }
+    }
+  }, [t])
+
+  useEffect(() => {
+    if (!mediaSidebarOpen) return
+    void loadMediaLibrary(activeSceneId)
+  }, [activeSceneId, loadMediaLibrary, mediaSidebarOpen])
+
+  const refreshMediaLibrary = useCallback(() => {
+    void loadMediaLibrary(activeSceneId)
+  }, [activeSceneId, loadMediaLibrary])
+
+  const insertImageFromMediaLibrary = useCallback(async (item: MediaLibraryImageItem) => {
+    const createPinnedImage = createPinnedImageRef.current
+    if (!createPinnedImage) return
+    const created = await createPinnedImage(
+      activeSceneId,
+      {
+        tool: 'media-library',
+        result: {
+          url: item.url,
+          width: item.width,
+          height: item.height,
+          asset_id: item.id,
+          mime_type: item.mimeType,
+        },
+      },
+      null,
+      {
+        aiLibraryType: 'image',
+        aiLibraryAssetId: item.id,
+      },
+    )
+    if (!created) {
+      setMediaLibraryError(t('mediaLibraryInsertFailed', { defaultValue: '素材插入失败，请重试。' }))
+    }
+  }, [activeSceneId, t])
+
+  const insertVideoFromMediaLibrary = useCallback(async (item: MediaLibraryVideoItem) => {
+    const createPinnedVideo = createPinnedVideoRef.current
+    if (!createPinnedVideo || !activeSceneId) return
+    const created = await createPinnedVideo(
+      activeSceneId,
+      item.url,
+      item.thumbnailUrl,
+      null,
+      item.id,
+    )
+    if (!created) {
+      setMediaLibraryError(t('mediaLibraryInsertFailed', { defaultValue: '素材插入失败，请重试。' }))
+    }
+  }, [activeSceneId, t])
+
   const isImageSpecPayload = useCallback((text: string) => {
     const trimmed = text.trim()
     if (!trimmed.startsWith('{')) return false
@@ -4715,6 +4847,157 @@ export default function CanvexPage() {
         .canvex-host .layer-ui__wrapper__footer-left .finalize-button {
           order: 2;
         }
+        .canvex-host .canvex-media-sidebar {
+          width: min(420px, calc(100vw - 24px));
+        }
+        .canvex-host .canvex-media-sidebar__header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          min-width: 0;
+        }
+        .canvex-host .canvex-media-sidebar__title {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          min-width: 0;
+          font-size: 0.875rem;
+          font-weight: 600;
+        }
+        .canvex-host .canvex-media-sidebar__refresh {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 1.9rem;
+          height: 1.9rem;
+          border-radius: 0.5rem;
+          border: 1px solid var(--default-border-color);
+          background: var(--island-bg-color);
+          cursor: pointer;
+        }
+        .canvex-host .canvex-media-sidebar__refresh:hover {
+          background: var(--button-hover-bg);
+        }
+        .canvex-host .canvex-media-sidebar__refresh:disabled {
+          cursor: not-allowed;
+          opacity: 0.6;
+        }
+        .canvex-host .canvex-media-sidebar__panel {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+          padding: 0.625rem;
+          max-height: calc(100vh - 230px);
+          overflow: auto;
+        }
+        .canvex-host .canvex-media-sidebar__error {
+          color: #dc2626;
+          font-size: 0.75rem;
+          line-height: 1.25;
+          padding: 0 0.125rem;
+        }
+        .canvex-host .canvex-media-section {
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+        }
+        .canvex-host .canvex-media-section + .canvex-media-section {
+          margin-top: 0.15rem;
+          padding-top: 0.55rem;
+          border-top: 1px solid var(--default-border-color);
+        }
+        .canvex-host .canvex-media-section__label {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          font-size: 0.72rem;
+          font-weight: 600;
+          color: var(--color-gray-70);
+          letter-spacing: 0.01em;
+        }
+        .canvex-host .canvex-media-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.5rem;
+        }
+        .canvex-host .canvex-media-item {
+          display: flex;
+          flex-direction: column;
+          border: 1px solid var(--default-border-color);
+          border-radius: 0.6rem;
+          background: var(--island-bg-color);
+          overflow: hidden;
+          cursor: pointer;
+          text-align: left;
+          padding: 0;
+        }
+        .canvex-host .canvex-media-item:hover {
+          border-color: var(--color-primary);
+        }
+        .canvex-host .canvex-media-item__preview {
+          position: relative;
+          width: 100%;
+          aspect-ratio: 4 / 3;
+          background: #f8fafc;
+        }
+        .canvex-host .canvex-media-item__thumb {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+        .canvex-host .canvex-media-item__thumb-placeholder {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          height: 100%;
+          color: #64748b;
+          background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+        }
+        .canvex-host .canvex-media-item__badge {
+          position: absolute;
+          top: 0.35rem;
+          right: 0.35rem;
+          border-radius: 999px;
+          background: rgba(15, 23, 42, 0.72);
+          color: #fff;
+          padding: 0.1rem 0.4rem;
+          font-size: 0.625rem;
+          line-height: 1.2;
+        }
+        .canvex-host .canvex-media-item__meta {
+          padding: 0.4rem 0.5rem 0.45rem;
+          font-size: 0.7rem;
+          line-height: 1.35;
+          color: var(--color-gray-70);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .canvex-host .canvex-media-sidebar__empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 7.5rem;
+          text-align: center;
+          color: var(--color-gray-60);
+          font-size: 0.75rem;
+          padding: 0.6rem;
+        }
+        .canvex-host .canvex-media-sidebar__loading {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--color-gray-60);
+          padding: 1rem 0;
+        }
+        @media (max-width: 640px) {
+          .canvex-host .canvex-media-grid {
+            grid-template-columns: repeat(1, minmax(0, 1fr));
+          }
+        }
       `}</style>
       {/* <div className="px-4 pt-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -4794,6 +5077,133 @@ export default function CanvexPage() {
                   updateSelectedEditSelection()
                 }}
               >
+                <DefaultSidebar
+                  className="canvex-media-sidebar"
+                  onStateChange={(state) => {
+                    setMediaSidebarOpen(Boolean(
+                      state
+                      && state.name === 'default'
+                      && state.tab === 'canvex-media',
+                    ))
+                  }}
+                >
+                  <DefaultSidebar.TabTriggers>
+                    <Sidebar.TabTrigger
+                      tab="canvex-media"
+                      title={t('mediaLibraryTitle', { defaultValue: '素材库' })}
+                      aria-label={t('mediaLibraryTitle', { defaultValue: '素材库' })}
+                    >
+                      <IconPhoto size={13} />
+                    </Sidebar.TabTrigger>
+                  </DefaultSidebar.TabTriggers>
+                  <Sidebar.Tab tab="canvex-media">
+                    <div className="canvex-media-sidebar__panel">
+                      <div className="canvex-media-sidebar__header">
+                        <div className="canvex-media-sidebar__title">
+                          <IconPhoto size={14} />
+                          <span>{t('mediaLibraryTitle', { defaultValue: '素材库' })}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="canvex-media-sidebar__refresh"
+                          title={t('common:refresh', { defaultValue: '刷新' })}
+                          onClick={() => refreshMediaLibrary()}
+                          disabled={mediaLibraryLoading}
+                        >
+                          {mediaLibraryLoading ? (
+                            <IconLoader className="size-4 animate-spin" />
+                          ) : (
+                            <IconRefresh className="size-4" />
+                          )}
+                        </button>
+                      </div>
+                      {mediaLibraryError && (
+                        <div className="canvex-media-sidebar__error">{mediaLibraryError}</div>
+                      )}
+                      <div className="canvex-media-section">
+                        <div className="canvex-media-section__label">
+                          <IconPhoto size={12} />
+                          <span>{t('mediaLibraryImageTab', { defaultValue: '图片' })}</span>
+                        </div>
+                        {mediaLibraryLoading && !mediaLibraryImages.length ? (
+                          <div className="canvex-media-sidebar__loading">
+                            <IconLoader className="size-4 animate-spin" />
+                          </div>
+                        ) : mediaLibraryImages.length > 0 ? (
+                          <div className="canvex-media-grid">
+                            {mediaLibraryImages.map((item) => (
+                              <button
+                                key={`${item.id}-${item.url}`}
+                                type="button"
+                                className="canvex-media-item"
+                                onClick={() => {
+                                  void insertImageFromMediaLibrary(item)
+                                }}
+                              >
+                                <div className="canvex-media-item__preview">
+                                  <img
+                                    src={item.url}
+                                    alt={item.filename || t('mediaLibraryImageAlt', { defaultValue: '素材图片' })}
+                                    className="canvex-media-item__thumb"
+                                  />
+                                </div>
+                                <div className="canvex-media-item__meta">{item.filename || item.id}</div>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="canvex-media-sidebar__empty">
+                            {t('mediaLibraryImageEmpty', { defaultValue: '暂无图片素材，先生成或上传图片。' })}
+                          </div>
+                        )}
+                      </div>
+                      <div className="canvex-media-section">
+                        <div className="canvex-media-section__label">
+                          <IconVideo size={12} />
+                          <span>{t('mediaLibraryVideoTab', { defaultValue: '视频' })}</span>
+                        </div>
+                        {mediaLibraryLoading && !mediaLibraryVideos.length ? (
+                          <div className="canvex-media-sidebar__loading">
+                            <IconLoader className="size-4 animate-spin" />
+                          </div>
+                        ) : mediaLibraryVideos.length > 0 ? (
+                          <div className="canvex-media-grid">
+                            {mediaLibraryVideos.map((item) => (
+                              <button
+                                key={`${item.id}-${item.url}`}
+                                type="button"
+                                className="canvex-media-item"
+                                onClick={() => {
+                                  void insertVideoFromMediaLibrary(item)
+                                }}
+                              >
+                                <div className="canvex-media-item__preview">
+                                  {item.thumbnailUrl ? (
+                                    <img
+                                      src={item.thumbnailUrl}
+                                      alt={t('mediaLibraryVideoAlt', { defaultValue: '视频封面' })}
+                                      className="canvex-media-item__thumb"
+                                    />
+                                  ) : (
+                                    <div className="canvex-media-item__thumb-placeholder">
+                                      <IconVideo size={18} />
+                                    </div>
+                                  )}
+                                  <span className="canvex-media-item__badge">VIDEO</span>
+                                </div>
+                                <div className="canvex-media-item__meta">{item.taskId || item.id}</div>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="canvex-media-sidebar__empty">
+                            {t('mediaLibraryVideoEmpty', { defaultValue: '暂无视频素材，先生成视频。' })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </Sidebar.Tab>
+                </DefaultSidebar>
                 <MainMenu>
                   <MainMenu.DefaultItems.LoadScene />
                   <MainMenu.DefaultItems.SaveToActiveFile />
