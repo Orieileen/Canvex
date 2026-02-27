@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { CaptureUpdateAction, DefaultSidebar, Excalidraw, MainMenu, Sidebar, convertToExcalidrawElements, exportToBlob, MIME_TYPES, getCommonBounds, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight } from '@tabler/icons-react'
 import { request } from '@/utils/request'
 import { Button } from '@/components/ui/button'
 
@@ -141,6 +141,7 @@ type MediaLibraryImageItem = {
   width: number | null
   height: number | null
   createdAt: string | null
+  projectName: string
 }
 
 type MediaLibraryVideoItem = {
@@ -149,6 +150,20 @@ type MediaLibraryVideoItem = {
   thumbnailUrl: string | null
   taskId: string | null
   createdAt: string | null
+  projectName: string
+}
+
+type MediaProjectFolder = {
+  key: string
+  projectName: string
+  images: MediaLibraryImageItem[]
+  videos: MediaLibraryVideoItem[]
+}
+
+type DataFolderRecord = {
+  id: string
+  name: string
+  parent: string | null
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
@@ -183,6 +198,34 @@ const toListPayload = <T = any,>(payload: any): T[] => {
   if (Array.isArray(payload)) return payload as T[]
   if (payload && Array.isArray(payload.results)) return payload.results as T[]
   return []
+}
+
+const normalizeProjectName = (value: unknown, fallback = 'Untitled') => {
+  const text = String(value || '').trim()
+  return text || fallback
+}
+
+const resolveProjectNameFromFolder = (
+  folderId: string | null,
+  folderMap: Map<string, DataFolderRecord>,
+) => {
+  if (!folderId) return 'Untitled'
+  let current = folderMap.get(folderId) || null
+  if (!current) return 'Untitled'
+
+  const chain: DataFolderRecord[] = []
+  while (current) {
+    chain.unshift(current)
+    if (!current.parent) break
+    current = folderMap.get(current.parent) || null
+  }
+
+  const drawmindIndex = chain.findIndex((item) => item.name.toLowerCase() === 'drawmind')
+  if (drawmindIndex >= 0 && chain[drawmindIndex + 1]?.name) {
+    return normalizeProjectName(chain[drawmindIndex + 1].name, 'Untitled')
+  }
+  const nearestName = chain[chain.length - 1]?.name || ''
+  return normalizeProjectName(nearestName, 'Untitled')
 }
 
 const isPregeneratedKeyword = (raw: unknown) => {
@@ -309,6 +352,8 @@ export default function CanvexPage() {
   const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false)
   const [mediaLibraryError, setMediaLibraryError] = useState<string | null>(null)
   const [mediaSidebarOpen, setMediaSidebarOpen] = useState(false)
+  const [mediaFolderOpenByKey, setMediaFolderOpenByKey] = useState<Record<string, boolean>>({})
+  const [mediaTypeOpenByKey, setMediaTypeOpenByKey] = useState<Record<string, boolean>>({})
   const untitledRef = useRef('Untitled')
 
   const canvexApiRef = useRef<any>(null)
@@ -4221,18 +4266,55 @@ export default function CanvexPage() {
     createPinnedVideoRef.current = createPinnedVideo
   }, [createPinnedVideo])
 
+  const activeProjectName = useMemo(() => {
+    const activeScene = scenes.find((item) => item.id === activeSceneId)
+    return normalizeProjectName(activeScene?.title, 'Untitled')
+  }, [activeSceneId, scenes])
+
   const loadMediaLibrary = useCallback(async (sceneId: string | null) => {
     const requestToken = Date.now()
     mediaLibraryRequestTokenRef.current = requestToken
     setMediaLibraryLoading(true)
     setMediaLibraryError(null)
     try {
-      const [imageRes, videoRes] = await Promise.all([
+      const sceneEntries = Array.from(new Map(
+        (scenes || [])
+          .filter((item) => item?.id)
+          .map((item) => [
+            String(item.id),
+            normalizeProjectName(item.title, 'Untitled'),
+          ]),
+      ).entries()).map(([id, title]) => ({ id, title }))
+
+      if (sceneId && !sceneEntries.some((item) => item.id === sceneId)) {
+        sceneEntries.unshift({
+          id: sceneId,
+          title: normalizeProjectName(
+            scenes.find((item) => item.id === sceneId)?.title,
+            'Untitled',
+          ),
+        })
+      }
+
+      const [imageRes, folderRes, videoSettled] = await Promise.all([
         request.get('/api/v1/library/assets/'),
-        sceneId
-          ? request.get(`/api/v1/excalidraw/scenes/${sceneId}/video-jobs/?limit=50`)
-          : Promise.resolve({ data: [] }),
+        request.get('/api/v1/library/folders/'),
+        Promise.allSettled(
+          sceneEntries.map((scene) => request.get(`/api/v1/excalidraw/scenes/${scene.id}/video-jobs/?limit=50`)),
+        ),
       ])
+
+      const folders = toListPayload<any>(folderRes.data).map((item: any) => ({
+        id: String(item.id || ''),
+        name: String(item.name || ''),
+        parent: item.parent ? String(item.parent) : null,
+      }))
+      const folderMap = new Map<string, DataFolderRecord>()
+      for (const folder of folders) {
+        if (folder.id) {
+          folderMap.set(folder.id, folder)
+        }
+      }
 
       const nextImages = toListPayload<any>(imageRes.data)
         .filter((item: any) => typeof item?.url === 'string' && item.url)
@@ -4244,20 +4326,34 @@ export default function CanvexPage() {
           width: Number.isFinite(Number(item.width)) ? Number(item.width) : null,
           height: Number.isFinite(Number(item.height)) ? Number(item.height) : null,
           createdAt: item.created_at ? String(item.created_at) : null,
+          projectName: resolveProjectNameFromFolder(
+            item?.folder ? String(item.folder) : null,
+            folderMap,
+          ),
         }))
 
-      const nextVideos = toListPayload<any>(videoRes.data)
-        .filter((item: any) => {
+      const nextVideos: MediaLibraryVideoItem[] = []
+      for (let index = 0; index < videoSettled.length; index += 1) {
+        const settled = videoSettled[index]
+        if (settled.status !== 'fulfilled') continue
+        const scene = sceneEntries[index]
+        const projectName = normalizeProjectName(scene?.title, 'Untitled')
+        const jobs = toListPayload<any>(settled.value?.data)
+        for (const item of jobs) {
           const status = String(item?.status || '').toUpperCase()
-          return status === 'SUCCEEDED' && typeof item?.result_url === 'string' && item.result_url
-        })
-        .map((item: any) => ({
-          id: String(item.id || item.task_id || item.result_url),
-          url: String(item.result_url || ''),
-          thumbnailUrl: item.thumbnail_url ? String(item.thumbnail_url) : null,
-          taskId: item.task_id ? String(item.task_id) : null,
-          createdAt: item.created_at ? String(item.created_at) : null,
-        }))
+          if (status !== 'SUCCEEDED') continue
+          const resultUrl = String(item?.result_url || '')
+          if (!resultUrl) continue
+          nextVideos.push({
+            id: String(item.id || item.task_id || item.result_url),
+            url: resultUrl,
+            thumbnailUrl: item.thumbnail_url ? String(item.thumbnail_url) : null,
+            taskId: item.task_id ? String(item.task_id) : null,
+            createdAt: item.created_at ? String(item.created_at) : null,
+            projectName,
+          })
+        }
+      }
 
       if (mediaLibraryRequestTokenRef.current !== requestToken) return
       setMediaLibraryImages(nextImages)
@@ -4271,7 +4367,7 @@ export default function CanvexPage() {
         setMediaLibraryLoading(false)
       }
     }
-  }, [t])
+  }, [scenes, t])
 
   useEffect(() => {
     if (!mediaSidebarOpen) return
@@ -4281,6 +4377,118 @@ export default function CanvexPage() {
   const refreshMediaLibrary = useCallback(() => {
     void loadMediaLibrary(activeSceneId)
   }, [activeSceneId, loadMediaLibrary])
+
+  const mediaProjectFolders = useMemo<MediaProjectFolder[]>(() => {
+    const grouped = new Map<string, MediaProjectFolder>()
+    const ensureGroup = (projectNameRaw: unknown) => {
+      const projectName = normalizeProjectName(projectNameRaw, 'Untitled')
+      const key = projectName
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          key,
+          projectName,
+          images: [],
+          videos: [],
+        })
+      }
+      return grouped.get(key)!
+    }
+
+    for (const item of mediaLibraryImages) {
+      ensureGroup(item.projectName).images.push(item)
+    }
+    for (const item of mediaLibraryVideos) {
+      ensureGroup(item.projectName).videos.push(item)
+    }
+
+    return Array.from(grouped.values()).sort((a, b) => {
+      if (a.projectName === activeProjectName && b.projectName !== activeProjectName) return -1
+      if (b.projectName === activeProjectName && a.projectName !== activeProjectName) return 1
+      return a.projectName.localeCompare(b.projectName)
+    })
+  }, [activeProjectName, mediaLibraryImages, mediaLibraryVideos])
+
+  useEffect(() => {
+    setMediaFolderOpenByKey((prev) => {
+      const next: Record<string, boolean> = {}
+      let changed = false
+      for (const folder of mediaProjectFolders) {
+        if (Object.prototype.hasOwnProperty.call(prev, folder.key)) {
+          next[folder.key] = Boolean(prev[folder.key])
+        } else {
+          next[folder.key] = folder.projectName === activeProjectName
+          changed = true
+        }
+      }
+
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      if (!changed && prevKeys.length !== nextKeys.length) changed = true
+      if (!changed) {
+        for (const key of nextKeys) {
+          if (Boolean(prev[key]) !== Boolean(next[key])) {
+            changed = true
+            break
+          }
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [activeProjectName, mediaProjectFolders])
+
+  useEffect(() => {
+    setMediaTypeOpenByKey((prev) => {
+      const next: Record<string, boolean> = {}
+      let changed = false
+      for (const folder of mediaProjectFolders) {
+        if (folder.images.length > 0) {
+          const key = `${folder.key}:image`
+          if (Object.prototype.hasOwnProperty.call(prev, key)) {
+            next[key] = Boolean(prev[key])
+          } else {
+            next[key] = true
+            changed = true
+          }
+        }
+        if (folder.videos.length > 0) {
+          const key = `${folder.key}:video`
+          if (Object.prototype.hasOwnProperty.call(prev, key)) {
+            next[key] = Boolean(prev[key])
+          } else {
+            next[key] = true
+            changed = true
+          }
+        }
+      }
+
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      if (!changed && prevKeys.length !== nextKeys.length) changed = true
+      if (!changed) {
+        for (const key of nextKeys) {
+          if (Boolean(prev[key]) !== Boolean(next[key])) {
+            changed = true
+            break
+          }
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [mediaProjectFolders])
+
+  const toggleMediaProjectFolder = useCallback((key: string) => {
+    setMediaFolderOpenByKey((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }))
+  }, [])
+
+  const toggleMediaTypeSection = useCallback((key: string) => {
+    setMediaTypeOpenByKey((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }))
+  }, [])
 
   const insertImageFromMediaLibrary = useCallback(async (item: MediaLibraryImageItem) => {
     const createPinnedImage = createPinnedImageRef.current
@@ -4897,6 +5105,67 @@ export default function CanvexPage() {
           line-height: 1.25;
           padding: 0 0.125rem;
         }
+        .canvex-host .canvex-media-folder-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+        .canvex-host .canvex-media-folder {
+          border: 1px solid var(--default-border-color);
+          border-radius: 0.65rem;
+          overflow: hidden;
+          background: var(--island-bg-color);
+        }
+        .canvex-host .canvex-media-folder__trigger {
+          width: 100%;
+          border: 0;
+          background: transparent;
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          padding: 0.5rem 0.55rem;
+          text-align: left;
+          cursor: pointer;
+          color: inherit;
+        }
+        .canvex-host .canvex-media-folder__trigger:hover {
+          background: var(--button-hover-bg);
+        }
+        .canvex-host .canvex-media-folder__chevron {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          transition: transform 0.16s ease;
+          color: var(--color-gray-60);
+        }
+        .canvex-host .canvex-media-folder__chevron.is-open {
+          transform: rotate(90deg);
+        }
+        .canvex-host .canvex-media-folder__name {
+          flex: 1;
+          min-width: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          font-size: 0.78rem;
+          font-weight: 600;
+        }
+        .canvex-host .canvex-media-folder__count {
+          font-size: 0.68rem;
+          color: var(--color-gray-60);
+          background: var(--button-hover-bg);
+          border: 1px solid var(--default-border-color);
+          border-radius: 999px;
+          padding: 0.05rem 0.35rem;
+          line-height: 1.3;
+        }
+        .canvex-host .canvex-media-folder__content {
+          border-top: 1px solid var(--default-border-color);
+          padding: 0.55rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.55rem;
+        }
         .canvex-host .canvex-media-section {
           display: flex;
           flex-direction: column;
@@ -4915,6 +5184,29 @@ export default function CanvexPage() {
           font-weight: 600;
           color: var(--color-gray-70);
           letter-spacing: 0.01em;
+        }
+        .canvex-host .canvex-media-section__trigger {
+          width: 100%;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          text-align: left;
+          cursor: pointer;
+          padding: 0.15rem 0.1rem;
+          border-radius: 0.35rem;
+        }
+        .canvex-host .canvex-media-section__trigger:hover {
+          background: var(--button-hover-bg);
+        }
+        .canvex-host .canvex-media-section__count {
+          margin-left: auto;
+          font-size: 0.68rem;
+          color: var(--color-gray-60);
+          background: var(--button-hover-bg);
+          border: 1px solid var(--default-border-color);
+          border-radius: 999px;
+          padding: 0.04rem 0.32rem;
+          line-height: 1.3;
         }
         .canvex-host .canvex-media-grid {
           display: grid;
@@ -5120,87 +5412,147 @@ export default function CanvexPage() {
                       {mediaLibraryError && (
                         <div className="canvex-media-sidebar__error">{mediaLibraryError}</div>
                       )}
-                      <div className="canvex-media-section">
-                        <div className="canvex-media-section__label">
-                          <IconPhoto size={12} />
-                          <span>{t('mediaLibraryImageTab', { defaultValue: '图片' })}</span>
+                      {mediaLibraryLoading && !mediaProjectFolders.length ? (
+                        <div className="canvex-media-sidebar__loading">
+                          <IconLoader className="size-4 animate-spin" />
                         </div>
-                        {mediaLibraryLoading && !mediaLibraryImages.length ? (
-                          <div className="canvex-media-sidebar__loading">
-                            <IconLoader className="size-4 animate-spin" />
-                          </div>
-                        ) : mediaLibraryImages.length > 0 ? (
-                          <div className="canvex-media-grid">
-                            {mediaLibraryImages.map((item) => (
-                              <button
-                                key={`${item.id}-${item.url}`}
-                                type="button"
-                                className="canvex-media-item"
-                                onClick={() => {
-                                  void insertImageFromMediaLibrary(item)
-                                }}
-                              >
-                                <div className="canvex-media-item__preview">
-                                  <img
-                                    src={item.url}
-                                    alt={item.filename || t('mediaLibraryImageAlt', { defaultValue: '素材图片' })}
-                                    className="canvex-media-item__thumb"
-                                  />
-                                </div>
-                                <div className="canvex-media-item__meta">{item.filename || item.id}</div>
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="canvex-media-sidebar__empty">
-                            {t('mediaLibraryImageEmpty', { defaultValue: '暂无图片素材，先生成或上传图片。' })}
-                          </div>
-                        )}
-                      </div>
-                      <div className="canvex-media-section">
-                        <div className="canvex-media-section__label">
-                          <IconVideo size={12} />
-                          <span>{t('mediaLibraryVideoTab', { defaultValue: '视频' })}</span>
+                      ) : mediaProjectFolders.length > 0 ? (
+                        <div className="canvex-media-folder-list">
+                          {mediaProjectFolders.map((folder) => {
+                            const folderOpen = Boolean(mediaFolderOpenByKey[folder.key])
+                            const materialCount = folder.images.length + folder.videos.length
+                            return (
+                              <div key={folder.key} className="canvex-media-folder">
+                                <button
+                                  type="button"
+                                  className="canvex-media-folder__trigger"
+                                  onClick={() => toggleMediaProjectFolder(folder.key)}
+                                >
+                                  <span className={`canvex-media-folder__chevron ${folderOpen ? 'is-open' : ''}`}>
+                                    <IconChevronRight size={13} />
+                                  </span>
+                                  <IconFolder size={13} />
+                                  <span className="canvex-media-folder__name">{folder.projectName}</span>
+                                  <span className="canvex-media-folder__count">{materialCount}</span>
+                                </button>
+                                {folderOpen && (
+                                  <div className="canvex-media-folder__content">
+                                    {folder.images.length > 0 && (
+                                      <div className="canvex-media-section">
+                                        {(() => {
+                                          const imageSectionKey = `${folder.key}:image`
+                                          const imageOpen = mediaTypeOpenByKey[imageSectionKey] ?? true
+                                          return (
+                                            <>
+                                              <button
+                                                type="button"
+                                                className="canvex-media-section__trigger"
+                                                onClick={() => toggleMediaTypeSection(imageSectionKey)}
+                                              >
+                                                <span className="canvex-media-section__label">
+                                                  <span className={`canvex-media-folder__chevron ${imageOpen ? 'is-open' : ''}`}>
+                                                    <IconChevronRight size={12} />
+                                                  </span>
+                                                  <IconPhoto size={12} />
+                                                  <span>{t('mediaLibraryImageTab', { defaultValue: '图片' })}</span>
+                                                  <span className="canvex-media-section__count">{folder.images.length}</span>
+                                                </span>
+                                              </button>
+                                              {imageOpen && (
+                                                <div className="canvex-media-grid">
+                                                  {folder.images.map((item) => (
+                                                    <button
+                                                      key={`${item.id}-${item.url}`}
+                                                      type="button"
+                                                      className="canvex-media-item"
+                                                      onClick={() => {
+                                                        void insertImageFromMediaLibrary(item)
+                                                      }}
+                                                    >
+                                                      <div className="canvex-media-item__preview">
+                                                        <img
+                                                          src={item.url}
+                                                          alt={item.filename || t('mediaLibraryImageAlt', { defaultValue: '素材图片' })}
+                                                          className="canvex-media-item__thumb"
+                                                        />
+                                                      </div>
+                                                      <div className="canvex-media-item__meta">{item.filename || item.id}</div>
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </>
+                                          )
+                                        })()}
+                                      </div>
+                                    )}
+                                    {folder.videos.length > 0 && (
+                                      <div className="canvex-media-section">
+                                        {(() => {
+                                          const videoSectionKey = `${folder.key}:video`
+                                          const videoOpen = mediaTypeOpenByKey[videoSectionKey] ?? true
+                                          return (
+                                            <>
+                                              <button
+                                                type="button"
+                                                className="canvex-media-section__trigger"
+                                                onClick={() => toggleMediaTypeSection(videoSectionKey)}
+                                              >
+                                                <span className="canvex-media-section__label">
+                                                  <span className={`canvex-media-folder__chevron ${videoOpen ? 'is-open' : ''}`}>
+                                                    <IconChevronRight size={12} />
+                                                  </span>
+                                                  <IconVideo size={12} />
+                                                  <span>{t('mediaLibraryVideoTab', { defaultValue: '视频' })}</span>
+                                                  <span className="canvex-media-section__count">{folder.videos.length}</span>
+                                                </span>
+                                              </button>
+                                              {videoOpen && (
+                                                <div className="canvex-media-grid">
+                                                  {folder.videos.map((item) => (
+                                                    <button
+                                                      key={`${item.id}-${item.url}`}
+                                                      type="button"
+                                                      className="canvex-media-item"
+                                                      onClick={() => {
+                                                        void insertVideoFromMediaLibrary(item)
+                                                      }}
+                                                    >
+                                                      <div className="canvex-media-item__preview">
+                                                        {item.thumbnailUrl ? (
+                                                          <img
+                                                            src={item.thumbnailUrl}
+                                                            alt={t('mediaLibraryVideoAlt', { defaultValue: '视频封面' })}
+                                                            className="canvex-media-item__thumb"
+                                                          />
+                                                        ) : (
+                                                          <div className="canvex-media-item__thumb-placeholder">
+                                                            <IconVideo size={18} />
+                                                          </div>
+                                                        )}
+                                                        <span className="canvex-media-item__badge">VIDEO</span>
+                                                      </div>
+                                                      <div className="canvex-media-item__meta">{item.taskId || item.id}</div>
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </>
+                                          )
+                                        })()}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
                         </div>
-                        {mediaLibraryLoading && !mediaLibraryVideos.length ? (
-                          <div className="canvex-media-sidebar__loading">
-                            <IconLoader className="size-4 animate-spin" />
-                          </div>
-                        ) : mediaLibraryVideos.length > 0 ? (
-                          <div className="canvex-media-grid">
-                            {mediaLibraryVideos.map((item) => (
-                              <button
-                                key={`${item.id}-${item.url}`}
-                                type="button"
-                                className="canvex-media-item"
-                                onClick={() => {
-                                  void insertVideoFromMediaLibrary(item)
-                                }}
-                              >
-                                <div className="canvex-media-item__preview">
-                                  {item.thumbnailUrl ? (
-                                    <img
-                                      src={item.thumbnailUrl}
-                                      alt={t('mediaLibraryVideoAlt', { defaultValue: '视频封面' })}
-                                      className="canvex-media-item__thumb"
-                                    />
-                                  ) : (
-                                    <div className="canvex-media-item__thumb-placeholder">
-                                      <IconVideo size={18} />
-                                    </div>
-                                  )}
-                                  <span className="canvex-media-item__badge">VIDEO</span>
-                                </div>
-                                <div className="canvex-media-item__meta">{item.taskId || item.id}</div>
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="canvex-media-sidebar__empty">
-                            {t('mediaLibraryVideoEmpty', { defaultValue: '暂无视频素材，先生成视频。' })}
-                          </div>
-                        )}
-                      </div>
+                      ) : (
+                        <div className="canvex-media-sidebar__empty">
+                          {t('mediaLibraryEmpty', { defaultValue: '暂无素材。' })}
+                        </div>
+                      )}
                     </div>
                   </Sidebar.Tab>
                 </DefaultSidebar>
