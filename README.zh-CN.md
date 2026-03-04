@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Canvex</h1>
-  <p>Canvex是从MeiRed(https://meired.com)独立出来的场景创作功能</p>
+  <p>Canvex是具有场景创作功能的无限画布llm agent</p>
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>

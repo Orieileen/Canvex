@@ -1449,7 +1449,7 @@ const resources = {
       confirmDeleteSelected: '删除选中项？选中文件夹及其子项与图片将被永久删除共 {{folders}} 个文件夹，{{assets}} 张图片',
       renameFailed: '重命名失败',
       moveTo: '移动到…',
-      pickHere: '选择此处',
+      pickHere: '选择',
       noSubfolders: '无子文件夹',
       emptyFolder: '空文件夹使用右上角按钮创建文件夹或上传图片',
       renameFolderTitle: '重命名文件夹',

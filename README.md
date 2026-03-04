@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Canvex</h1>
-  <p>Canvex is the scene creation module extracted from MeiRed (https://meired.com).</p>
+  <p>Canvex is an infinite canvas LLM agent with scene creation capabilities</p>
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
