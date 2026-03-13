@@ -5,6 +5,7 @@ import { CaptureUpdateAction, DefaultSidebar, Excalidraw, MainMenu, Sidebar, con
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCat, IconButterfly, IconDog, IconFish, IconPaw, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight } from '@tabler/icons-react'
+import { toast } from 'sonner'
 import { request } from '@/utils/request'
 import { Button } from '@/components/ui/button'
 
@@ -18,6 +19,7 @@ type SceneRecord = {
   id: string
   title?: string
   data?: SceneData
+  created_at?: string
   updated_at?: string
 }
 
@@ -178,6 +180,8 @@ const SCENE_SAVE_DEBOUNCE_MS = parsePositiveIntEnv(import.meta.env.VITE_SCENE_SA
 const SCENE_SAVE_URGENT_MS = parsePositiveIntEnv(import.meta.env.VITE_SCENE_SAVE_URGENT_MS, 180)
 const SCENE_SAVE_FORCE_FLUSH_MS = parsePositiveIntEnv(import.meta.env.VITE_SCENE_SAVE_FORCE_FLUSH_MS, 1600)
 const SCENE_SAVE_WATCH_INTERVAL_MS = parsePositiveIntEnv(import.meta.env.VITE_SCENE_SAVE_WATCH_INTERVAL_MS, 700)
+const SCENE_LOCAL_CACHE_DEBOUNCE_MS = parsePositiveIntEnv(import.meta.env.VITE_SCENE_LOCAL_CACHE_DEBOUNCE_MS, 400)
+const MAX_CANVAS_IMAGE_DIM = parsePositiveIntEnv(import.meta.env.VITE_CANVEX_MAX_SCENE_IMAGE_DIM, 1600)
 const IMAGE_EDIT_SIZE_OPTIONS = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'] as const
 const IMAGE_EDIT_SIZE_MAP: Record<string, string> = {
   '1:1': '1024x1024',
@@ -204,6 +208,13 @@ const normalizeProjectName = (value: unknown, fallback = 'Untitled') => {
   const text = String(value || '').trim()
   return text || fallback
 }
+
+const toSceneSummary = (scene: SceneRecord): SceneRecord => ({
+  id: String(scene.id),
+  title: typeof scene.title === 'string' ? scene.title : '',
+  created_at: scene.created_at,
+  updated_at: scene.updated_at,
+})
 
 const resolveProjectNameFromFolder = (
   folderId: string | null,
@@ -364,6 +375,7 @@ export default function CanvexPage() {
   const lastSavedRef = useRef<string | null>(null)
   const pendingRef = useRef<SceneData | null>(null)
   const saveTimerRef = useRef<number | null>(null)
+  const localCacheTimerRef = useRef<number | null>(null)
   const workspaceKeyRef = useRef('canvex:workspace:public')
   const pinOriginRef = useRef<PinOrigin | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -399,6 +411,8 @@ export default function CanvexPage() {
   const chatAbortControllersRef = useRef<Record<string, AbortController>>({})
   const chatInterruptedScenesRef = useRef<Set<string>>(new Set())
   const mediaLibraryRequestTokenRef = useRef(0)
+  const sceneSelectTokenRef = useRef(0)
+  const sceneHydrateTokenRef = useRef(0)
 
   const setSceneChatLoading = useCallback((sceneId: string | null, value: boolean) => {
     if (!sceneId) return
@@ -697,12 +711,14 @@ export default function CanvexPage() {
   )
 
   const writeLocalCache = useCallback(
-    (sceneId: string | null, data: SceneData) => {
+    (sceneId: string | null, data: SceneData, updatedAt?: string | null) => {
       try {
         const payload: LocalCache = {
           sceneId,
           data,
-          updatedAt: new Date().toISOString(),
+          updatedAt: typeof updatedAt === 'string' && updatedAt
+            ? updatedAt
+            : new Date().toISOString(),
         }
         localStorage.setItem(getSceneKey(sceneId), JSON.stringify(payload))
       } catch {}
@@ -731,6 +747,23 @@ export default function CanvexPage() {
       localStorage.removeItem(getSceneKey(sceneId))
     } catch {}
   }, [getSceneKey])
+
+  const flushLocalCacheWrite = useCallback((sceneId?: string | null, data?: SceneData | null) => {
+    const nextSceneId = sceneId ?? sceneIdRef.current
+    const nextData = data ?? currentSceneRef.current
+    if (!nextData) return
+    writeLocalCache(nextSceneId, nextData)
+  }, [writeLocalCache])
+
+  const queueLocalCacheWrite = useCallback(() => {
+    if (localCacheTimerRef.current) {
+      window.clearTimeout(localCacheTimerRef.current)
+    }
+    localCacheTimerRef.current = window.setTimeout(() => {
+      localCacheTimerRef.current = null
+      flushLocalCacheWrite()
+    }, SCENE_LOCAL_CACHE_DEBOUNCE_MS)
+  }, [flushLocalCacheWrite])
 
   const loadChatForScene = useCallback(async (sceneId: string | null) => {
     const key = getChatKey(sceneId)
@@ -925,18 +958,57 @@ export default function CanvexPage() {
     return WORKSPACE_KEY
   }, [])
 
+  const getRemoteImageUrlFromElement = useCallback((element: any) => {
+    if (!element || element.isDeleted || element.type !== 'image') return ''
+    const data = element.customData || {}
+    if (typeof data.aiVideoThumbnailUrl === 'string' && /^https?:\/\//.test(data.aiVideoThumbnailUrl)) {
+      return data.aiVideoThumbnailUrl
+    }
+    if (typeof data.aiEditImageUrl === 'string' && /^https?:\/\//.test(data.aiEditImageUrl)) {
+      return data.aiEditImageUrl
+    }
+    if (typeof data.aiChatImageUrl === 'string' && /^https?:\/\//.test(data.aiChatImageUrl)) {
+      return data.aiChatImageUrl
+    }
+    return ''
+  }, [])
+
   const sanitizeAppState = (appState?: Record<string, any>) => {
     if (!appState) return {}
     const { collaborators, ...rest } = appState
     return rest
   }
 
-  const normalizeScenePayload = useCallback((scene?: SceneData | null): { normalized: SceneData; fingerprint: string } => {
-    const baseElements = Array.isArray(scene?.elements) ? scene!.elements! : []
+  const compactScenePayload = useCallback((scene?: SceneData | null): SceneData => {
+    const baseElements = Array.isArray(scene?.elements) ? scene.elements : []
     const baseAppState = scene?.appState && typeof scene.appState === 'object'
       ? sanitizeAppState(scene.appState)
       : {}
     const baseFiles = scene?.files && typeof scene.files === 'object' ? scene.files : {}
+    const referencedFileIds = new Set<string>()
+
+    for (const element of baseElements) {
+      if (!element || element.type !== 'image') continue
+      if (typeof element.fileId !== 'string' || !element.fileId) continue
+      referencedFileIds.add(element.fileId)
+    }
+
+    const files = Object.fromEntries(
+      Object.entries(baseFiles).filter(([fileId]) => referencedFileIds.has(fileId))
+    )
+
+    return {
+      elements: baseElements,
+      appState: baseAppState,
+      files,
+    }
+  }, [])
+
+  const normalizeScenePayload = useCallback((scene?: SceneData | null): { normalized: SceneData; fingerprint: string } => {
+    const compacted = compactScenePayload(scene)
+    const baseElements = compacted.elements || []
+    const baseAppState = compacted.appState || {}
+    const baseFiles = compacted.files || {}
 
     try {
       const fingerprint = serializeAsJSON(baseElements, baseAppState, baseFiles, 'local')
@@ -958,7 +1030,7 @@ export default function CanvexPage() {
         fingerprint: JSON.stringify(normalized),
       }
     }
-  }, [])
+  }, [compactScenePayload])
 
   const resolveCanvexTheme = useCallback((theme?: string) => {
     if (theme === 'dark') return 'dark'
@@ -998,6 +1070,7 @@ export default function CanvexPage() {
 
   const applyScene = useCallback((scene?: SceneData | null) => {
     if (!scene) return
+    sceneHydrateTokenRef.current += 1
     setInitialData(scene)
     setInitialKey((k) => k + 1)
     currentSceneRef.current = scene
@@ -1034,7 +1107,11 @@ export default function CanvexPage() {
     return normalizeScenePayload(scene).fingerprint
   }, [normalizeScenePayload])
 
-  const persistSceneToList = useCallback((sceneId: string, data: SceneData, title?: string) => {
+  const persistSceneToList = useCallback((
+    sceneId: string,
+    title?: string,
+    timestamps?: { createdAt?: string | null; updatedAt?: string | null },
+  ) => {
     setScenes((prev) => {
       const existing = prev.find((scene) => scene.id === sceneId)
       const nextTitle = title ?? existing?.title ?? untitledRef.current
@@ -1042,8 +1119,8 @@ export default function CanvexPage() {
         ...existing,
         id: sceneId,
         title: nextTitle,
-        data,
-        updated_at: new Date().toISOString(),
+        created_at: timestamps?.createdAt ?? existing?.created_at,
+        updated_at: timestamps?.updatedAt ?? new Date().toISOString(),
       }
       const filtered = prev.filter((scene) => scene.id !== sceneId)
       return [updated as SceneRecord, ...filtered]
@@ -1086,12 +1163,21 @@ export default function CanvexPage() {
         }
 
         setSaveState('saving')
+        if (localCacheTimerRef.current) {
+          window.clearTimeout(localCacheTimerRef.current)
+          localCacheTimerRef.current = null
+        }
         writeLocalCache(sceneIdRef.current, data)
 
         try {
           if (sceneIdRef.current) {
-            await request.patch(`/api/v1/excalidraw/scenes/${sceneIdRef.current}/`, { data })
-            persistSceneToList(sceneIdRef.current, data)
+            const res = await request.patch(`/api/v1/excalidraw/scenes/${sceneIdRef.current}/`, { data })
+            const serverUpdatedAt = typeof res.data?.updated_at === 'string' ? res.data.updated_at : null
+            writeLocalCache(sceneIdRef.current, data, serverUpdatedAt)
+            persistSceneToList(sceneIdRef.current, undefined, {
+              createdAt: typeof res.data?.created_at === 'string' ? res.data.created_at : undefined,
+              updatedAt: serverUpdatedAt,
+            })
           } else {
             const title = (activeScene?.title || '').trim() || untitledRef.current
             const payload = { title, data }
@@ -1099,7 +1185,11 @@ export default function CanvexPage() {
             const newId = res.data?.id ? String(res.data.id) : null
             if (newId) {
               setSceneIdSafe(newId)
-              persistSceneToList(newId, data, title)
+              writeLocalCache(newId, data, typeof res.data?.updated_at === 'string' ? res.data.updated_at : null)
+              persistSceneToList(newId, title, {
+                createdAt: typeof res.data?.created_at === 'string' ? res.data.created_at : undefined,
+                updatedAt: typeof res.data?.updated_at === 'string' ? res.data.updated_at : undefined,
+              })
               migrateDraftChatToScene(newId)
               migrateDraftPinOriginToScene(newId)
               migrateDraftLastPinnedToScene(newId)
@@ -1156,6 +1246,14 @@ export default function CanvexPage() {
   }, [flushSave, hasUnsavedChanges, saveState])
 
   useEffect(() => {
+    const flushLocalNow = () => {
+      if (!hasUnsavedChanges()) return
+      if (localCacheTimerRef.current) {
+        window.clearTimeout(localCacheTimerRef.current)
+        localCacheTimerRef.current = null
+      }
+      flushLocalCacheWrite()
+    }
     const flushNow = () => {
       if (!hasUnsavedChanges()) return
       if (saveTimerRef.current) {
@@ -1170,6 +1268,7 @@ export default function CanvexPage() {
     }
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
+        flushLocalNow()
         flushNow()
         return
       }
@@ -1179,14 +1278,13 @@ export default function CanvexPage() {
     }
     const handleBeforeUnload = () => {
       if (!hasUnsavedChanges()) return
-      try {
-        if (currentSceneRef.current) {
-          writeLocalCache(sceneIdRef.current, currentSceneRef.current)
-        }
-      } catch {}
+      flushLocalNow()
       flushNow()
     }
-    const handlePageHide = () => flushNow()
+    const handlePageHide = () => {
+      flushLocalNow()
+      flushNow()
+    }
     const handleWindowBlur = () => queueNow()
     const handleOnline = () => queueNow()
 
@@ -1203,39 +1301,76 @@ export default function CanvexPage() {
       window.removeEventListener('blur', handleWindowBlur)
       window.removeEventListener('online', handleOnline)
     }
-  }, [flushSave, hasUnsavedChanges, queueUrgentSave, writeLocalCache])
+  }, [flushLocalCacheWrite, flushSave, hasUnsavedChanges, queueUrgentSave])
 
   const selectScene = useCallback(
     async (scene: SceneRecord, opts?: { skipFlush?: boolean; skipUrl?: boolean }) => {
       if (!scene?.id) return
       if (scene.id === activeSceneId) return
+      const selectionToken = ++sceneSelectTokenRef.current
+      setLoadError(null)
 
       if (!opts?.skipFlush) {
         if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
         await flushSave()
       }
+      if (selectionToken !== sceneSelectTokenRef.current) return
 
       const local = readLocalCache(scene.id)
       const serverUpdated = scene.updated_at ? new Date(scene.updated_at).getTime() : 0
       const localUpdated = local?.updatedAt ? new Date(local.updatedAt).getTime() : 0
 
-      if (local && localUpdated > serverUpdated && local.data) {
+      // >= so that when timestamps match we prefer the local cache (avoids a
+      // redundant GET); only the strictly-newer case (>) triggers a re-save.
+      if (local && local.data && localUpdated >= serverUpdated) {
         const localData = normalizeScenePayload(local.data).normalized
+        if (selectionToken !== sceneSelectTokenRef.current) return
         setSceneIdSafe(scene.id)
         applyScene(localData)
-        pendingRef.current = localData
-        lastSavedRef.current = null
-        lastMutationAtRef.current = Date.now()
-        setSaveState('pending')
-        queueSave()
+        if (localUpdated > serverUpdated) {
+          pendingRef.current = localData
+          lastSavedRef.current = null
+          lastMutationAtRef.current = Date.now()
+          setSaveState('pending')
+          queueSave()
+        } else {
+          pendingRef.current = null
+          lastSavedRef.current = getSceneFingerprint(localData)
+          setSaveState('saved')
+        }
       } else {
-        const serverData = normalizeScenePayload(scene.data || {}).normalized
+        let detail = scene
+        if (!detail.data) {
+          try {
+            const res = await request.get(`/api/v1/excalidraw/scenes/${scene.id}/`)
+            detail = res.data
+          } catch (e: any) {
+            const errorMessage = e?.response?.data?.detail || e?.message || 'Failed to load scene'
+            if (selectionToken === sceneSelectTokenRef.current) {
+              if (currentSceneRef.current) {
+                toast.error(errorMessage)
+              } else {
+                setLoadError(errorMessage)
+              }
+            }
+            return
+          }
+        }
+        if (selectionToken !== sceneSelectTokenRef.current) return
+        const serverData = normalizeScenePayload(detail.data || {}).normalized
         setSceneIdSafe(scene.id)
         applyScene(serverData)
         pendingRef.current = null
         lastSavedRef.current = getSceneFingerprint(serverData)
-        writeLocalCache(scene.id, serverData)
+        writeLocalCache(scene.id, serverData, detail.updated_at)
         setSaveState('saved')
+        setScenes((prev) => {
+          const summary = toSceneSummary(detail)
+          if (!prev.some((item) => item.id === scene.id)) {
+            return [summary, ...prev]
+          }
+          return prev.map((item) => (item.id === scene.id ? { ...item, ...summary } : item))
+        })
       }
 
       try {
@@ -1278,7 +1413,7 @@ export default function CanvexPage() {
         }
       }
 
-      setScenes(list)
+      setScenes(list.map((scene) => toSceneSummary(scene)))
 
       const lastId = (() => {
         try {
@@ -1358,13 +1493,22 @@ export default function CanvexPage() {
     window.addEventListener('canvex:scenes-changed', handler)
     return () => {
       window.removeEventListener('canvex:scenes-changed', handler)
+      if (localCacheTimerRef.current) {
+        window.clearTimeout(localCacheTimerRef.current)
+        localCacheTimerRef.current = null
+      }
+      if (hasUnsavedChanges()) {
+        flushLocalCacheWrite()
+      }
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
       }
     }
-  }, [loadScene])
+  }, [flushLocalCacheWrite, hasUnsavedChanges, loadScene])
 
   useEffect(() => {
+    if (loading) return
     if (!sceneParam) return
     if (sceneParam === activeSceneId) return
     const target = scenes.find(scene => scene.id === sceneParam)
@@ -1379,7 +1523,7 @@ export default function CanvexPage() {
       if (record?.id) {
         setScenes(prev => {
           const filtered = prev.filter(scene => scene.id !== record.id)
-          return [record, ...filtered]
+          return [toSceneSummary(record), ...filtered]
         })
         void selectScene(record, { skipUrl: true })
       }
@@ -1387,7 +1531,7 @@ export default function CanvexPage() {
     return () => {
       cancelled = true
     }
-  }, [activeSceneId, sceneParam, scenes, selectScene])
+  }, [activeSceneId, loading, sceneParam, scenes, selectScene])
 
   useEffect(() => {
     void loadChatForScene(activeSceneId)
@@ -1874,6 +2018,7 @@ export default function CanvexPage() {
       }
       currentSceneRef.current = scene
       pendingRef.current = scene
+      queueLocalCacheWrite()
       if (!lastPinnedIdRef.current) {
         const { latest } = getLatestElements(elements)
         if (latest?.id) {
@@ -1881,7 +2026,6 @@ export default function CanvexPage() {
           setLastPinnedId(latest.id)
         }
       }
-      writeLocalCache(sceneIdRef.current, scene)
       if (fingerprint === lastSavedRef.current) {
         setSaveState('saved')
       } else {
@@ -1892,7 +2036,7 @@ export default function CanvexPage() {
       syncCanvexTheme(appState?.theme)
       updateSelectedEditSelection(appState)
     },
-    [normalizeScenePayload, queueSave, syncCanvexTheme, updateSelectedEditSelection, writeLocalCache]
+    [normalizeScenePayload, queueLocalCacheWrite, queueSave, syncCanvexTheme, updateSelectedEditSelection]
   )
 
   const captureSceneSnapshot = useCallback(() => {
@@ -1906,7 +2050,7 @@ export default function CanvexPage() {
     })
     currentSceneRef.current = scene
     pendingRef.current = scene
-    writeLocalCache(sceneIdRef.current, scene)
+    queueLocalCacheWrite()
     if (fingerprint === lastSavedRef.current) {
       setSaveState('saved')
     } else {
@@ -1916,7 +2060,7 @@ export default function CanvexPage() {
     }
     syncCanvexTheme(appState?.theme)
     updateSelectedEditSelection(appState)
-  }, [normalizeScenePayload, queueSave, syncCanvexTheme, updateSelectedEditSelection, writeLocalCache])
+  }, [normalizeScenePayload, queueLocalCacheWrite, queueSave, syncCanvexTheme, updateSelectedEditSelection])
 
   const updatePinnedNoteText = useCallback((noteId: string, content: string) => {
     const api = canvexApiRef.current
@@ -2832,12 +2976,92 @@ export default function CanvexPage() {
       }
       ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
       bitmap.close?.()
-      return { dataUrl: canvas.toDataURL('image/png'), width: targetWidth, height: targetHeight }
+      const dataUrl = canvas.toDataURL('image/png')
+      canvas.width = 0
+      canvas.height = 0
+      return { dataUrl, width: targetWidth, height: targetHeight }
     } catch {
       const dataUrl = await toDataUrl(blob)
       return { dataUrl, width: null, height: null }
     }
   }, [])
+
+  const getRemoteImageMimeType = useCallback((element: any) => {
+    const raw = element?.customData?.aiImageMimeType
+    return typeof raw === 'string' && raw ? raw : 'image/png'
+  }, [])
+
+  const hydrateSceneFiles = useCallback(async (scene?: SceneData | null, apiOverride?: any) => {
+    const api = apiOverride || canvexApiRef.current
+    if (!api?.addFiles || !scene) return
+    const hydrationToken = ++sceneHydrateTokenRef.current
+    const existingFiles = scene.files && typeof scene.files === 'object' ? scene.files : {}
+    const hydratedFiles = { ...existingFiles }
+    const hydratedFileList: Array<{
+      id: string
+      dataURL: string
+      mimeType: string
+      created: number
+      lastRetrieved: number
+    }> = []
+    const tasks: Array<{ fileId: string; url: string; mimeType: string }> = []
+    const seen = new Set<string>()
+
+    for (const element of scene.elements || []) {
+      if (!element || element.isDeleted || element.type !== 'image') continue
+      const fileId = typeof element.fileId === 'string' ? element.fileId : ''
+      if (!fileId || seen.has(fileId)) continue
+      seen.add(fileId)
+      if (existingFiles[fileId]?.dataURL) continue
+      const url = getRemoteImageUrlFromElement(element)
+      if (!url) continue
+      tasks.push({
+        fileId,
+        url,
+        mimeType: getRemoteImageMimeType(element),
+      })
+    }
+
+    const HYDRATE_CONCURRENCY = 4
+    for (let i = 0; i < tasks.length; i += HYDRATE_CONCURRENCY) {
+      const batch = tasks.slice(i, i + HYDRATE_CONCURRENCY)
+      const results = await Promise.allSettled(
+        batch.map((task) => loadImageDataUrl(task.url, MAX_CANVAS_IMAGE_DIM).then((loaded) => ({ task, loaded })))
+      )
+      if (hydrationToken !== sceneHydrateTokenRef.current) return
+      for (const result of results) {
+        if (result.status !== 'fulfilled') {
+          console.warn('[canvex] hydrateSceneFiles: failed to load image', result.reason)
+          continue
+        }
+        const { task, loaded } = result.value
+        const hydratedFile = {
+          id: task.fileId,
+          dataURL: loaded.dataUrl,
+          mimeType: task.mimeType,
+          created: Date.now(),
+          lastRetrieved: Date.now(),
+        }
+        hydratedFiles[task.fileId] = hydratedFile
+        hydratedFileList.push(hydratedFile)
+      }
+    }
+    if (!hydratedFileList.length) return
+    if (hydrationToken !== sceneHydrateTokenRef.current) return
+    const sceneId = sceneIdRef.current
+    const hydratedScene: SceneData = {
+      elements: Array.isArray(scene.elements) ? scene.elements : [],
+      appState: scene.appState && typeof scene.appState === 'object' ? scene.appState : {},
+      files: hydratedFiles,
+    }
+    if (!hasUnsavedChanges()) {
+      currentSceneRef.current = hydratedScene
+      pendingRef.current = null
+      lastSavedRef.current = getSceneFingerprint(hydratedScene)
+      writeLocalCache(sceneId, hydratedScene, readLocalCache(sceneId)?.updatedAt)
+    }
+    api.addFiles(hydratedFileList)
+  }, [getRemoteImageMimeType, getRemoteImageUrlFromElement, getSceneFingerprint, hasUnsavedChanges, loadImageDataUrl, readLocalCache, writeLocalCache])
 
   const resolveVideoImageUrls = useCallback(async (sceneId: string, imageElements: any[]) => {
     const api = canvexApiRef.current
@@ -2998,7 +3222,7 @@ export default function CanvexPage() {
     let decodedWidth: number | null = null
     let decodedHeight: number | null = null
     try {
-      const loaded = await loadImageDataUrl(url)
+      const loaded = await loadImageDataUrl(url, MAX_CANVAS_IMAGE_DIM)
       dataURL = loaded.dataUrl
       decodedWidth = loaded.width
       decodedHeight = loaded.height
@@ -3068,6 +3292,7 @@ export default function CanvexPage() {
         aiEditSourceId: 'selection',
         aiEditAssetId: editAssetId || result?.asset_id,
         aiEditImageUrl: url,
+        aiImageMimeType: result?.mime_type || 'image/png',
         ...(resolvedEditJobId ? { aiEditJobId: resolvedEditJobId } : {}),
         ...(Number.isFinite(resolvedEditOrder) ? { aiEditOrder: resolvedEditOrder } : {}),
       },
@@ -4010,7 +4235,7 @@ export default function CanvexPage() {
     let decodedWidth: number | null = null
     let decodedHeight: number | null = null
     try {
-      const loaded = await loadImageDataUrl(url)
+      const loaded = await loadImageDataUrl(url, MAX_CANVAS_IMAGE_DIM)
       dataURL = loaded.dataUrl
       decodedWidth = loaded.width
       decodedHeight = loaded.height
@@ -4089,6 +4314,7 @@ export default function CanvexPage() {
         aiChatCreatedAt: new Date().toISOString(),
         aiChatImageUrl: url,
         aiChatAssetId: tool?.result?.asset_id,
+        aiImageMimeType: tool?.result?.mime_type || 'image/png',
         ...(meta || {}),
       },
     })
@@ -4224,6 +4450,7 @@ export default function CanvexPage() {
         aiVideoUrl: videoUrl,
         aiVideoThumbnailUrl: shouldPersistThumbnail ? resolvedPosterUrl : null,
         aiVideoJobId: videoJobId || null,
+        aiImageMimeType: 'image/png',
       },
     })
 
@@ -5357,6 +5584,9 @@ export default function CanvexPage() {
                   setCanvexReady(Boolean(api))
                   const state = api?.getAppState?.()
                   syncCanvexTheme(state?.theme)
+                  if (api && initialData) {
+                    void hydrateSceneFiles(initialData, api)
+                  }
                   if (scrollUnsubRef.current) {
                     scrollUnsubRef.current()
                     scrollUnsubRef.current = null

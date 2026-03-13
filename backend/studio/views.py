@@ -28,6 +28,7 @@ from .serializers import (
     DataAssetSerializer,
     DataFolderSerializer,
     ExcalidrawChatMessageSerializer,
+    ExcalidrawSceneListSerializer,
     ExcalidrawSceneSerializer,
 )
 from .tasks import run_excalidraw_image_edit_job, run_excalidraw_video_job
@@ -301,8 +302,18 @@ class DataAssetViewSet(viewsets.ModelViewSet):
 
 class ExcalidrawSceneViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
-    serializer_class = ExcalidrawSceneSerializer
     queryset = ExcalidrawScene.objects.all().order_by("-updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action == "list":
+            return queryset.defer("data")
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ExcalidrawSceneListSerializer
+        return ExcalidrawSceneSerializer
 
 
 class ExcalidrawSceneChatView(APIView):

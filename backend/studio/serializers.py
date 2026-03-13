@@ -106,6 +106,13 @@ class ExcalidrawSceneSerializer(serializers.ModelSerializer):
         return value
 
 
+class ExcalidrawSceneListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExcalidrawScene
+        fields = ["id", "title", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+
 class ExcalidrawChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExcalidrawChatMessage

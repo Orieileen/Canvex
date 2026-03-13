@@ -8,7 +8,15 @@ from celery import shared_task
 from PIL import Image
 
 from .models import ExcalidrawImageEditJob, ExcalidrawImageEditResult, ExcalidrawVideoJob
-from .tools import _edit_image_media, _generate_image_media, _generate_video_media, _resolve_excalidraw_asset_folder_id, _save_asset
+from .tools import (
+    _abs_url,
+    _edit_image_media,
+    _generate_image_media,
+    _generate_video_media,
+    _resolve_excalidraw_asset_folder_id,
+    _resolve_image_bytes,
+    _save_asset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +173,38 @@ def _is_retryable_video_error(message: str | None) -> bool:
         return True
 
     return False
+
+
+def _normalize_png_bytes(image_bytes: bytes) -> bytes:
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = source.copy()
+    if image.mode not in {"RGB", "RGBA"}:
+        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _persist_video_thumbnail(job: ExcalidrawVideoJob, thumbnail_url: str | None) -> str:
+    source_url = str(thumbnail_url or "").strip()
+    if not source_url:
+        return ""
+
+    try:
+        image_bytes = _resolve_image_bytes(source_url)
+        normalized_bytes = _normalize_png_bytes(image_bytes)
+        folder_id = _resolve_excalidraw_asset_folder_id(
+            str(job.scene_id) if job.scene_id else None,
+            job.scene.title if getattr(job, "scene", None) else None,
+        )
+        asset = _save_asset(normalized_bytes, job.prompt or "video thumbnail", folder_id)
+        if not asset.is_public:
+            asset.is_public = True
+            asset.save(update_fields=["is_public", "updated_at"])
+        return _abs_url(getattr(asset.file, "url", "")) or ""
+    except Exception as exc:
+        logger.warning("Persist video thumbnail failed for job %s: %s", job.id, exc)
+        return ""
 
 
 def _schedule_video_retry(job: ExcalidrawVideoJob, attempt: int, reason: str, task) -> bool:
@@ -345,7 +385,7 @@ def run_excalidraw_image_edit_job(self, job_id: str):
 
 @shared_task(bind=True, name="studio.video_job")
 def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
-    job = ExcalidrawVideoJob.objects.filter(id=job_id).first()
+    job = ExcalidrawVideoJob.objects.filter(id=job_id).select_related("scene").first()
     if not job:
         return
     if job.status in (ExcalidrawVideoJob.Status.RUNNING, ExcalidrawVideoJob.Status.SUCCEEDED):
@@ -412,6 +452,6 @@ def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
     job.status = ExcalidrawVideoJob.Status.SUCCEEDED
     job.task_id = str(result.get("task_id") or "")
     job.result_url = result_url
-    job.thumbnail_url = str(result.get("thumbnail_url") or "")
+    job.thumbnail_url = _persist_video_thumbnail(job, result.get("thumbnail_url"))
     job.error = ""
     job.save(update_fields=["status", "task_id", "result_url", "thumbnail_url", "error", "updated_at"])
