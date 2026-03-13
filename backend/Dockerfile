@@ -10,8 +10,11 @@ WORKDIR /app
 
 # 安装系统依赖，解决 cv2 ImportError: libGL.so.1 缺失
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    default-libmysqlclient-dev \
     libgl1 \
     libglib2.0-0 \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖

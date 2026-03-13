@@ -12,3 +12,4 @@ Pillow
 rembg[cpu]
 python-dotenv
 gunicorn
+mysqlclient>=2.2.1

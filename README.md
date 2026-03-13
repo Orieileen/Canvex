@@ -4,6 +4,7 @@
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
+    <a href="https://www.mysql.com/"><img src="https://img.shields.io/badge/Database-MySQL-4479A1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
   </p>
 </div>
@@ -85,10 +86,22 @@ In `.env`, configure these first in most cases:
 | `MEDIA_OPENAI_IMAGE_EDIT_MODEL` | Model used by image edit/cutout workflow. | `gpt-image-1.5` |
 | `MEDIA_OPENAI_VIDEO_MODEL` | Model used for video generation. | `sora-2` |
 
+Database defaults in Docker Compose:
+
+| Variable | Notes | Example |
+| --- | --- | --- |
+| `MYSQL_DATABASE` | App database name. | `canvex` |
+| `MYSQL_USER` | App database user. | `canvex` |
+| `MYSQL_PASSWORD` | App database password. | `canvex` |
+| `MYSQL_HOST` | MySQL host. In Docker Compose it should stay `mysql`. | `mysql` |
+| `MYSQL_PORT` | MySQL port. | `3306` |
+| `MYSQL_ROOT_PASSWORD` | Root password used to initialize the MySQL container. | `change-me-root-password` |
+
 Notes:
 
 - If you use a third-party compatible gateway, set `*_BASE_URL` and model names according to that gateway's supported list.
 - If chat and media use the same provider, `OPENAI_*` and `MEDIA_OPENAI_*` can share the same configuration.
+- `docker compose up -d --build` now starts MySQL automatically. Existing `db.sqlite3` data is not migrated into MySQL automatically.
 
 After startup, open:
 

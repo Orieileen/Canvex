@@ -4,6 +4,7 @@
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
+    <a href="https://www.mysql.com/"><img src="https://img.shields.io/badge/Database-MySQL-4479A1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
   </p>
 </div>
@@ -85,10 +86,22 @@ docker compose up -d --build
 | `MEDIA_OPENAI_IMAGE_EDIT_MODEL` | 图片编辑/抠图流程使用的模型名。 | `gpt-image-1.5` |
 | `MEDIA_OPENAI_VIDEO_MODEL` | 视频生成使用的模型名。 | `sora-2` |
 
+Docker Compose 默认的数据库变量：
+
+| 变量 | 备注 | 示例 |
+| --- | --- | --- |
+| `MYSQL_DATABASE` | 业务库名。 | `canvex` |
+| `MYSQL_USER` | 业务库用户。 | `canvex` |
+| `MYSQL_PASSWORD` | 业务库密码。 | `canvex` |
+| `MYSQL_HOST` | MySQL 主机名。Docker Compose 场景保持为 `mysql`。 | `mysql` |
+| `MYSQL_PORT` | MySQL 端口。 | `3306` |
+| `MYSQL_ROOT_PASSWORD` | 初始化 MySQL 容器时使用的 root 密码。 | `change-me-root-password` |
+
 说明：
 
 - 你使用第三方兼容网关时，`*_BASE_URL` 和模型名要按该网关支持列表填写。
 - 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_OPENAI_*` 使用同一套配置。
+- 现在执行 `docker compose up -d --build` 会自动启动 MySQL；已有 `db.sqlite3` 数据不会自动迁移进 MySQL。
 
 启动后访问：
 
