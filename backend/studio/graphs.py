@@ -64,6 +64,28 @@ _VIDEO_ASPECT_RATIO_BY_SIZE = {v: k for k, v in _VIDEO_SIZE_BY_ASPECT_RATIO.item
 
 
 # ---------------------------------------------------------------------------
+# Tiny helpers — 消除重复的小工具函数
+# ---------------------------------------------------------------------------
+
+def _flatten_content(value: Any) -> str:
+    """将 LLM 返回的 content（可能是 str 或 list）统一为纯字符串。"""
+    if isinstance(value, list):
+        return "".join(str(c.get("text", "") if isinstance(c, dict) else c) for c in value)
+    return str(value or "")
+
+
+def _get_dict_field(mapping: dict, key: str) -> Dict[str, Any]:
+    """从 dict 中安全取出子 dict，非 dict 时返回空 dict。"""
+    val = mapping.get(key)
+    return val if isinstance(val, dict) else {}
+
+
+def _normalize_video_size(value: Any, default: str = "1280x720") -> str:
+    """将视频尺寸值标准化为小写无空格格式。"""
+    return str(value or default).strip().lower().replace(" ", "")
+
+
+# ---------------------------------------------------------------------------
 # Model helpers — 构建 LLM 实例与提示词
 # ---------------------------------------------------------------------------
 
@@ -170,10 +192,7 @@ def _invoke_json(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> Dict[
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
     ])
-    content = getattr(response, "content", "") or ""
-    if isinstance(content, list):
-        content = "".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in content)
-    content = content.strip()
+    content = _flatten_content(getattr(response, "content", "")).strip()
     if not content:
         return None
     try:
@@ -348,7 +367,7 @@ def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[s
     if not prompt:
         return {"error": "prompt is required"}
 
-    current_mermaid = _normalize_flowchart_mermaid(str(args.get("current_mermaid") or ""))
+    current_mermaid = str(args.get("current_mermaid") or "").strip()
     llm = _build_chat_model(streaming=False)
     generation_raw = _invoke_json(
         llm,
@@ -495,7 +514,7 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any]:
         decision["assistant"] = assistant
 
     if action == "generate_image":
-        image_payload = decision_raw.get("image") if isinstance(decision_raw.get("image"), dict) else {}
+        image_payload = _get_dict_field(decision_raw, "image")
         decision["image_args"] = {
             "prompt": str(image_payload.get("prompt") or last_user).strip(),
             "size": _normalize_image_size(image_payload.get("size")),
@@ -503,17 +522,17 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any]:
         }
 
     elif action == "generate_video":
-        video_payload = decision_raw.get("video") if isinstance(decision_raw.get("video"), dict) else {}
+        video_payload = _get_dict_field(decision_raw, "video")
         decision["video_args"] = {
             "prompt": str(video_payload.get("prompt") or last_user).strip(),
             "seconds": video_payload.get("seconds") or 12,
-            "size": str(video_payload.get("size") or "1280x720").strip().lower().replace(" ", ""),
+            "size": _normalize_video_size(video_payload.get("size")),
             "image_urls": _normalize_image_urls(video_payload.get("image_urls")),
             "scene_id": state.get("scene_id"),
         }
 
     elif action == "generate_flowchart":
-        fc_payload = decision_raw.get("flowchart") if isinstance(decision_raw.get("flowchart"), dict) else {}
+        fc_payload = _get_dict_field(decision_raw, "flowchart")
         flowchart_args: Dict[str, Any] = {"prompt": str(fc_payload.get("prompt") or last_user).strip()}
         current_mermaid = _normalize_flowchart_mermaid(str(fc_payload.get("current_mermaid") or ""))
         if current_mermaid:
@@ -552,12 +571,12 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
     if seconds not in _VIDEO_ALLOWED_SECONDS:
         return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
 
-    size = str(args.get("size") or "1280x720").strip().lower().replace(" ", "")
+    size = _normalize_video_size(args.get("size"))
     aspect_ratio = _VIDEO_ASPECT_RATIO_BY_SIZE.get(size)
     if not aspect_ratio:
         return {"error": f"video size must be one of {list(_VIDEO_ASPECT_RATIO_BY_SIZE)}"}
 
-    image_urls = _normalize_image_urls(args.get("image_urls"))
+    image_urls = args.get("image_urls")
     model_name = str(args.get("model") or "").strip()
 
     job = ExcalidrawVideoJob.objects.create(
@@ -704,9 +723,7 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
 
     content = ""
     for chunk in llm.stream(lc_messages):
-        delta = getattr(chunk, "content", "") or ""
-        if isinstance(delta, list):
-            delta = "".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in delta)
+        delta = _flatten_content(getattr(chunk, "content", ""))
         if delta:
             content += delta
             yield {"assistant": {"role": "assistant", "content": content}}
@@ -782,7 +799,7 @@ def update_memory(state: ChatState) -> Dict[str, Any]:
     # 更新摘要状态
     exchange = f"user: {last_user}\nassistant: {assistant}".strip()
     schema = json.dumps(normalize_summary_state(None), ensure_ascii=False, indent=2)
-    current = json.dumps(normalize_summary_state(summary_state), ensure_ascii=False, indent=2)
+    current = json.dumps(summary_state, ensure_ascii=False, indent=2)
     summary_prompt = (
         "Update summary state snapshot. Output JSON only.\n"
         "Rules: keep confirmed, still-valid, overridable facts only.\n\n"
@@ -799,7 +816,7 @@ def update_memory(state: ChatState) -> Dict[str, Any]:
     stable_entries = _collect_stable_entries(history)
     if stable_entries:
         mem_schema = json.dumps(normalize_memory_state(None), ensure_ascii=False, indent=2)
-        mem_current = json.dumps(normalize_memory_state(memory_state), ensure_ascii=False, indent=2)
+        mem_current = json.dumps(memory_state, ensure_ascii=False, indent=2)
         stable_text = "\n".join(f"- {item}" for item in stable_entries)
         memory_prompt = (
             "Update long-term memory from stable summary entries. Output JSON only.\n"
