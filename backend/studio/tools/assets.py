@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import io
 import uuid
 from typing import Any
 
 from django.core.files.base import ContentFile
 from django.db import IntegrityError
 from PIL import Image
-
-import io
 
 from ..models import DataAsset, DataFolder, ExcalidrawScene
 

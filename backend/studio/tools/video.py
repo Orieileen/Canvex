@@ -803,8 +803,10 @@ def videotool(
         return {"error": "prompt is required"}
 
     if isinstance(image_urls, str):
+        logger.warning("videotool received image_urls as a string instead of list; wrapping automatically")
         image_urls = [image_urls]
     if image_urls is not None and not isinstance(image_urls, list):
+        logger.warning("videotool received image_urls as %s; ignoring", type(image_urls).__name__)
         image_urls = None
 
     payload: dict[str, Any] = {

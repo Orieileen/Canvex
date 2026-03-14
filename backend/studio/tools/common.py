@@ -49,11 +49,10 @@ def openai_client_for_media() -> OpenAI:
     base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
     if not api_key:
         raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
-    timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", "180")
     params: dict[str, Any] = {
         "api_key": api_key,
         "base_url": base_url,
-        "timeout": float(timeout_raw),
+        "timeout": _read_media_timeout_seconds(),
     }
     return OpenAI(**params)
 
@@ -93,11 +92,20 @@ def _resolve_image_bytes(url: str) -> bytes:
     candidates: list[str] = [url]
     host = (parsed.hostname or "").lower()
     if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
-        internal_base = (
+        internal_base_raw = (
             os.getenv("INTERNAL_MEDIA_BASE")
             or os.getenv("BACKEND_INTERNAL_BASE_URL")
-            or "http://backend:8000"
-        ).rstrip("/")
+            or ""
+        ).strip()
+        if not internal_base_raw:
+            internal_base_raw = "http://backend:8000"
+            logger.warning(
+                "Neither INTERNAL_MEDIA_BASE nor BACKEND_INTERNAL_BASE_URL is set; "
+                "falling back to %s for resolving localhost image URL %s",
+                internal_base_raw,
+                url,
+            )
+        internal_base = internal_base_raw.rstrip("/")
         internal = urlparse(internal_base)
         internal_url = urlunparse(
             (

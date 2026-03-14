@@ -20,6 +20,8 @@ from .common import (
     _pick_api_base,
     _pick_api_key,
     _pick_url,
+    _read_media_timeout_seconds,
+    _resolve_image_bytes,
     _to_dict_compatible,
     openai_client_for_media,
 )
@@ -48,13 +50,12 @@ def _post_images_generations_compat(
     base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
     if not api_key:
         raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
-    timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", "180")
     endpoint = _images_generations_compat_endpoint(base_url)
 
     headers = {"Authorization": f"Bearer {api_key}"}
     kwargs: dict[str, Any] = {
         "headers": headers,
-        "timeout": float(timeout_raw),
+        "timeout": _read_media_timeout_seconds(),
     }
     if json_payload is not None:
         headers["Content-Type"] = "application/json"
@@ -108,7 +109,6 @@ def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
             return inline_bytes
         image_url = _pick_url(item_dict.get("url") or item_dict.get("urls"))
         if image_url:
-            from .common import _resolve_image_bytes
             return _resolve_image_bytes(image_url)
 
     for key in _IMAGE_B64_KEYS:
@@ -118,7 +118,6 @@ def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
 
     image_url = getattr(image_data, "url", None)
     if isinstance(image_url, str) and image_url.strip():
-        from .common import _resolve_image_bytes
         return _resolve_image_bytes(image_url)
 
     raise ValueError("empty image response")
