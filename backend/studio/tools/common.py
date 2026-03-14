@@ -13,9 +13,11 @@ from openai import OpenAI
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 logger = logging.getLogger(__name__)
 
-_IMAGE_B64_KEYS = ("b64_json", "b64", "base64", "image_base64")
 
-
+# 将相对路径转为完整的绝对 URL（拼接 PUBLIC_MEDIA_BASE 等环境变量作为前缀）。
+# 输入: url — 相对或绝对路径字符串。
+# 调用方: views.ExcalidrawImageEditJobView.get, tasks._persist_video_thumbnail,
+#          image.imagetool, video._save_video_to_media
 def _abs_url(url: str | None) -> str | None:
     if not url:
         return None
@@ -32,10 +34,16 @@ def _abs_url(url: str | None) -> str | None:
     return f"{base}{url}" if url.startswith("/") else f"{base}/{url}"
 
 
+# 读取 MEDIA_OPENAI_API_KEY 环境变量，返回去空格后的 API 密钥字符串。
+# 输入: 无（从环境变量读取）。
+# 调用方: openai_client_for_media
 def _pick_api_key() -> str:
     return os.getenv("MEDIA_OPENAI_API_KEY", "").strip()
 
 
+# 优先读取 MEDIA_OPENAI_BASE_URL，其次 OPENAI_BASE_URL，返回 API 基础地址。
+# 输入: 无（从环境变量读取）。
+# 调用方: openai_client_for_media
 def _pick_api_base() -> str | None:
     media_base = os.getenv("MEDIA_OPENAI_BASE_URL", "").strip().rstrip("/")
     if media_base:
@@ -44,6 +52,10 @@ def _pick_api_base() -> str | None:
     return chat_base or None
 
 
+# 构建用于媒体生成的 OpenAI 客户端实例（含 API 密钥、基础地址、超时配置）。
+# 输入: 无（内部调用 _pick_api_key, _pick_api_base, _read_media_timeout_seconds）。
+# 调用方: views._analyze_video_shooting_script, image._generate_image_media,
+#          image._edit_image_media, video._generate_video_media
 def openai_client_for_media() -> OpenAI:
     api_key = _pick_api_key()
     base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
@@ -57,6 +69,10 @@ def openai_client_for_media() -> OpenAI:
     return OpenAI(**params)
 
 
+# 从环境变量读取整数值，解析失败时返回默认值。
+# 输入: name — 环境变量名, default — 默认整数值。
+# 调用方: tasks._schedule_video_retry, tasks._remove_white_background,
+#          video._video_poll_limits
 def _read_int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or str(raw).strip() == "":
@@ -67,18 +83,9 @@ def _read_int_env(name: str, default: int) -> int:
         return default
 
 
-def _read_bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    value = str(raw).strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
+# 读取 MEDIA_OPENAI_TIMEOUT 环境变量作为超时秒数（最小 1 秒）。
+# 输入: default_seconds — 默认超时秒数。
+# 调用方: openai_client_for_media
 def _read_media_timeout_seconds(default_seconds: float = 180.0) -> float:
     timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", str(default_seconds))
     try:
@@ -87,6 +94,10 @@ def _read_media_timeout_seconds(default_seconds: float = 180.0) -> float:
         return default_seconds
 
 
+# 根据 URL 下载图片并返回字节内容；localhost 地址会自动尝试内部服务地址回退。
+# 输入: url — 图片 URL。
+# 调用方: views._build_inline_image_data_url, tasks._persist_video_thumbnail,
+#          video._generate_video_media
 def _resolve_image_bytes(url: str) -> bytes:
     parsed = urlparse(url)
     candidates: list[str] = [url]
@@ -133,6 +144,9 @@ def _resolve_image_bytes(url: str) -> bytes:
     raise ValueError("failed to resolve image bytes")
 
 
+# 解码 base64 图片字符串为字节（支持 data:URI 前缀自动剥离）。
+# 输入: raw — base64 编码的图片字符串。
+# 调用方: image._extract_image_bytes_from_responses_output
 def _decode_image_base64(raw: str) -> bytes:
     token = (raw or "").strip()
     if token.startswith("data:") and "," in token:
@@ -143,76 +157,17 @@ def _decode_image_base64(raw: str) -> bytes:
     return base64.b64decode(token)
 
 
-def _extract_inline_image_bytes(item: dict[str, Any]) -> bytes | None:
-    decode_error: Exception | None = None
-
-    def _try_value(value: Any) -> bytes | None:
-        nonlocal decode_error
-        if isinstance(value, str) and value.strip():
-            try:
-                return _decode_image_base64(value)
-            except Exception as exc:
-                decode_error = exc
-        return None
-
-    for key in _IMAGE_B64_KEYS:
-        content = _try_value(item.get(key))
-        if content:
-            return content
-
-    images = item.get("images")
-    if isinstance(images, list):
-        for image in images:
-            if not isinstance(image, dict):
-                continue
-            for key in _IMAGE_B64_KEYS:
-                content = _try_value(image.get(key))
-                if content:
-                    return content
-
-    if decode_error:
-        raise ValueError(f"invalid inline base64 image data: {decode_error}")
-    return None
-
-
+# 将图片字节编码为 data:URI 字符串（如 data:image/png;base64,...）。
+# 输入: image_bytes — 图片字节, mime_type — MIME 类型。
+# 调用方: image._edit_image_media
 def _image_bytes_to_data_url(image_bytes: bytes, mime_type: str = "image/png") -> str:
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
 
-def _pick_url(value: Any) -> str | None:
-    if not value:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        for item in value:
-            if isinstance(item, str) and item:
-                return item
-    if isinstance(value, dict):
-        return _pick_url(value.get("url") or value.get("urls"))
-    return None
-
-
-def _find_first_url(obj: Any) -> str | None:
-    """Best-effort scan for the first http(s) URL in nested data."""
-    if obj is None:
-        return None
-    if isinstance(obj, str):
-        return obj if obj.strip().lower().startswith(("http://", "https://")) else None
-    if isinstance(obj, dict):
-        for v in obj.values():
-            url = _find_first_url(v)
-            if url:
-                return url
-    if isinstance(obj, (list, tuple)):
-        for item in obj:
-            url = _find_first_url(item)
-            if url:
-                return url
-    return None
-
-
+# 将任意对象转为 dict（依次尝试 dict 判断、to_dict()、model_dump()、__dict__）。
+# 输入: value — 任意对象。
+# 调用方: image._extract_image_bytes_from_responses_output
 def _to_dict_compatible(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
