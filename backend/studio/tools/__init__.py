@@ -24,7 +24,6 @@ from .common import (
 )
 from .image import (
     _edit_image_media,
-    _generate_image_bytes,
     _generate_image_media,
     imagetool,
 )
@@ -56,7 +55,6 @@ __all__ = [
     "_save_asset",
     # image
     "_edit_image_media",
-    "_generate_image_bytes",
     "_generate_image_media",
     "imagetool",
     # video

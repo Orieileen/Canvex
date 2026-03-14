@@ -19,7 +19,7 @@ from .common import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RESPONSES_MODEL = "gpt-4.1"
+_DEFAULT_RESPONSES_MODEL = "gpt-4o-mini"
 
 
 def _responses_model() -> str:
@@ -141,10 +141,6 @@ def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     return _extract_image_bytes_from_responses_output(response)
 
 
-def _generate_image_bytes(prompt: str, size: str) -> bytes:
-    return _generate_image_media(prompt, size)
-
-
 @tool("imagetool")
 def imagetool(
     prompt: str,
@@ -161,7 +157,7 @@ def imagetool(
         folder_id = _resolve_excalidraw_asset_folder_id(scene_id)
 
     try:
-        image_bytes = _generate_image_bytes(prompt, size or "1024x1024")
+        image_bytes = _generate_image_media(prompt, size or "1024x1024")
         asset = _save_asset(image_bytes, prompt, folder_id)
     except Exception as exc:
         return {"error": str(exc)}
