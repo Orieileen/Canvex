@@ -91,7 +91,7 @@ def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory
     parts.append("Image and video generation are orchestrated by backend workflows based on user intent.")
     parts.append(
         "When users request image/video, provide brief prompt refinement and quality constraints "
-        "(style, subject, camera/motion, duration, aspect ratio, do/don't)."
+        "(style, subject, camera/motion, seconds, size, do/don't)."
     )
     return "\n".join(parts)
 
@@ -162,11 +162,11 @@ _VIDEO_KEYWORDS = (
     "clip",
     "gif",
 )
-_ASPECT_RATIO_RE = re.compile(r"(16\s*:\s*9|9\s*:\s*16)")
+_ASPECT_RATIO_RE = re.compile(r"(16\s*:\s*9|9\s*:\s*16|1\s*:\s*1)")
 _DURATION_RE = re.compile(r"(\d{1,3})\s*(s|sec|secs|seconds|秒)")
 _URL_RE = re.compile(r"https?://\S+")
 _IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
-_ASPECT_RATIO_VALUE_RE = re.compile(r"^\d{1,2}:\d{1,2}$")
+_VIDEO_SIZE_RE = re.compile(r"\b(1280x720|720x1280|720x720)\b", re.IGNORECASE)
 _MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video", "generate_flowchart"}
 _FLOWCHART_MERMAID_BLOCK_RE = re.compile(r"```(?:\w+)?\s*([\s\S]*?)```", re.IGNORECASE)
 _FLOWCHART_EDGE_RE = re.compile(r"(-->|---|==>|-.->)")
@@ -174,6 +174,13 @@ _FLOWCHART_NODE_DEF_RE = re.compile(r"(?m)\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[[^\]]
 _FLOWCHART_MAX_CHARS = 16000
 _FLOWCHART_MAX_NODES = 120
 _FLOWCHART_MAX_EDGES = 240
+_VIDEO_ALLOWED_SECONDS = (4, 8, 12)
+_VIDEO_SIZE_BY_ASPECT_RATIO = {
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "1:1": "720x720",
+}
+_VIDEO_ASPECT_RATIO_BY_SIZE = {value: key for key, value in _VIDEO_SIZE_BY_ASPECT_RATIO.items()}
 
 
 def _extract_urls(text: str) -> List[str]:
@@ -192,22 +199,26 @@ def _detect_video_intent(state: ChatState) -> Dict[str, Any] | None:
     lowered = last_user.lower()
     if not any(keyword in lowered for keyword in _VIDEO_KEYWORDS):
         return None
-    aspect_ratio = None
-    ratio_match = _ASPECT_RATIO_RE.search(last_user)
-    if ratio_match:
-        aspect_ratio = ratio_match.group(1).replace(" ", "")
-    duration = None
+    size = None
+    size_match = _VIDEO_SIZE_RE.search(last_user)
+    if size_match:
+        size = size_match.group(1).lower()
+    else:
+        ratio_match = _ASPECT_RATIO_RE.search(last_user)
+        if ratio_match:
+            size = _VIDEO_SIZE_BY_ASPECT_RATIO[ratio_match.group(1).replace(" ", "")]
+    seconds = None
     duration_match = _DURATION_RE.search(last_user)
     if duration_match:
         try:
-            duration = int(duration_match.group(1))
+            seconds = int(duration_match.group(1))
         except Exception:
-            duration = None
+            seconds = None
     image_urls = _extract_urls(last_user)
     return {
         "prompt": last_user.strip(),
-        "duration": duration or 10,
-        "aspect_ratio": aspect_ratio or "16:9",
+        "seconds": seconds or 12,
+        "size": size or "1280x720",
         "image_urls": image_urls or None,
     }
 
@@ -263,15 +274,6 @@ def _normalize_image_size(value: Any, default: str = "1024x1024") -> str:
     if not raw:
         return default
     if _IMAGE_SIZE_RE.match(raw):
-        return raw
-    return default
-
-
-def _normalize_aspect_ratio(value: Any, default: str = "16:9") -> str:
-    raw = str(value or "").strip().replace(" ", "")
-    if not raw:
-        return default
-    if _ASPECT_RATIO_VALUE_RE.match(raw):
         return raw
     return default
 
@@ -449,8 +451,8 @@ def _build_media_action_prompt(state: ChatState) -> str:
         "image": {"prompt": "string", "size": "1024x1024"},
         "video": {
             "prompt": "string",
-            "duration": 10,
-            "aspect_ratio": "16:9",
+            "seconds": 12,
+            "size": "1280x720",
             "image_urls": ["https://example.com/a.png"],
         },
         "flowchart": {
@@ -471,8 +473,8 @@ def _build_media_action_prompt(state: ChatState) -> str:
         "- Otherwise use chat.\n"
         "Generation rules:\n"
         "- For generate_image, fill image.prompt and optional image.size (default 1024x1024).\n"
-        "- For generate_video, fill video.prompt and optional video.duration/video.aspect_ratio/video.image_urls "
-        "(defaults: duration=10, aspect_ratio=16:9).\n"
+        "- For generate_video, fill video.prompt and optional video.seconds/video.size/video.image_urls "
+        "(defaults: seconds=12, size=1280x720).\n"
         "- For generate_flowchart, fill flowchart.prompt and optional flowchart.current_mermaid.\n"
         "Assistant text rules:\n"
         "- assistant must be concise and in the user's language.\n"
@@ -532,18 +534,17 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any] | None:
         video_payload = decision_raw.get("video") if isinstance(decision_raw.get("video"), dict) else {}
         fallback_video = _detect_video_intent(state) or {}
         prompt = str(video_payload.get("prompt") or fallback_video.get("prompt") or last_user).strip() or last_user
-        duration = _bounded_int(video_payload.get("duration") or fallback_video.get("duration"), default=10)
-        aspect_ratio = _normalize_aspect_ratio(
-            video_payload.get("aspect_ratio") or fallback_video.get("aspect_ratio") or "16:9",
-            default="16:9",
-        )
+        seconds = video_payload.get("seconds")
+        if seconds in (None, ""):
+            seconds = fallback_video.get("seconds") or 12
+        size = str(video_payload.get("size") or fallback_video.get("size") or "1280x720").strip().lower().replace(" ", "")
         image_urls = _normalize_image_urls(video_payload.get("image_urls")) or _normalize_image_urls(
             fallback_video.get("image_urls")
         )
         decision["video_args"] = {
             "prompt": prompt,
-            "duration": duration,
-            "aspect_ratio": aspect_ratio,
+            "seconds": seconds,
+            "size": size,
             "image_urls": image_urls,
             "scene_id": state.get("scene_id"),
         }
@@ -607,10 +608,16 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": "scene_id is required"}
 
     try:
-        duration = int(args.get("duration") or 10)
+        seconds = int(args.get("seconds") or 12)
     except Exception:
-        duration = 10
-    aspect_ratio = str(args.get("aspect_ratio") or "16:9").strip() or "16:9"
+        return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
+    if seconds not in _VIDEO_ALLOWED_SECONDS:
+        return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
+
+    size = str(args.get("size") or "1280x720").strip().lower().replace(" ", "")
+    aspect_ratio = _VIDEO_ASPECT_RATIO_BY_SIZE.get(size)
+    if not aspect_ratio:
+        return {"error": f"video size must be one of {list(_VIDEO_ASPECT_RATIO_BY_SIZE)}"}
     image_urls = _normalize_image_urls(args.get("image_urls"))
     model_name = str(args.get("model") or "").strip()
 
@@ -619,7 +626,7 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
             scene_id=scene_id,
             prompt=prompt,
             image_urls=image_urls or [],
-            duration=max(1, duration),
+            duration=seconds,
             aspect_ratio=aspect_ratio,
             model_name=model_name,
             status=ExcalidrawVideoJob.Status.QUEUED,
@@ -765,15 +772,18 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
     if media_action and media_action.get("action") == "generate_video":
         yield {"intent": "video"}
         args = media_action.get("video_args") if isinstance(media_action.get("video_args"), dict) else {}
+        enqueue_result = _enqueue_video_job(args)
         yield {
             "tool_results": [
                 {
                     "tool": "videotool",
-                    "result": _enqueue_video_job(args),
+                    "result": enqueue_result,
                 }
             ]
         }
         assistant_text = str(media_action.get("assistant") or "好的，视频任务已提交。").strip()
+        if enqueue_result.get("error"):
+            assistant_text = str(enqueue_result.get("error")).strip() or assistant_text
         yield {
             "assistant": {
                 "role": "assistant",
@@ -805,20 +815,21 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
             yield {"intent": "video"}
             args = {
                 "prompt": video_intent.get("prompt") or state.get("last_user") or "",
-                "duration": video_intent.get("duration") or 10,
-                "aspect_ratio": video_intent.get("aspect_ratio") or "16:9",
+                "seconds": video_intent.get("seconds") or 12,
+                "size": video_intent.get("size") or "1280x720",
                 "image_urls": video_intent.get("image_urls"),
                 "scene_id": state.get("scene_id"),
             }
+            enqueue_result = _enqueue_video_job(args)
             yield {
                 "tool_results": [
                     {
                         "tool": "videotool",
-                        "result": _enqueue_video_job(args),
+                        "result": enqueue_result,
                     }
                 ]
             }
-            content = "好的，视频任务已提交。"
+            content = str(enqueue_result.get("error") or "好的，视频任务已提交。")
             yield {
                 "assistant": {
                     "role": "assistant",

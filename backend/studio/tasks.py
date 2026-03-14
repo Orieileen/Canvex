@@ -20,6 +20,12 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
+_VIDEO_SIZE_BY_ASPECT_RATIO = {
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "1:1": "720x720",
+}
+
 
 def _read_int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -29,6 +35,13 @@ def _read_int_env(name: str, default: int) -> int:
         return int(str(raw).strip())
     except Exception:
         return default
+
+
+def _video_size_from_aspect_ratio(aspect_ratio: str) -> str:
+    raw = str(aspect_ratio or "").strip().replace(" ", "")
+    if raw not in _VIDEO_SIZE_BY_ASPECT_RATIO:
+        raise ValueError(f"unsupported aspect_ratio: {raw}")
+    return _VIDEO_SIZE_BY_ASPECT_RATIO[raw]
 
 
 def _is_retryable_video_error(message: str | None) -> bool:
@@ -402,8 +415,8 @@ def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
     payload = {
         "model": job.model_name or os.getenv("MEDIA_OPENAI_VIDEO_MODEL", "sora-2-pro"),
         "prompt": job.prompt,
-        "duration": job.duration or 15,
-        "aspect_ratio": job.aspect_ratio or "16:9",
+        "seconds": job.duration or 12,
+        "size": _video_size_from_aspect_ratio(job.aspect_ratio or "16:9"),
         "image_urls": job.image_urls or [],
     }
 
