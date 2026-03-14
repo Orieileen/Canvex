@@ -31,6 +31,9 @@ from .tools import imagetool
 
 
 class ChatState(TypedDict):
+    """LangGraph 状态对象，在图的所有节点之间共享。
+    由前端 API 层构造后传入 chat_graph.invoke()，各节点读写其中的字段。"""
+
     scene_id: str
     workspace_id: str
     scene_title: str
@@ -61,10 +64,18 @@ _VIDEO_ASPECT_RATIO_BY_SIZE = {v: k for k, v in _VIDEO_SIZE_BY_ASPECT_RATIO.item
 
 
 # ---------------------------------------------------------------------------
-# Model helpers
+# Model helpers — 构建 LLM 实例与提示词
 # ---------------------------------------------------------------------------
 
 def _build_chat_model(streaming: bool) -> ChatOpenAI:
+    """构建 ChatOpenAI 实例，所有参数从环境变量读取。
+
+    参数:
+        streaming: 是否启用流式输出。call_llm 的 chat 分支传 True，
+                   其余所有需要一次性 JSON 返回的场景传 False。
+    返回:
+        ChatOpenAI 实例。被 _invoke_json、call_llm 等几乎所有需要调用 LLM 的函数使用。
+    """
     params: Dict[str, Any] = {
         "model": os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4o-mini"),
         "temperature": float(os.getenv("EXCALIDRAW_CHAT_TEMPERATURE", "0.4")),
@@ -85,6 +96,15 @@ def _build_chat_model(streaming: bool) -> ChatOpenAI:
 
 
 def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory_state: Dict[str, Any]) -> str:
+    """拼装 Canvex Copilot 的系统提示词，包含角色定义、回复策略、场景上下文和用户记忆。
+
+    参数:
+        scene_title:    当前画布场景标题，来自 ChatState["scene_title"]。
+        summary_state:  当前对话摘要状态，来自 ChatState["summary_state"]（load_memory 节点填充）。
+        memory_state:   长期记忆状态，来自 ChatState["memory_state"]（load_memory 节点填充）。
+    返回:
+        完整的系统提示词字符串。仅被 call_llm 的 chat 分支使用，传给 _to_langchain_messages。
+    """
     parts = [
         "You are Canvex Copilot, an AI assistant embedded in an Excalidraw-style canvas workspace.",
         "Your job is to help users brainstorm, make decisions, and produce concrete next actions for the current scene.",
@@ -114,6 +134,15 @@ def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory
 
 
 def _to_langchain_messages(system_prompt: str, messages: List[Dict[str, str]]) -> List[BaseMessage]:
+    """将前端传来的消息列表转换为 LangChain BaseMessage 序列。
+
+    参数:
+        system_prompt: 由 _build_system_prompt 生成的系统提示词。
+        messages:      ChatState["messages"]，前端传入的 [{"role": "user"|"assistant", "content": "..."}] 列表。
+    返回:
+        以 SystemMessage 开头、HumanMessage/AIMessage 交替的列表。
+        被 call_llm 的 chat 分支用于 llm.stream() 调用。
+    """
     output: List[BaseMessage] = [SystemMessage(content=system_prompt)]
     for item in messages:
         role = item.get("role")
@@ -126,6 +155,17 @@ def _to_langchain_messages(system_prompt: str, messages: List[Dict[str, str]]) -
 
 
 def _invoke_json(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> Dict[str, Any] | None:
+    """向 LLM 发送一次性请求并将返回内容解析为 JSON dict。
+
+    参数:
+        llm:           由 _build_chat_model(streaming=False) 创建的非流式模型实例。
+        system_prompt: 角色设定提示词（如 "You are Canvex media action router."）。
+        user_prompt:   包含具体任务说明和 schema 的用户提示词。
+    返回:
+        解析后的 dict，或解析失败时返回 None。
+        被 _decide_media_action、_generate_flowchart_result、update_memory 使用，
+        用于获取意图分类、流程图 Mermaid 代码、摘要/记忆更新等结构化结果。
+    """
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
@@ -141,15 +181,33 @@ def _invoke_json(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> Dict[
 
 
 # ---------------------------------------------------------------------------
-# Normalizers
+# Normalizers — 输入值标准化
 # ---------------------------------------------------------------------------
 
 def _normalize_image_size(value: Any, default: str = "1024x1024") -> str:
+    """将图片尺寸值标准化为 "宽x高" 格式（如 "1024x1024"）。
+
+    参数:
+        value:   LLM 返回的 image.size 字段，可能是任意类型。来自 _decide_media_action 解析的 LLM 输出。
+        default: 不合法时的默认尺寸。
+    返回:
+        合法的尺寸字符串。被 _decide_media_action 在 generate_image 分支中使用，
+        最终传入 image_args 供 _start_image_job 调用 imagetool。
+    """
     raw = str(value or "").strip().lower().replace(" ", "")
     return raw if _IMAGE_SIZE_RE.match(raw) else default
 
 
 def _normalize_image_urls(value: Any) -> List[str] | None:
+    """将图片 URL 输入标准化为字符串列表或 None。
+
+    参数:
+        value: LLM 返回的 image_urls 字段，可能是单个字符串、列表或其他类型。
+               来自 _decide_media_action 或 _enqueue_video_job 的入参。
+    返回:
+        非空字符串列表或 None。被 _decide_media_action（video 分支）和
+        _enqueue_video_job 使用，作为视频生成的参考图片列表。
+    """
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
@@ -159,10 +217,18 @@ def _normalize_image_urls(value: Any) -> List[str] | None:
 
 
 # ---------------------------------------------------------------------------
-# Flowchart helpers
+# Flowchart helpers — 流程图生成与校验
 # ---------------------------------------------------------------------------
 
 def _extract_mermaid_block(value: str) -> str:
+    """从可能包含 markdown 代码块的文本中提取纯 Mermaid 内容。
+
+    参数:
+        value: LLM 返回的原始文本，可能被 ```mermaid ... ``` 包裹。
+               来自 _normalize_flowchart_mermaid 传入。
+    返回:
+        去除代码块标记后的纯 Mermaid 文本。仅被 _normalize_flowchart_mermaid 调用。
+    """
     text = str(value or "").strip()
     if not text:
         return ""
@@ -171,6 +237,15 @@ def _extract_mermaid_block(value: str) -> str:
 
 
 def _normalize_flowchart_mermaid(value: str) -> str:
+    """标准化 Mermaid 流程图文本：去除代码块、统一首行为 "flowchart TD"、清理空行。
+
+    参数:
+        value: 原始 Mermaid 文本，来自 LLM 输出或用户传入的 current_mermaid。
+    返回:
+        标准化后的 Mermaid 字符串，首行固定为 "flowchart TD"。
+        被 _generate_flowchart_result（生成/修复流程图时）和
+        _decide_media_action（解析 flowchart.current_mermaid 时）使用。
+    """
     text = _extract_mermaid_block(value)
     if not text:
         return ""
@@ -191,6 +266,14 @@ def _normalize_flowchart_mermaid(value: str) -> str:
 
 
 def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
+    """校验 Mermaid 流程图文本是否符合前端渲染要求。
+
+    参数:
+        mermaid_text: 经 _normalize_flowchart_mermaid 标准化后的 Mermaid 文本。
+    返回:
+        校验通过返回 None；不通过返回描述错误原因的字符串。
+        被 _generate_flowchart_result 调用，用于判断生成结果是否需要修复。
+    """
     text = (mermaid_text or "").strip()
     if not text:
         return "empty mermaid"
@@ -216,6 +299,14 @@ def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
 
 
 def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None = None) -> str:
+    """构建流程图生成的 LLM 提示词，包含 schema、约束规则和用户请求。
+
+    参数:
+        prompt:          用户的流程图生成请求文本，来自 _generate_flowchart_result 的 args["prompt"]。
+        current_mermaid: 可选的已有 Mermaid 代码（用于增量编辑），来自 args["current_mermaid"]。
+    返回:
+        完整的提示词字符串。仅被 _generate_flowchart_result 传入 _invoke_json 使用。
+    """
     existing_text = (current_mermaid or "").strip() or "(none)"
     schema = {"mermaid": "string (pure mermaid only, no markdown fences)"}
     return (
@@ -240,6 +331,16 @@ def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None 
 
 
 def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[str, Any]:
+    """调用 LLM 生成 Mermaid 流程图，校验失败时自动尝试一次修复。
+
+    参数:
+        args:  来自 _decide_media_action 返回的 flowchart_args，包含 prompt 和可选 current_mermaid。
+        state: 当前 ChatState，用于在 args 缺少 prompt 时从 last_user 取值。
+    返回:
+        成功时返回 {"format", "diagram_type", "direction", "mermaid"} 字典；
+        失败时返回 {"error": "..."} 字典。
+        被 call_llm 的 generate_flowchart 分支调用，结果通过 tool_results yield 给前端。
+    """
     prompt = str(args.get("prompt") or state.get("last_user") or "").strip()
     if not prompt:
         return {"error": "prompt is required"}
@@ -296,10 +397,18 @@ def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[s
 
 
 # ---------------------------------------------------------------------------
-# Media action router (single LLM call, no heuristic fallback)
+# Media action router — 通过单次 LLM 调用判断用户意图
 # ---------------------------------------------------------------------------
 
 def _build_media_action_prompt(state: ChatState) -> str:
+    """构建意图路由的 LLM 提示词，包含 action schema、摘要/记忆上下文和用户最新消息。
+
+    参数:
+        state: 当前 ChatState，从中读取 summary_state、memory_state 和 last_user。
+               由 _decide_media_action 传入。
+    返回:
+        完整的提示词字符串。仅被 _decide_media_action 传入 _invoke_json 使用。
+    """
     schema = {
         "action": "chat | clarify | generate_image | generate_video | generate_flowchart",
         "assistant": "string",
@@ -345,7 +454,21 @@ def _build_media_action_prompt(state: ChatState) -> str:
 
 
 def _decide_media_action(state: ChatState) -> Dict[str, Any]:
-    """Route user intent via LLM. Returns action dict; defaults to chat on failure."""
+    """通过 LLM 判断用户意图，返回结构化的 action 字典；LLM 失败时默认返回 chat。
+
+    参数:
+        state: 当前 ChatState，由 call_llm 节点传入。
+               从中读取 last_user（用户最新消息）、summary_state、memory_state、scene_id。
+    返回:
+        包含 "action" 键的字典，action 值为 _MEDIA_ACTIONS 之一。
+        根据 action 不同，还包含:
+        - clarify:            assistant（追问文本）
+        - generate_image:     assistant + image_args（prompt, size, scene_id）
+        - generate_video:     assistant + video_args（prompt, seconds, size, image_urls, scene_id）
+        - generate_flowchart: assistant + flowchart_args（prompt, current_mermaid）
+        - chat:               仅 action 字段
+        仅被 call_llm 调用，用于决定走哪条处理分支。
+    """
     last_user = (state.get("last_user") or "").strip()
     if not last_user:
         return {"action": "chat"}
@@ -398,10 +521,20 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Video / image job helpers
+# Video / image job helpers — 提交生成任务
 # ---------------------------------------------------------------------------
 
 def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
+    """校验参数后创建 ExcalidrawVideoJob 记录并发送 Celery 异步任务。
+
+    参数:
+        args: 来自 _decide_media_action 返回的 video_args 字典，包含:
+              prompt, seconds, size, image_urls, scene_id。
+    返回:
+        成功时返回 {"job_id", "task_id", "status", "scene_id", "poll_url"}；
+        参数校验失败时返回 {"error": "..."}。
+        被 call_llm 的 generate_video 分支调用，结果通过 tool_results yield 给前端。
+    """
     prompt = str(args.get("prompt") or "").strip()
     scene_id = str(args.get("scene_id") or "").strip()
     if not prompt:
@@ -442,6 +575,15 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _start_image_job(args: Dict[str, Any]) -> queue.Queue:
+    """在后台线程中启动 imagetool 图片生成，返回用于接收结果的队列。
+
+    参数:
+        args: 来自 _decide_media_action 返回的 image_args 字典，包含 prompt, size, scene_id。
+              直接透传给 imagetool.invoke()。
+    返回:
+        queue.Queue 实例，线程完成后会放入 {"tool": imagetool.name, "result": ...}。
+        被 call_llm 的 generate_image 分支调用，调用方通过 queue.get(timeout=...) 等待结果。
+    """
     q: queue.Queue = queue.Queue(maxsize=1)
 
     def worker():
@@ -456,14 +598,28 @@ def _start_image_job(args: Dict[str, Any]) -> queue.Queue:
 
 
 def _image_tool_wait_timeout() -> float:
+    """从环境变量读取图片生成的最大等待秒数（默认 1200 秒）。
+
+    返回:
+        超时秒数。仅被 call_llm 的 generate_image 分支用于 image_queue.get(timeout=...)。
+    """
     return float(os.getenv("EXCALIDRAW_IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200"))
 
 
 # ---------------------------------------------------------------------------
-# Graph nodes
+# Graph nodes — LangGraph 图节点（按执行顺序: load_memory → call_llm → update_memory）
 # ---------------------------------------------------------------------------
 
 def load_memory(state: ChatState) -> Dict[str, Any]:
+    """图的入口节点：从 Redis 加载当前场景的摘要状态和长期记忆。
+
+    参数:
+        state: ChatState，从中读取 workspace_id 和 scene_id 来定位 Redis key。
+               如果 state 中已有 summary_state/memory_state（前端预填），则直接使用。
+    返回:
+        {"summary_state": ..., "memory_state": ...}，合并回 ChatState 供后续节点使用。
+        下游节点: call_llm。
+    """
     workspace_id = state.get("workspace_id") or "public"
     scene_id = state.get("scene_id")
     return {
@@ -473,15 +629,28 @@ def load_memory(state: ChatState) -> Dict[str, Any]:
 
 
 def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
+    """图的核心节点：根据用户意图执行对应的处理分支，以 generator 方式 yield 流式结果。
+
+    参数:
+        state: ChatState，由 load_memory 节点填充了 summary_state 和 memory_state。
+               从中读取 last_user、messages、scene_title、scene_id 等字段。
+    yield 输出（按分支）:
+        - clarify:            yield assistant（追问文本）
+        - generate_flowchart: yield tool_results（Mermaid 结果）+ assistant
+        - generate_video:     yield intent("video") + tool_results（job 信息）+ assistant
+        - generate_image:     yield intent("image") + assistant + tool_results（图片结果）
+        - chat:               yield 多次 assistant（流式累积文本）
+    下游节点: update_memory。assistant 和 tool_results 会写入 ChatState 供 update_memory 读取。
+    """
     media_action = _decide_media_action(state)
     action = media_action["action"]
 
-    # --- clarify ---
+    # --- clarify: 追问用户补充信息 ---
     if action == "clarify":
         yield {"assistant": {"role": "assistant", "content": media_action.get("assistant", "")}}
         return
 
-    # --- flowchart ---
+    # --- generate_flowchart: 生成 Mermaid 流程图 ---
     if action == "generate_flowchart":
         args = media_action.get("flowchart_args", {})
         result = _generate_flowchart_result(args, state)
@@ -492,7 +661,7 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
         yield {"assistant": {"role": "assistant", "content": text}}
         return
 
-    # --- video ---
+    # --- generate_video: 提交视频生成任务 ---
     if action == "generate_video":
         yield {"intent": "video"}
         args = media_action.get("video_args", {})
@@ -504,7 +673,7 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
         yield {"assistant": {"role": "assistant", "content": text}}
         return
 
-    # --- image ---
+    # --- generate_image: 启动图片生成并等待结果 ---
     if action == "generate_image":
         yield {"intent": "image"}
         args = media_action.get("image_args", {})
@@ -518,7 +687,7 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
         yield {"tool_results": [result]}
         return
 
-    # --- chat (streaming) ---
+    # --- chat: 普通对话，流式输出 ---
     system_prompt = _build_system_prompt(
         state.get("scene_title", ""),
         state.get("summary_state") or {},
@@ -538,10 +707,18 @@ def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Memory update
+# Memory update — 对话后更新摘要与长期记忆
 # ---------------------------------------------------------------------------
 
 def _flatten_summary_entries(summary_state: Dict[str, Any]) -> List[str]:
+    """将摘要状态中的各字段展平为 "类型:内容" 格式的字符串列表。
+
+    参数:
+        summary_state: 单个摘要快照（可能来自历史记录中的某一轮），由 _collect_stable_entries 传入。
+    返回:
+        如 ["goal:xxx", "constraint:yyy", "decision:zzz"] 的字符串列表。
+        仅被 _collect_stable_entries 使用，用于统计各条目在历史窗口中的出现频次。
+    """
     state = normalize_summary_state(summary_state)
     entries: List[str] = []
     goal = state.get("goal")
@@ -554,6 +731,15 @@ def _flatten_summary_entries(summary_state: Dict[str, Any]) -> List[str]:
 
 
 def _collect_stable_entries(history: List[Dict[str, Any]]) -> List[str]:
+    """从摘要历史窗口中筛选出稳定条目（出现次数 >= MEMORY_STABILITY_MIN_COUNT）。
+
+    参数:
+        history: 摘要快照列表，由 append_summary_history 返回。
+                 每个元素是一轮对话后的 summary_state 快照。
+    返回:
+        达到稳定阈值的条目列表。被 update_memory 使用，
+        当列表非空时触发长期记忆更新。
+    """
     window = history[-MEMORY_STABILITY_WINDOW:] if MEMORY_STABILITY_WINDOW > 0 else history
     counts: Counter[str] = Counter()
     for snapshot in window:
@@ -563,6 +749,19 @@ def _collect_stable_entries(history: List[Dict[str, Any]]) -> List[str]:
 
 
 def update_memory(state: ChatState) -> Dict[str, Any]:
+    """图的末尾节点：根据本轮对话更新摘要状态，并在条目稳定时更新长期记忆。
+
+    参数:
+        state: ChatState，从中读取:
+               - summary_state / memory_state: 当前摘要和记忆（load_memory 填充）
+               - last_user: 用户最新消息（前端传入）
+               - assistant: call_llm 生成的助手回复
+               - workspace_id / scene_id: 用于定位 Redis key
+    返回:
+        {"summary_state": ..., "memory_state": ...}，更新后的状态会合并回 ChatState。
+        同时将更新结果写入 Redis 持久化。
+        这是图的终止节点，之后流转到 END。
+    """
     summary_state = normalize_summary_state(state.get("summary_state"))
     memory_state = normalize_memory_state(state.get("memory_state"))
     last_user = state.get("last_user") or ""
@@ -574,7 +773,7 @@ def update_memory(state: ChatState) -> Dict[str, Any]:
     workspace_id = state.get("workspace_id") or "public"
     scene_id = state.get("scene_id")
 
-    # Update summary
+    # 更新摘要状态
     exchange = f"user: {last_user}\nassistant: {assistant}".strip()
     schema = json.dumps(normalize_summary_state(None), ensure_ascii=False, indent=2)
     current = json.dumps(normalize_summary_state(summary_state), ensure_ascii=False, indent=2)
@@ -589,7 +788,7 @@ def update_memory(state: ChatState) -> Dict[str, Any]:
         summary_state = normalize_summary_state(summary_candidate)
         set_summary_state(workspace_id, scene_id, summary_state)
 
-    # Check for stable entries -> update long-term memory
+    # 检查稳定条目 → 触发长期记忆更新
     history = append_summary_history(workspace_id, scene_id, summary_state)
     stable_entries = _collect_stable_entries(history)
     if stable_entries:
@@ -611,10 +810,16 @@ def update_memory(state: ChatState) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Graph
+# Graph — 组装 LangGraph 有向图: load_memory → call_llm → update_memory → END
 # ---------------------------------------------------------------------------
 
 def build_chat_graph():
+    """构建并编译 LangGraph 聊天图。
+
+    返回:
+        编译后的 CompiledGraph 实例，赋值给模块级变量 chat_graph。
+        外部通过 chat_graph.invoke(state) 或 chat_graph.stream(state) 调用。
+    """
     graph = StateGraph(ChatState)
     graph.add_node("load_memory", load_memory)
     graph.add_node("call_llm", call_llm)
