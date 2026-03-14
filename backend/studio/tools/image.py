@@ -5,84 +5,23 @@ import logging
 import os
 from typing import Any
 
-import requests
 from langchain_core.tools import tool
 from PIL import Image
 
 from .assets import _resolve_excalidraw_asset_folder_id, _save_asset
 from .common import (
-    OPENAI_DEFAULT_BASE_URL,
     _IMAGE_B64_KEYS,
     _abs_url,
     _decode_image_base64,
     _extract_inline_image_bytes,
     _image_bytes_to_data_url,
-    _pick_api_base,
-    _pick_api_key,
     _pick_url,
-    _read_media_timeout_seconds,
     _resolve_image_bytes,
     _to_dict_compatible,
     openai_client_for_media,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _images_generations_compat_endpoint(base_url: str) -> str:
-    root = (base_url or "").strip().rstrip("/")
-    if not root:
-        root = OPENAI_DEFAULT_BASE_URL
-    if root.endswith("/images/generations"):
-        return root
-    if root.endswith("/v1"):
-        return f"{root}/images/generations"
-    return f"{root}/v1/images/generations"
-
-
-def _post_images_generations_compat(
-    *,
-    json_payload: dict[str, Any] | None = None,
-    form_payload: dict[str, Any] | None = None,
-    file_payload: dict[str, Any] | None = None,
-) -> bytes:
-    api_key = _pick_api_key()
-    base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
-    if not api_key:
-        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
-    endpoint = _images_generations_compat_endpoint(base_url)
-
-    headers = {"Authorization": f"Bearer {api_key}"}
-    kwargs: dict[str, Any] = {
-        "headers": headers,
-        "timeout": _read_media_timeout_seconds(),
-    }
-    if json_payload is not None:
-        headers["Content-Type"] = "application/json"
-        kwargs["json"] = json_payload
-    else:
-        kwargs["data"] = form_payload or {}
-        if file_payload:
-            kwargs["files"] = file_payload
-
-    try:
-        response = requests.post(endpoint, **kwargs)
-    except Exception as exc:
-        raise RuntimeError(f"compat /images/generations request failed: {exc}") from exc
-
-    if response.status_code >= 400:
-        body = (response.text or "").strip()
-        snippet = f"{body[:1200]}..." if len(body) > 1200 else body
-        raise RuntimeError(
-            f"compat /images/generations returned {response.status_code}: {snippet or 'empty response body'}"
-        )
-
-    try:
-        data = response.json()
-    except Exception as exc:
-        raise RuntimeError(f"compat /images/generations returned invalid json: {exc}") from exc
-
-    return _extract_image_bytes_from_openai_response(data)
 
 
 def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
@@ -121,19 +60,6 @@ def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
         return _resolve_image_bytes(image_url)
 
     raise ValueError("empty image response")
-
-
-def _is_unsupported_image_edit_model_error(exc: Exception) -> bool:
-    text = str(exc or "").lower()
-    if not text:
-        return False
-    if "invalid value" in text and "param" in text and "model" in text:
-        return True
-    if "model_not_found" in text:
-        return True
-    if "value must be" in text and "model" in text:
-        return True
-    return False
 
 
 def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
@@ -191,73 +117,8 @@ def _generate_image_media(prompt: str, size: str) -> bytes:
     if response_format in {"b64_json", "url"}:
         kwargs["response_format"] = response_format
 
-    try:
-        response = client.images.generate(**kwargs)
-    except Exception as exc:
-        if "response_format" in str(exc).lower() and "response_format" in kwargs:
-            kwargs.pop("response_format", None)
-            response = client.images.generate(**kwargs)
-        else:
-            raise
+    response = client.images.generate(**kwargs)
     return _extract_image_bytes_from_openai_response(response)
-
-
-def _edit_image_media_via_compat_endpoint(source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
-    response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
-    if response_format not in {"b64_json", "url"}:
-        response_format = "b64_json"
-
-    # Try multipart first so third-party gateways can receive file + prompt.
-    image_field = "image"
-    filename = "image.png"
-    mime_type = "image/png"
-    form_payload: dict[str, Any] = {
-        "prompt": prompt,
-        "n": "1",
-        "response_format": response_format,
-    }
-    if model:
-        form_payload["model"] = model
-    if size:
-        form_payload["size"] = size
-
-    try:
-        return _post_images_generations_compat(
-            form_payload=form_payload,
-            file_payload={image_field: (filename, source_bytes, mime_type)},
-        )
-    except Exception as multipart_exc:
-        logger.warning(
-            "compat /images/generations multipart edit failed, try json image fallback: %s",
-            multipart_exc,
-        )
-
-    # Fallback to JSON + data URL image for gateways that do not accept multipart.
-    data_url = _image_bytes_to_data_url(source_bytes, mime_type)
-    json_fields = ["image", "input_image", "image_base64"]
-
-    json_errors: list[str] = []
-    for image_key in json_fields:
-        payload: dict[str, Any] = {
-            "prompt": prompt,
-            "n": 1,
-            "response_format": response_format,
-            image_key: data_url,
-        }
-        if model:
-            payload["model"] = model
-        if size:
-            payload["size"] = size
-        try:
-            return _post_images_generations_compat(json_payload=payload)
-        except Exception as json_exc:
-            json_errors.append(f"{image_key}: {json_exc}")
-
-    message = "; ".join(json_errors) if json_errors else "no json image attempts"
-    raise RuntimeError(
-        f"compat /images/generations with image failed ({message}). "
-        "Text-only fallback is disabled because it ignores source image."
-    )
 
 
 def _edit_image_media_via_images(client, source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
@@ -318,44 +179,15 @@ def _edit_image_media_via_responses(client, source_bytes: bytes, prompt: str, si
 
 def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     client = openai_client_for_media()
-    configured_model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
-    fallback_model = (os.getenv("MEDIA_OPENAI_IMAGE_EDIT_FALLBACK_MODEL") or configured_model).strip()
-    model = configured_model or fallback_model
+    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
     if not model:
         raise RuntimeError("image edit model is not configured; set MEDIA_OPENAI_IMAGE_EDIT_MODEL")
-    compat_model = model
+
     normalized_source = _normalize_image_for_edit(source_bytes)
-    use_responses = model.startswith("gpt-image")
 
-    try:
-        if use_responses:
-            return _edit_image_media_via_responses(client, normalized_source, prompt, size, model)
-        return _edit_image_media_via_images(client, normalized_source, prompt, size, model)
-    except Exception as exc:
-        last_exc: Exception = exc
-        if (
-            fallback_model
-            and fallback_model != model
-            and _is_unsupported_image_edit_model_error(exc)
-        ):
-            try:
-                return _edit_image_media_via_images(client, normalized_source, prompt, size, fallback_model)
-            except Exception as fallback_exc:
-                last_exc = fallback_exc
-                compat_model = fallback_model
-
-        logger.warning(
-            "Image edit sdk path failed for model=%s, fallback to compat /images/generations model=%s",
-            model,
-            compat_model,
-        )
-        try:
-            return _edit_image_media_via_compat_endpoint(normalized_source, prompt, size, compat_model)
-        except Exception as compat_exc:
-            raise RuntimeError(
-                f"image edit provider failed ({model}): {last_exc}. "
-                f"compat /images/generations fallback failed ({compat_model}): {compat_exc}"
-            ) from compat_exc
+    if model.startswith("gpt-image"):
+        return _edit_image_media_via_responses(client, normalized_source, prompt, size, model)
+    return _edit_image_media_via_images(client, normalized_source, prompt, size, model)
 
 
 def _generate_image_bytes(prompt: str, size: str) -> bytes:
