@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import queue
@@ -30,8 +29,6 @@ from .models import ExcalidrawVideoJob
 from .tasks import run_excalidraw_video_job
 from .tools import imagetool
 
-OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
-
 
 class ChatState(TypedDict):
     scene_id: str
@@ -46,25 +43,45 @@ class ChatState(TypedDict):
     intent: str | None
 
 
-def _get_model_name() -> str:
-    return os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4o-mini")
+_IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
+_FLOWCHART_MERMAID_BLOCK_RE = re.compile(r"```(?:\w+)?\s*([\s\S]*?)```", re.IGNORECASE)
+_FLOWCHART_EDGE_RE = re.compile(r"(-->|---|==>|-.->)")
+_FLOWCHART_NODE_DEF_RE = re.compile(r"(?m)\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^}]*\})")
+_FLOWCHART_MAX_CHARS = 16000
+_FLOWCHART_MAX_NODES = 120
+_FLOWCHART_MAX_EDGES = 240
+_MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video", "generate_flowchart"}
+_VIDEO_ALLOWED_SECONDS = (4, 8, 12)
+_VIDEO_SIZE_BY_ASPECT_RATIO = {
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "1:1": "720x720",
+}
+_VIDEO_ASPECT_RATIO_BY_SIZE = {v: k for k, v in _VIDEO_SIZE_BY_ASPECT_RATIO.items()}
 
 
-def _get_temperature() -> float:
-    try:
-        return float(os.getenv("EXCALIDRAW_CHAT_TEMPERATURE", "0.4"))
-    except Exception:
-        return 0.4
+# ---------------------------------------------------------------------------
+# Model helpers
+# ---------------------------------------------------------------------------
 
+def _build_chat_model(streaming: bool) -> ChatOpenAI:
+    params: Dict[str, Any] = {
+        "model": os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4o-mini"),
+        "temperature": float(os.getenv("EXCALIDRAW_CHAT_TEMPERATURE", "0.4")),
+        "streaming": streaming,
+    }
+    max_tokens = os.getenv("EXCALIDRAW_CHAT_MAX_TOKENS")
+    if max_tokens:
+        params["max_tokens"] = int(max_tokens)
 
-def _get_max_tokens() -> int | None:
-    raw = os.getenv("EXCALIDRAW_CHAT_MAX_TOKENS")
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except Exception:
-        return None
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        params["api_key"] = api_key
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if base_url:
+        params["base_url"] = base_url
+
+    return ChatOpenAI(**params)
 
 
 def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory_state: Dict[str, Any]) -> str:
@@ -96,33 +113,6 @@ def _build_system_prompt(scene_title: str, summary_state: Dict[str, Any], memory
     return "\n".join(parts)
 
 
-def _build_chat_model(streaming: bool) -> ChatOpenAI:
-    params: Dict[str, Any] = {
-        "model": _get_model_name(),
-        "temperature": _get_temperature(),
-        "streaming": streaming,
-    }
-    max_tokens = _get_max_tokens()
-    if max_tokens is not None:
-        params["max_tokens"] = max_tokens
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL", "").strip() or OPENAI_DEFAULT_BASE_URL
-    sig = inspect.signature(ChatOpenAI)
-
-    if api_key:
-        if "api_key" in sig.parameters:
-            params["api_key"] = api_key
-        elif "openai_api_key" in sig.parameters:
-            params["openai_api_key"] = api_key
-    if "base_url" in sig.parameters:
-        params["base_url"] = base_url
-    elif "openai_api_base" in sig.parameters:
-        params["openai_api_base"] = base_url
-
-    return ChatOpenAI(**params)
-
-
 def _to_langchain_messages(system_prompt: str, messages: List[Dict[str, str]]) -> List[BaseMessage]:
     output: List[BaseMessage] = [SystemMessage(content=system_prompt)]
     for item in messages:
@@ -135,157 +125,49 @@ def _to_langchain_messages(system_prompt: str, messages: List[Dict[str, str]]) -
     return output
 
 
-def _chunk_content(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            if isinstance(item, dict):
-                parts.append(str(item.get("text") or ""))
-            else:
-                parts.append(str(item))
-        return "".join(parts)
-    return str(value)
-
-
-_VIDEO_KEYWORDS = (
-    "video",
-    "视频",
-    "动画",
-    "动效",
-    "短片",
-    "影片",
-    "movie",
-    "clip",
-    "gif",
-)
-_ASPECT_RATIO_RE = re.compile(r"(16\s*:\s*9|9\s*:\s*16|1\s*:\s*1)")
-_DURATION_RE = re.compile(r"(\d{1,3})\s*(s|sec|secs|seconds|秒)")
-_URL_RE = re.compile(r"https?://\S+")
-_IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
-_VIDEO_SIZE_RE = re.compile(r"\b(1280x720|720x1280|720x720)\b", re.IGNORECASE)
-_MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video", "generate_flowchart"}
-_FLOWCHART_MERMAID_BLOCK_RE = re.compile(r"```(?:\w+)?\s*([\s\S]*?)```", re.IGNORECASE)
-_FLOWCHART_EDGE_RE = re.compile(r"(-->|---|==>|-.->)")
-_FLOWCHART_NODE_DEF_RE = re.compile(r"(?m)\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^}]*\})")
-_FLOWCHART_MAX_CHARS = 16000
-_FLOWCHART_MAX_NODES = 120
-_FLOWCHART_MAX_EDGES = 240
-_VIDEO_ALLOWED_SECONDS = (4, 8, 12)
-_VIDEO_SIZE_BY_ASPECT_RATIO = {
-    "16:9": "1280x720",
-    "9:16": "720x1280",
-    "1:1": "720x720",
-}
-_VIDEO_ASPECT_RATIO_BY_SIZE = {value: key for key, value in _VIDEO_SIZE_BY_ASPECT_RATIO.items()}
-
-
-def _extract_urls(text: str) -> List[str]:
-    urls: List[str] = []
-    for match in _URL_RE.findall(text or ""):
-        url = match.rstrip(").,]}>\"'")
-        if url:
-            urls.append(url)
-    return urls
-
-
-def _detect_video_intent(state: ChatState) -> Dict[str, Any] | None:
-    last_user = state.get("last_user") or ""
-    if not last_user:
-        return None
-    lowered = last_user.lower()
-    if not any(keyword in lowered for keyword in _VIDEO_KEYWORDS):
-        return None
-    size = None
-    size_match = _VIDEO_SIZE_RE.search(last_user)
-    if size_match:
-        size = size_match.group(1).lower()
-    else:
-        ratio_match = _ASPECT_RATIO_RE.search(last_user)
-        if ratio_match:
-            size = _VIDEO_SIZE_BY_ASPECT_RATIO[ratio_match.group(1).replace(" ", "")]
-    seconds = None
-    duration_match = _DURATION_RE.search(last_user)
-    if duration_match:
-        try:
-            seconds = int(duration_match.group(1))
-        except Exception:
-            seconds = None
-    image_urls = _extract_urls(last_user)
-    return {
-        "prompt": last_user.strip(),
-        "seconds": seconds or 12,
-        "size": size or "1280x720",
-        "image_urls": image_urls or None,
-    }
-
-
 def _invoke_json(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> Dict[str, Any] | None:
-    try:
-        response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
-    except Exception:
-        return None
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ])
     content = getattr(response, "content", "") or ""
-    if not isinstance(content, str):
-        content = _chunk_content(content)
+    if isinstance(content, list):
+        content = "".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in content)
     content = content.strip()
     if not content:
         return None
-    try:
-        parsed = json.loads(content)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                parsed = json.loads(content[start : end + 1])
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                return None
-    return None
+    parsed = json.loads(content)
+    return parsed if isinstance(parsed, dict) else None
 
 
-def _classify_image_intent(state: ChatState) -> Dict[str, Any] | None:
-    last_user = state.get("last_user") or ""
-    if not last_user:
-        return None
-    llm = _build_chat_model(streaming=False)
-    prompt = (
-        "Return JSON only: {\"use_image\": boolean, \"prompt\": string, \"size\": string}.\n"
-        "use_image=true when user asks to generate/draw/create an image.\n"
-        "If true, rewrite prompt into concise English prompt when possible.\n"
-        "If false, prompt/size should be empty strings.\n\n"
-        f"User: {last_user}\n"
-    )
-    return _invoke_json(llm, "You are an image intent classifier.", prompt)
-
+# ---------------------------------------------------------------------------
+# Normalizers
+# ---------------------------------------------------------------------------
 
 def _normalize_image_size(value: Any, default: str = "1024x1024") -> str:
     raw = str(value or "").strip().lower().replace(" ", "")
-    if not raw:
-        return default
-    if _IMAGE_SIZE_RE.match(raw):
-        return raw
-    return default
+    return raw if _IMAGE_SIZE_RE.match(raw) else default
 
+
+def _normalize_image_urls(value: Any) -> List[str] | None:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    output = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return output or None
+
+
+# ---------------------------------------------------------------------------
+# Flowchart helpers
+# ---------------------------------------------------------------------------
 
 def _extract_mermaid_block(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
     match = _FLOWCHART_MERMAID_BLOCK_RE.search(text)
-    if match:
-        return (match.group(1) or "").strip()
-    return text
+    return (match.group(1) or "").strip() if match else text
 
 
 def _normalize_flowchart_mermaid(value: str) -> str:
@@ -300,20 +182,12 @@ def _normalize_flowchart_mermaid(value: str) -> str:
     if not lines:
         return ""
 
-    head = lines[0].strip()
-    lower_head = head.lower()
-    if lower_head.startswith("graph"):
-        lines[0] = "flowchart TD"
-    elif lower_head.startswith("flowchart"):
+    lower_head = lines[0].strip().lower()
+    if lower_head.startswith(("graph", "flowchart")):
         lines[0] = "flowchart TD"
     else:
         lines.insert(0, "flowchart TD")
     return "\n".join(lines)
-
-
-def _count_flowchart_nodes(mermaid_text: str) -> int:
-    node_ids = {match.group(1) for match in _FLOWCHART_NODE_DEF_RE.finditer(mermaid_text or "")}
-    return len(node_ids)
 
 
 def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
@@ -326,9 +200,7 @@ def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
         return "contains markdown code fence"
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return "empty mermaid"
-    if lines[0].lower() != "flowchart td":
+    if not lines or lines[0].lower() != "flowchart td":
         return "first line must be flowchart TD"
     if re.search(r"(?mi)^\s*(classDef|click|style|linkStyle)\b", text):
         return "contains unsupported directives"
@@ -337,18 +209,15 @@ def _validate_flowchart_td_mermaid(mermaid_text: str) -> str | None:
     if edge_count > _FLOWCHART_MAX_EDGES:
         return f"too many edges ({edge_count})"
 
-    node_count = _count_flowchart_nodes(text)
+    node_count = len({m.group(1) for m in _FLOWCHART_NODE_DEF_RE.finditer(text)})
     if node_count > _FLOWCHART_MAX_NODES:
         return f"too many nodes ({node_count})"
     return None
 
 
 def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None = None) -> str:
-    existing = (current_mermaid or "").strip()
-    existing_text = existing if existing else "(none)"
-    schema = {
-        "mermaid": "string (pure mermaid only, no markdown fences)",
-    }
+    existing_text = (current_mermaid or "").strip() or "(none)"
+    schema = {"mermaid": "string (pure mermaid only, no markdown fences)"}
     return (
         "Generate Mermaid diagram JSON only.\n"
         "Schema:\n"
@@ -370,29 +239,6 @@ def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None 
     )
 
 
-def _build_flowchart_repair_prompt(candidate: str, validation_error: str, user_prompt: str) -> str:
-    schema = {
-        "mermaid": "string (valid flowchart TD mermaid)",
-    }
-    return (
-        "Repair Mermaid and return JSON only.\n"
-        "Schema:\n"
-        f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
-        "Constraints:\n"
-        "- First line must be exactly: flowchart TD\n"
-        "- Keep semantic meaning of user request.\n"
-        "- Use quoted labels only, e.g. A1[\"...\"]\n"
-        "- Replace math/LaTeX-like label text with plain words.\n"
-        "- Do not keep braces/formula tokens in labels (e.g. { }, lim_{...}, ->).\n"
-        "- Avoid classDef/click/style/linkStyle directives.\n"
-        "- No markdown code fences.\n\n"
-        f"Validation error:\n{validation_error}\n\n"
-        f"User request:\n{user_prompt}\n\n"
-        f"Candidate Mermaid:\n{candidate}\n\n"
-        "JSON:"
-    )
-
-
 def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[str, Any]:
     prompt = str(args.get("prompt") or state.get("last_user") or "").strip()
     if not prompt:
@@ -409,10 +255,26 @@ def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[s
     validation_error = _validate_flowchart_td_mermaid(candidate)
 
     if validation_error:
+        schema = {"mermaid": "string (valid flowchart TD mermaid)"}
+        repair_prompt = (
+            "Repair Mermaid and return JSON only.\n"
+            "Schema:\n"
+            f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+            "Constraints:\n"
+            "- First line must be exactly: flowchart TD\n"
+            "- Keep semantic meaning of user request.\n"
+            "- Use quoted labels only, e.g. A1[\"...\"]\n"
+            "- Replace math/LaTeX-like label text with plain words.\n"
+            "- Do not keep braces/formula tokens in labels (e.g. { }, lim_{...}, ->).\n"
+            "- Avoid classDef/click/style/linkStyle directives.\n"
+            "- No markdown code fences.\n\n"
+            f"Validation error:\n{validation_error}\n\n"
+            f"User request:\n{prompt}\n\n"
+            f"Candidate Mermaid:\n{candidate}\n\n"
+            "JSON:"
+        )
         repair_raw = _invoke_json(
-            llm,
-            "You repair Mermaid flowchart TD. Output strict JSON only.",
-            _build_flowchart_repair_prompt(candidate, validation_error, prompt),
+            llm, "You repair Mermaid flowchart TD. Output strict JSON only.", repair_prompt
         )
         repaired = _normalize_flowchart_mermaid(str((repair_raw or {}).get("mermaid") or ""))
         repaired_error = _validate_flowchart_td_mermaid(repaired)
@@ -433,16 +295,9 @@ def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[s
     }
 
 
-def _bounded_int(value: Any, default: int, minimum: int = 1, maximum: int = 180) -> int:
-    try:
-        number = int(value)
-    except Exception:
-        number = default
-    number = max(minimum, number)
-    if maximum > 0:
-        number = min(maximum, number)
-    return number
-
+# ---------------------------------------------------------------------------
+# Media action router (single LLM call, no heuristic fallback)
+# ---------------------------------------------------------------------------
 
 def _build_media_action_prompt(state: ChatState) -> str:
     schema = {
@@ -489,10 +344,11 @@ def _build_media_action_prompt(state: ChatState) -> str:
     )
 
 
-def _decide_media_action(state: ChatState) -> Dict[str, Any] | None:
+def _decide_media_action(state: ChatState) -> Dict[str, Any]:
+    """Route user intent via LLM. Returns action dict; defaults to chat on failure."""
     last_user = (state.get("last_user") or "").strip()
     if not last_user:
-        return None
+        return {"action": "chat"}
 
     llm = _build_chat_model(streaming=False)
     decision_raw = _invoke_json(
@@ -501,103 +357,49 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any] | None:
         _build_media_action_prompt(state),
     )
     if not decision_raw:
-        return None
+        return {"action": "chat"}
 
-    action = str(decision_raw.get("action") or "").strip().lower()
+    action = str(decision_raw.get("action") or "chat").strip().lower()
     if action not in _MEDIA_ACTIONS:
-        return None
+        return {"action": "chat"}
 
     decision: Dict[str, Any] = {"action": action}
     assistant = str(decision_raw.get("assistant") or "").strip()
     if assistant:
         decision["assistant"] = assistant
 
-    if action == "clarify":
-        if not assistant:
-            decision["assistant"] = "为了准确执行，请补充关键要求（如主体、风格或画幅）。"
-        return decision
-
     if action == "generate_image":
         image_payload = decision_raw.get("image") if isinstance(decision_raw.get("image"), dict) else {}
-        prompt = str(image_payload.get("prompt") or last_user).strip() or last_user
-        size = _normalize_image_size(image_payload.get("size"), default="1024x1024")
         decision["image_args"] = {
-            "prompt": prompt,
-            "size": size,
+            "prompt": str(image_payload.get("prompt") or last_user).strip(),
+            "size": _normalize_image_size(image_payload.get("size")),
             "scene_id": state.get("scene_id"),
         }
-        if not assistant:
-            decision["assistant"] = "好的，正在生成图片。"
-        return decision
 
-    if action == "generate_video":
+    elif action == "generate_video":
         video_payload = decision_raw.get("video") if isinstance(decision_raw.get("video"), dict) else {}
-        fallback_video = _detect_video_intent(state) or {}
-        prompt = str(video_payload.get("prompt") or fallback_video.get("prompt") or last_user).strip() or last_user
-        seconds = video_payload.get("seconds")
-        if seconds in (None, ""):
-            seconds = fallback_video.get("seconds") or 12
-        size = str(video_payload.get("size") or fallback_video.get("size") or "1280x720").strip().lower().replace(" ", "")
-        image_urls = _normalize_image_urls(video_payload.get("image_urls")) or _normalize_image_urls(
-            fallback_video.get("image_urls")
-        )
         decision["video_args"] = {
-            "prompt": prompt,
-            "seconds": seconds,
-            "size": size,
-            "image_urls": image_urls,
+            "prompt": str(video_payload.get("prompt") or last_user).strip(),
+            "seconds": video_payload.get("seconds") or 12,
+            "size": str(video_payload.get("size") or "1280x720").strip().lower().replace(" ", ""),
+            "image_urls": _normalize_image_urls(video_payload.get("image_urls")),
             "scene_id": state.get("scene_id"),
         }
-        if not assistant:
-            decision["assistant"] = "好的，视频任务已提交。"
-        return decision
 
-    if action == "generate_flowchart":
-        flowchart_payload = decision_raw.get("flowchart") if isinstance(decision_raw.get("flowchart"), dict) else {}
-        prompt = str(flowchart_payload.get("prompt") or last_user).strip() or last_user
-        current_mermaid = _normalize_flowchart_mermaid(str(flowchart_payload.get("current_mermaid") or ""))
-        flowchart_args: Dict[str, Any] = {"prompt": prompt}
+    elif action == "generate_flowchart":
+        fc_payload = decision_raw.get("flowchart") if isinstance(decision_raw.get("flowchart"), dict) else {}
+        flowchart_args: Dict[str, Any] = {"prompt": str(fc_payload.get("prompt") or last_user).strip()}
+        current_mermaid = _normalize_flowchart_mermaid(str(fc_payload.get("current_mermaid") or ""))
         if current_mermaid:
             flowchart_args["current_mermaid"] = current_mermaid
         decision["flowchart_args"] = flowchart_args
-        if not assistant:
-            decision["assistant"] = "好的，正在生成 Mermaid 流程图。"
-        return decision
 
-    # chat
     return decision
 
 
-def _normalize_image_urls(value: Any) -> List[str] | None:
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return None
-    output = [item.strip() for item in value if isinstance(item, str) and item.strip()]
-    return output or None
-
-
-def _queue_get_with_timeout(result_queue: queue.Queue, tool_name: str, timeout_seconds: float) -> Dict[str, Any]:
-    try:
-        if timeout_seconds <= 0:
-            return result_queue.get_nowait()
-        return result_queue.get(timeout=timeout_seconds)
-    except queue.Empty:
-        seconds_label = f"{timeout_seconds:g}"
-        return {
-            "tool": tool_name,
-            "result": {"error": f"{tool_name} timed out after {seconds_label}s"},
-        }
-
-
-def _image_tool_wait_timeout_seconds() -> float:
-    raw = os.getenv("EXCALIDRAW_IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200")
-    try:
-        value = float(raw)
-        return max(0.0, value)
-    except Exception:
-        return 1200
-
+# ---------------------------------------------------------------------------
+# Video / image job helpers
+# ---------------------------------------------------------------------------
 
 def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(args.get("prompt") or "").strip()
@@ -607,10 +409,7 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
     if not scene_id:
         return {"error": "scene_id is required"}
 
-    try:
-        seconds = int(args.get("seconds") or 12)
-    except Exception:
-        return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
+    seconds = int(args.get("seconds") or 12)
     if seconds not in _VIDEO_ALLOWED_SECONDS:
         return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
 
@@ -618,22 +417,20 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
     aspect_ratio = _VIDEO_ASPECT_RATIO_BY_SIZE.get(size)
     if not aspect_ratio:
         return {"error": f"video size must be one of {list(_VIDEO_ASPECT_RATIO_BY_SIZE)}"}
+
     image_urls = _normalize_image_urls(args.get("image_urls"))
     model_name = str(args.get("model") or "").strip()
 
-    try:
-        job = ExcalidrawVideoJob.objects.create(
-            scene_id=scene_id,
-            prompt=prompt,
-            image_urls=image_urls or [],
-            duration=seconds,
-            aspect_ratio=aspect_ratio,
-            model_name=model_name,
-            status=ExcalidrawVideoJob.Status.QUEUED,
-        )
-        run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")
-    except Exception as exc:
-        return {"error": str(exc)}
+    job = ExcalidrawVideoJob.objects.create(
+        scene_id=scene_id,
+        prompt=prompt,
+        image_urls=image_urls or [],
+        duration=seconds,
+        aspect_ratio=aspect_ratio,
+        model_name=model_name,
+        status=ExcalidrawVideoJob.Status.QUEUED,
+    )
+    run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")
 
     return {
         "job_id": str(job.id),
@@ -658,33 +455,91 @@ def _start_image_job(args: Dict[str, Any]) -> queue.Queue:
     return q
 
 
-def _build_summary_update_prompt(summary_state: Dict[str, Any], last_user: str, assistant: str) -> str:
-    exchange = "\n".join([f"user: {last_user}", f"assistant: {assistant}"]).strip()
-    schema = json.dumps(normalize_summary_state(None), ensure_ascii=False, indent=2)
-    current = json.dumps(normalize_summary_state(summary_state), ensure_ascii=False, indent=2)
-    return (
-        "Update summary state snapshot. Output JSON only.\n"
-        "Rules: keep confirmed, still-valid, overridable facts only.\n\n"
-        f"Schema:\n{schema}\n\n"
-        f"Current summary JSON:\n{current}\n\n"
-        f"New exchange:\n{exchange}\n\n"
-        "Updated summary JSON:"
+def _image_tool_wait_timeout() -> float:
+    return float(os.getenv("EXCALIDRAW_IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200"))
+
+
+# ---------------------------------------------------------------------------
+# Graph nodes
+# ---------------------------------------------------------------------------
+
+def load_memory(state: ChatState) -> Dict[str, Any]:
+    workspace_id = state.get("workspace_id") or "public"
+    scene_id = state.get("scene_id")
+    return {
+        "summary_state": state.get("summary_state") or get_summary_state(workspace_id, scene_id),
+        "memory_state": state.get("memory_state") or get_memory_state(workspace_id, scene_id),
+    }
+
+
+def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
+    media_action = _decide_media_action(state)
+    action = media_action["action"]
+
+    # --- clarify ---
+    if action == "clarify":
+        yield {"assistant": {"role": "assistant", "content": media_action.get("assistant", "")}}
+        return
+
+    # --- flowchart ---
+    if action == "generate_flowchart":
+        args = media_action.get("flowchart_args", {})
+        result = _generate_flowchart_result(args, state)
+        yield {"tool_results": [{"tool": "mermaid_flowchart", "result": result}]}
+        text = media_action.get("assistant", "")
+        if result.get("error"):
+            text = "流程图生成失败，请重试。"
+        yield {"assistant": {"role": "assistant", "content": text}}
+        return
+
+    # --- video ---
+    if action == "generate_video":
+        yield {"intent": "video"}
+        args = media_action.get("video_args", {})
+        result = _enqueue_video_job(args)
+        yield {"tool_results": [{"tool": "videotool", "result": result}]}
+        text = media_action.get("assistant", "")
+        if result.get("error"):
+            text = result["error"]
+        yield {"assistant": {"role": "assistant", "content": text}}
+        return
+
+    # --- image ---
+    if action == "generate_image":
+        yield {"intent": "image"}
+        args = media_action.get("image_args", {})
+        image_queue = _start_image_job(args)
+        text = media_action.get("assistant", "")
+        yield {"assistant": {"role": "assistant", "content": text}}
+        try:
+            result = image_queue.get(timeout=_image_tool_wait_timeout())
+        except queue.Empty:
+            result = {"tool": imagetool.name, "result": {"error": "image generation timed out"}}
+        yield {"tool_results": [result]}
+        return
+
+    # --- chat (streaming) ---
+    system_prompt = _build_system_prompt(
+        state.get("scene_title", ""),
+        state.get("summary_state") or {},
+        state.get("memory_state") or {},
     )
+    llm = _build_chat_model(streaming=True)
+    lc_messages = _to_langchain_messages(system_prompt, state["messages"])
+
+    content = ""
+    for chunk in llm.stream(lc_messages):
+        delta = getattr(chunk, "content", "") or ""
+        if isinstance(delta, list):
+            delta = "".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in delta)
+        if delta:
+            content += delta
+            yield {"assistant": {"role": "assistant", "content": content}}
 
 
-def _build_memory_update_prompt(memory_state: Dict[str, Any], stable_entries: List[str]) -> str:
-    schema = json.dumps(normalize_memory_state(None), ensure_ascii=False, indent=2)
-    current = json.dumps(normalize_memory_state(memory_state), ensure_ascii=False, indent=2)
-    stable = "\n".join([f"- {item}" for item in stable_entries]) if stable_entries else "(none)"
-    return (
-        "Update long-term memory from stable summary entries. Output JSON only.\n"
-        "Keep durable preferences/constraints/policies, not transient chat content.\n\n"
-        f"Schema:\n{schema}\n\n"
-        f"Current memory JSON:\n{current}\n\n"
-        f"Stable entries:\n{stable}\n\n"
-        "Updated memory JSON:"
-    )
-
+# ---------------------------------------------------------------------------
+# Memory update
+# ---------------------------------------------------------------------------
 
 def _flatten_summary_entries(summary_state: Dict[str, Any]) -> List[str]:
     state = normalize_summary_state(summary_state)
@@ -692,14 +547,9 @@ def _flatten_summary_entries(summary_state: Dict[str, Any]) -> List[str]:
     goal = state.get("goal")
     if goal:
         entries.append(f"goal:{goal}")
-    for item in state.get("constraints") or []:
-        entries.append(f"constraint:{item}")
-    for item in state.get("decisions") or []:
-        entries.append(f"decision:{item}")
-    for item in state.get("open_questions") or []:
-        entries.append(f"open_question:{item}")
-    for item in state.get("next_actions") or []:
-        entries.append(f"next_action:{item}")
+    for key in ("constraints", "decisions", "open_questions", "next_actions"):
+        for item in state.get(key) or []:
+            entries.append(f"{key.rstrip('s')}:{item}")
     return entries
 
 
@@ -712,220 +562,57 @@ def _collect_stable_entries(history: List[Dict[str, Any]]) -> List[str]:
     return [entry for entry, count in counts.items() if count >= MEMORY_STABILITY_MIN_COUNT]
 
 
-def load_memory(state: ChatState) -> Dict[str, Any]:
-    workspace_id = state.get("workspace_id") or "public"
-    scene_id = state.get("scene_id")
-    summary_state = state.get("summary_state") or get_summary_state(workspace_id, scene_id)
-    memory_state = state.get("memory_state") or get_memory_state(workspace_id, scene_id)
-    return {
-        "summary_state": summary_state,
-        "memory_state": memory_state,
-    }
-
-
-def call_llm(state: ChatState) -> Iterator[Dict[str, Any]]:
-    system_prompt = _build_system_prompt(
-        state.get("scene_title", ""),
-        state.get("summary_state") or {},
-        state.get("memory_state") or {},
-    )
-    llm = _build_chat_model(streaming=True)
-    lc_messages = _to_langchain_messages(system_prompt, state["messages"])
-
-    content = ""
-
-    media_action = _decide_media_action(state)
-    if media_action and media_action.get("action") == "clarify":
-        assistant_text = str(media_action.get("assistant") or "").strip()
-        yield {
-            "assistant": {
-                "role": "assistant",
-                "content": assistant_text,
-            }
-        }
-        return
-
-    if media_action and media_action.get("action") == "generate_flowchart":
-        args = media_action.get("flowchart_args") if isinstance(media_action.get("flowchart_args"), dict) else {}
-        flowchart_result = _generate_flowchart_result(args, state)
-        yield {
-            "tool_results": [
-                {
-                    "tool": "mermaid_flowchart",
-                    "result": flowchart_result,
-                }
-            ]
-        }
-        assistant_text = str(media_action.get("assistant") or "").strip()
-        if flowchart_result.get("error"):
-            assistant_text = "流程图生成失败，请重试。"
-        elif not assistant_text:
-            assistant_text = "好的，已生成 Mermaid flowchart TD，可插入到画布。"
-        yield {
-            "assistant": {
-                "role": "assistant",
-                "content": assistant_text,
-            }
-        }
-        return
-
-    if media_action and media_action.get("action") == "generate_video":
-        yield {"intent": "video"}
-        args = media_action.get("video_args") if isinstance(media_action.get("video_args"), dict) else {}
-        enqueue_result = _enqueue_video_job(args)
-        yield {
-            "tool_results": [
-                {
-                    "tool": "videotool",
-                    "result": enqueue_result,
-                }
-            ]
-        }
-        assistant_text = str(media_action.get("assistant") or "好的，视频任务已提交。").strip()
-        if enqueue_result.get("error"):
-            assistant_text = str(enqueue_result.get("error")).strip() or assistant_text
-        yield {
-            "assistant": {
-                "role": "assistant",
-                "content": assistant_text,
-            }
-        }
-        return
-
-    if media_action and media_action.get("action") == "generate_image":
-        yield {"intent": "image"}
-        args = media_action.get("image_args") if isinstance(media_action.get("image_args"), dict) else {}
-        image_queue = _start_image_job(args)
-        assistant_text = str(media_action.get("assistant") or "好的，正在生成图片。").strip()
-        content = assistant_text
-        yield {
-            "assistant": {
-                "role": "assistant",
-                "content": assistant_text,
-            }
-        }
-        timeout_seconds = _image_tool_wait_timeout_seconds()
-        yield {"tool_results": [_queue_get_with_timeout(image_queue, imagetool.name, timeout_seconds)]}
-        return
-
-    if not media_action:
-        # Fallback only when planner fails: retain old heuristic behavior.
-        video_intent = _detect_video_intent(state)
-        if video_intent:
-            yield {"intent": "video"}
-            args = {
-                "prompt": video_intent.get("prompt") or state.get("last_user") or "",
-                "seconds": video_intent.get("seconds") or 12,
-                "size": video_intent.get("size") or "1280x720",
-                "image_urls": video_intent.get("image_urls"),
-                "scene_id": state.get("scene_id"),
-            }
-            enqueue_result = _enqueue_video_job(args)
-            yield {
-                "tool_results": [
-                    {
-                        "tool": "videotool",
-                        "result": enqueue_result,
-                    }
-                ]
-            }
-            content = str(enqueue_result.get("error") or "好的，视频任务已提交。")
-            yield {
-                "assistant": {
-                    "role": "assistant",
-                    "content": content,
-                }
-            }
-            return
-
-        intent = _classify_image_intent(state) or {}
-        if intent.get("use_image") is True:
-            yield {"intent": "image"}
-            args = {
-                "prompt": intent.get("prompt") or state.get("last_user") or "",
-                "size": intent.get("size") or "1024x1024",
-                "scene_id": state.get("scene_id"),
-            }
-            image_queue = _start_image_job(args)
-            content = "好的，正在生成图片。"
-            yield {
-                "assistant": {
-                    "role": "assistant",
-                    "content": content,
-                }
-            }
-            timeout_seconds = _image_tool_wait_timeout_seconds()
-            yield {"tool_results": [_queue_get_with_timeout(image_queue, imagetool.name, timeout_seconds)]}
-            return
-
-    try:
-        for chunk in llm.stream(lc_messages):
-            delta = _chunk_content(getattr(chunk, "content", ""))
-            if not delta:
-                continue
-            content += delta
-            yield {
-                "assistant": {
-                    "role": "assistant",
-                    "content": content,
-                }
-            }
-    except Exception:
-        content = ""
-
-    if not content:
-        yield {
-            "assistant": {
-                "role": "assistant",
-                "content": "",
-            }
-        }
-
-
 def update_memory(state: ChatState) -> Dict[str, Any]:
     summary_state = normalize_summary_state(state.get("summary_state"))
     memory_state = normalize_memory_state(state.get("memory_state"))
     last_user = state.get("last_user") or ""
     assistant = (state.get("assistant") or {}).get("content") or ""
-    exchange = "\n".join([f"user: {last_user}", f"assistant: {assistant}"]).strip()
-    if not exchange:
-        return {
-            "summary_state": summary_state,
-            "memory_state": memory_state,
-        }
+    if not last_user and not assistant:
+        return {"summary_state": summary_state, "memory_state": memory_state}
 
     llm = _build_chat_model(streaming=False)
-    summary_prompt = _build_summary_update_prompt(summary_state, last_user, assistant)
-    summary_candidate = _invoke_json(
-        llm,
-        "You update summary state strictly following rules.",
-        summary_prompt,
-    )
     workspace_id = state.get("workspace_id") or "public"
     scene_id = state.get("scene_id")
 
+    # Update summary
+    exchange = f"user: {last_user}\nassistant: {assistant}".strip()
+    schema = json.dumps(normalize_summary_state(None), ensure_ascii=False, indent=2)
+    current = json.dumps(normalize_summary_state(summary_state), ensure_ascii=False, indent=2)
+    summary_prompt = (
+        "Update summary state snapshot. Output JSON only.\n"
+        "Rules: keep confirmed, still-valid, overridable facts only.\n\n"
+        f"Schema:\n{schema}\n\nCurrent summary JSON:\n{current}\n\n"
+        f"New exchange:\n{exchange}\n\nUpdated summary JSON:"
+    )
+    summary_candidate = _invoke_json(llm, "You update summary state strictly following rules.", summary_prompt)
     if summary_candidate:
         summary_state = normalize_summary_state(summary_candidate)
         set_summary_state(workspace_id, scene_id, summary_state)
 
+    # Check for stable entries -> update long-term memory
     history = append_summary_history(workspace_id, scene_id, summary_state)
     stable_entries = _collect_stable_entries(history)
     if stable_entries:
-        memory_prompt = _build_memory_update_prompt(memory_state, stable_entries)
-        memory_candidate = _invoke_json(
-            llm,
-            "You maintain long-term memory as structured config.",
-            memory_prompt,
+        mem_schema = json.dumps(normalize_memory_state(None), ensure_ascii=False, indent=2)
+        mem_current = json.dumps(normalize_memory_state(memory_state), ensure_ascii=False, indent=2)
+        stable_text = "\n".join(f"- {item}" for item in stable_entries)
+        memory_prompt = (
+            "Update long-term memory from stable summary entries. Output JSON only.\n"
+            "Keep durable preferences/constraints/policies, not transient chat content.\n\n"
+            f"Schema:\n{mem_schema}\n\nCurrent memory JSON:\n{mem_current}\n\n"
+            f"Stable entries:\n{stable_text}\n\nUpdated memory JSON:"
         )
+        memory_candidate = _invoke_json(llm, "You maintain long-term memory as structured config.", memory_prompt)
         if memory_candidate:
             memory_state = normalize_memory_state(memory_candidate)
             set_memory_state(workspace_id, scene_id, memory_state)
 
-    return {
-        "summary_state": summary_state,
-        "memory_state": memory_state,
-    }
+    return {"summary_state": summary_state, "memory_state": memory_state}
 
+
+# ---------------------------------------------------------------------------
+# Graph
+# ---------------------------------------------------------------------------
 
 def build_chat_graph():
     graph = StateGraph(ChatState)
