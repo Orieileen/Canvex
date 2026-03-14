@@ -10,77 +10,28 @@ from PIL import Image
 
 from .assets import _resolve_excalidraw_asset_folder_id, _save_asset
 from .common import (
-    _IMAGE_B64_KEYS,
     _abs_url,
     _decode_image_base64,
-    _extract_inline_image_bytes,
     _image_bytes_to_data_url,
-    _pick_url,
-    _resolve_image_bytes,
     _to_dict_compatible,
     openai_client_for_media,
 )
 
 logger = logging.getLogger(__name__)
 
-
-def _extract_image_bytes_from_openai_response(response: Any) -> bytes:
-    raw_items: Any = None
-    if isinstance(response, dict):
-        raw_items = response.get("data")
-    else:
-        raw_items = getattr(response, "data", None)
-    if isinstance(raw_items, (list, tuple)):
-        data_items = list(raw_items)
-    elif raw_items:
-        data_items = [raw_items]
-    else:
-        data_items = []
-    if not data_items:
-        raise ValueError("empty image response")
-
-    image_data = data_items[0]
-
-    item_dict = _to_dict_compatible(image_data)
-    if item_dict:
-        inline_bytes = _extract_inline_image_bytes(item_dict)
-        if inline_bytes:
-            return inline_bytes
-        image_url = _pick_url(item_dict.get("url") or item_dict.get("urls"))
-        if image_url:
-            return _resolve_image_bytes(image_url)
-
-    for key in _IMAGE_B64_KEYS:
-        b64_value = getattr(image_data, key, None)
-        if isinstance(b64_value, str) and b64_value.strip():
-            return _decode_image_base64(b64_value)
-
-    image_url = getattr(image_data, "url", None)
-    if isinstance(image_url, str) and image_url.strip():
-        return _resolve_image_bytes(image_url)
-
-    raise ValueError("empty image response")
+_DEFAULT_RESPONSES_MODEL = "gpt-4.1"
 
 
-def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
-    try:
-        with Image.open(io.BytesIO(source_bytes)) as original:
-            image = original.copy()
-    except Exception:
-        return source_bytes
-
-    if image.mode not in {"RGBA", "LA", "L"}:
-        image = image.convert("RGBA")
-
-    output = io.BytesIO()
-    try:
-        image.save(output, format="PNG")
-        return output.getvalue()
-    except Exception:
-        return source_bytes
+def _responses_model() -> str:
+    return (
+        os.getenv("MEDIA_OPENAI_RESPONSES_MODEL", "").strip()
+        or os.getenv("EXCALIDRAW_CHAT_MODEL", "").strip()
+        or _DEFAULT_RESPONSES_MODEL
+    )
 
 
 def _extract_image_bytes_from_responses_output(response: Any) -> bytes:
+    """Extract the first image_generation_call result from a Responses API output."""
     raw_output: Any = None
     if isinstance(response, dict):
         raw_output = response.get("output")
@@ -102,44 +53,57 @@ def _extract_image_bytes_from_responses_output(response: Any) -> bytes:
     raise ValueError("responses image_generation_call result missing")
 
 
+def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
+    try:
+        with Image.open(io.BytesIO(source_bytes)) as original:
+            image = original.copy()
+    except Exception:
+        return source_bytes
+
+    if image.mode not in {"RGBA", "LA", "L"}:
+        image = image.convert("RGBA")
+
+    output = io.BytesIO()
+    try:
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return source_bytes
+
+
 def _generate_image_media(prompt: str, size: str) -> bytes:
+    """Generate an image via the Responses API image_generation tool."""
     client = openai_client_for_media()
-    model = os.getenv("MEDIA_OPENAI_IMAGE_MODEL", "").strip()
-    response_format = os.getenv("MEDIA_OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json").strip().lower() or "b64_json"
+    image_model = os.getenv("MEDIA_OPENAI_IMAGE_MODEL", "").strip()
 
-    kwargs: dict[str, Any] = {
-        "prompt": prompt,
-        "size": size,
-        "n": 1,
+    tool_config: dict[str, Any] = {
+        "type": "image_generation",
+        "output_format": "png",
+        "quality": "high",
     }
-    if model:
-        kwargs["model"] = model
-    if response_format in {"b64_json", "url"}:
-        kwargs["response_format"] = response_format
-
-    response = client.images.generate(**kwargs)
-    return _extract_image_bytes_from_openai_response(response)
-
-
-def _edit_image_media_via_images(client, source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "image": ("image.png", source_bytes, "image/png"),
-        "prompt": prompt,
-        "response_format": "b64_json",
-    }
+    if image_model:
+        tool_config["model"] = image_model
     if size:
-        kwargs["size"] = size
-    response = client.images.edit(**kwargs)
-    return _extract_image_bytes_from_openai_response(response)
+        tool_config["size"] = size
 
-
-def _edit_image_media_via_responses(client, source_bytes: bytes, prompt: str, size: str, model: str) -> bytes:
-    responses_model = (
-        os.getenv("MEDIA_OPENAI_RESPONSES_MODEL", "").strip()
-        or os.getenv("EXCALIDRAW_CHAT_MODEL", "").strip()
-        or "gpt-4o-mini"
+    response = client.responses.create(
+        model=_responses_model(),
+        input=prompt,
+        tools=[tool_config],
+        tool_choice={"type": "image_generation"},
     )
+    return _extract_image_bytes_from_responses_output(response)
+
+
+def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
+    """Edit an image via the Responses API image_generation tool with action='edit'."""
+    client = openai_client_for_media()
+    image_model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
+    if not image_model:
+        raise RuntimeError("image edit model is not configured; set MEDIA_OPENAI_IMAGE_EDIT_MODEL")
+
+    normalized_source = _normalize_image_for_edit(source_bytes)
+
     fidelity = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_INPUT_FIDELITY", "high").strip().lower()
     if fidelity not in {"high", "low"}:
         fidelity = "high"
@@ -147,17 +111,17 @@ def _edit_image_media_via_responses(client, source_bytes: bytes, prompt: str, si
     tool_config: dict[str, Any] = {
         "type": "image_generation",
         "action": "edit",
-        "model": model,
+        "model": image_model,
         "output_format": "png",
         "quality": "high",
     }
     if size:
         tool_config["size"] = size
-    if model.startswith("gpt-image-1.5"):
+    if image_model.startswith("gpt-image-1.5"):
         tool_config["input_fidelity"] = fidelity
 
     response = client.responses.create(
-        model=responses_model,
+        model=_responses_model(),
         input=[
             {
                 "role": "user",
@@ -165,7 +129,7 @@ def _edit_image_media_via_responses(client, source_bytes: bytes, prompt: str, si
                     {"type": "input_text", "text": prompt},
                     {
                         "type": "input_image",
-                        "image_url": _image_bytes_to_data_url(source_bytes),
+                        "image_url": _image_bytes_to_data_url(normalized_source),
                         "detail": "high",
                     },
                 ],
@@ -175,19 +139,6 @@ def _edit_image_media_via_responses(client, source_bytes: bytes, prompt: str, si
         tool_choice={"type": "image_generation"},
     )
     return _extract_image_bytes_from_responses_output(response)
-
-
-def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
-    client = openai_client_for_media()
-    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
-    if not model:
-        raise RuntimeError("image edit model is not configured; set MEDIA_OPENAI_IMAGE_EDIT_MODEL")
-
-    normalized_source = _normalize_image_for_edit(source_bytes)
-
-    if model.startswith("gpt-image"):
-        return _edit_image_media_via_responses(client, normalized_source, prompt, size, model)
-    return _edit_image_media_via_images(client, normalized_source, prompt, size, model)
 
 
 def _generate_image_bytes(prompt: str, size: str) -> bytes:
