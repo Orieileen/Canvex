@@ -176,7 +176,10 @@ def _invoke_json(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> Dict[
     content = content.strip()
     if not content:
         return None
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
     return parsed if isinstance(parsed, dict) else None
 
 
@@ -542,7 +545,10 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
     if not scene_id:
         return {"error": "scene_id is required"}
 
-    seconds = int(args.get("seconds") or 12)
+    try:
+        seconds = int(args.get("seconds") or 12)
+    except (ValueError, TypeError):
+        seconds = 12
     if seconds not in _VIDEO_ALLOWED_SECONDS:
         return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
 
