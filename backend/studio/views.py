@@ -530,9 +530,12 @@ class ExcalidrawVideoGenerateView(SceneMixin, APIView):
         if not isinstance(aspect_ratio, str) or not aspect_ratio.strip():
             aspect_ratio = "16:9"
 
-        model_name = (request.data or {}).get("model") or ""
-        if not isinstance(model_name, str):
-            model_name = ""
+        if not os.getenv("MEDIA_VIDEO_MODEL", "").strip():
+            return _error_response(
+                "video model is not configured; set MEDIA_VIDEO_MODEL",
+                "video_model_not_configured",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         try:
             job = ExcalidrawVideoJob.objects.create(
@@ -541,7 +544,6 @@ class ExcalidrawVideoGenerateView(SceneMixin, APIView):
                 image_urls=image_urls,
                 duration=duration,
                 aspect_ratio=aspect_ratio,
-                model_name=model_name,
                 status=ExcalidrawVideoJob.Status.QUEUED,
             )
             run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")

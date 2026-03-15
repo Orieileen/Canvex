@@ -413,7 +413,6 @@ def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
     job.save(update_fields=["status", "error", "updated_at"])
 
     payload = {
-        "model": job.model_name or os.getenv("MEDIA_VIDEO_MODEL", ""),
         "prompt": job.prompt,
         "seconds": job.duration or 12,
         "size": _video_size_from_aspect_ratio(job.aspect_ratio or "16:9"),

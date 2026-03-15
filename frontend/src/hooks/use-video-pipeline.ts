@@ -105,6 +105,18 @@ export function useVideoPipeline({
     })
   }, [t])
 
+  const toRequestErrorDetail = useCallback((error: any) => {
+    const detail = error?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail.trim()
+    }
+    const message = error?.message
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim()
+    }
+    return t('editVideoRequestFailed', { defaultValue: '视频生成失败' })
+  }, [t])
+
   const scheduleVideoOverlayRefresh = useCallback(() => {
     if (!videoOverlayKeyRef.current) return
     if (videoOverlayRafRef.current) return
@@ -848,7 +860,8 @@ export function useVideoPipeline({
       void pollVideoJob(jobId, sceneId, ph, selectionKey)
     } catch (error) {
       console.error('Video generation failed', error)
-      updateVideoEditStatus(selectionKey, 'FAILED', t('editVideoRequestFailed', { defaultValue: '视频生成失败' }))
+      const errorMessage = toRequestErrorDetail(error)
+      updateVideoEditStatus(selectionKey, 'FAILED', errorMessage)
       if (submittedJobId && videoEditSelectionByJobRef.current[submittedJobId]) {
         delete videoEditSelectionByJobRef.current[submittedJobId]
       }
@@ -856,7 +869,7 @@ export function useVideoPipeline({
       if (ph) {
         updatePlaceholderText(
           ph,
-          toVideoFailureLabel(t('editVideoRequestFailed', { defaultValue: '视频生成失败' })),
+          toVideoFailureLabel(errorMessage),
         )
       }
     }
@@ -873,6 +886,7 @@ export function useVideoPipeline({
     selectedEditKeyExternal,
     setImageEditErrorExternal,
     t,
+    toRequestErrorDetail,
     toVideoFailureLabel,
     updateVideoEditStatus,
     updatePlaceholderMeta,

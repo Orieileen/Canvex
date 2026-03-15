@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import time
 import uuid
@@ -27,6 +26,16 @@ from .common import (
 _VIDEO_ALLOWED_SECONDS = (4, 8, 12)
 _VIDEO_DONE_STATUSES = {"completed", "succeeded", "success"}
 _VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+
+
+def _resolve_video_model(value: Any = None) -> str:
+    model = str(value or "").strip()
+    if model:
+        return model
+    model = os.getenv("MEDIA_VIDEO_MODEL", "").strip()
+    if not model:
+        raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
+    return model
 
 
 def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -> tuple[int, int]:
@@ -160,7 +169,7 @@ def _to_video_bytes(blob: Any) -> bytes:
 
 
 def _compat_video_scalar(value: Any) -> str:
-    return json.dumps(str(value))
+    return str(value)
 
 
 def _compat_video_id(value: Any) -> str:
@@ -315,7 +324,7 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     if not size:
         raise ValueError("size is required")
 
-    model = str(payload.get("model") or os.getenv("MEDIA_VIDEO_MODEL", "")).strip()
+    model = _resolve_video_model(payload.get("model"))
     seconds = _video_seconds(payload.get("seconds"))
     form_data: dict[str, str] = {
         "model": _compat_video_scalar(model),
@@ -383,7 +392,7 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     if not size:
         raise ValueError("size is required")
     create_kwargs: dict[str, Any] = {
-        "model": str(payload.get("model") or os.getenv("MEDIA_VIDEO_MODEL", "")).strip(),
+        "model": _resolve_video_model(payload.get("model")),
         "prompt": prompt,
         "seconds": _video_seconds(payload.get("seconds")),
         "size": size,

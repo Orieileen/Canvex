@@ -584,7 +584,6 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"video size must be one of {list(_VIDEO_ASPECT_RATIO_BY_SIZE)}"}
 
     image_urls = args.get("image_urls")
-    model_name = str(args.get("model") or "").strip()
 
     job = ExcalidrawVideoJob.objects.create(
         scene_id=scene_id,
@@ -592,7 +591,6 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
         image_urls=image_urls or [],
         duration=seconds,
         aspect_ratio=aspect_ratio,
-        model_name=model_name,
         status=ExcalidrawVideoJob.Status.QUEUED,
     )
     run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")

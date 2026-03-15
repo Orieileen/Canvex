@@ -179,7 +179,6 @@ class ExcalidrawVideoJob(models.Model):
     image_urls = models.JSONField(default=list, blank=True)
     duration = models.PositiveSmallIntegerField(default=10)
     aspect_ratio = models.CharField(max_length=16, default="16:9")
-    model_name = models.CharField(max_length=64, blank=True)
     task_id = models.CharField(max_length=128, blank=True)
     result_url = models.TextField(blank=True)
     thumbnail_url = models.TextField(blank=True)
