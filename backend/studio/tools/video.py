@@ -1,20 +1,32 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 import uuid
 from typing import Any
 
+import requests
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
 from langchain_core.tools import tool
 from PIL import Image
 
-from .common import _abs_url, _read_int_env, _resolve_image_bytes, openai_client_for_media
+from .common import (
+    _abs_url,
+    _media_auth_headers,
+    _read_int_env,
+    _read_media_timeout_seconds,
+    _resolve_image_bytes,
+    _resolve_media_compat_url,
+    openai_client_for_media,
+)
 
 _VIDEO_ALLOWED_SECONDS = (4, 8, 12)
+_VIDEO_DONE_STATUSES = {"completed", "succeeded", "success"}
+_VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 
 
 def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -> tuple[int, int]:
@@ -147,6 +159,59 @@ def _to_video_bytes(blob: Any) -> bytes:
     raise ValueError("video content is empty")
 
 
+def _compat_video_scalar(value: Any) -> str:
+    return json.dumps(str(value))
+
+
+def _compat_video_id(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("id", "task_id", "job_id", "video_id"):
+            token = value.get(key)
+            if token is not None and str(token).strip():
+                return str(token).strip()
+    token = str(value or "").strip()
+    return token
+
+
+def _compat_video_status(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("status", "state", "phase"):
+            token = value.get(key)
+            if token is not None and str(token).strip():
+                return str(token).strip().lower()
+    return str(value or "").strip().lower()
+
+
+def _compat_video_error(value: Any) -> str:
+    if isinstance(value, dict):
+        error = value.get("error")
+        if isinstance(error, dict):
+            for key in ("message", "detail", "error"):
+                token = error.get(key)
+                if token is not None and str(token).strip():
+                    return str(token).strip()
+        elif error is not None and str(error).strip():
+            return str(error).strip()
+        for key in ("message", "detail"):
+            token = value.get(key)
+            if token is not None and str(token).strip():
+                return str(token).strip()
+    return str(value or "").strip()
+
+
+def _parse_compat_video_json(response: requests.Response, action: str) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"compat video {action} returned invalid json: {exc}") from exc
+    if response.status_code >= 400:
+        detail = _compat_video_error(data)
+        raise RuntimeError(
+            detail or f"compat video {action} returned {response.status_code}"
+        )
+    return data if isinstance(data, dict) else {"data": data}
+
+
 def _save_video_to_media(video_bytes: bytes, video_id: str) -> str:
     """把生成完成的视频落盘到媒体存储并返回访问地址。
 
@@ -185,6 +250,116 @@ def _wait_for_video(client: Any, video_id: str) -> Any:
     raise TimeoutError(f"Task {video_id} did not complete")
 
 
+def _wait_for_compat_video(raw_endpoint: str, video_id: str) -> dict[str, Any]:
+    status_url = _resolve_media_compat_url(raw_endpoint, video_id)
+    if not status_url:
+        raise RuntimeError("compat video endpoint is not configured")
+    max_attempts, interval = _video_poll_limits(default_attempts=120, default_interval=5)
+    for _ in range(max_attempts):
+        response = requests.get(
+            status_url,
+            headers=_media_auth_headers(),
+            timeout=_read_media_timeout_seconds(),
+        )
+        data = _parse_compat_video_json(response, "status")
+        status = _compat_video_status(data)
+        if status in _VIDEO_DONE_STATUSES or status in _VIDEO_FAILED_STATUSES:
+            return data
+        time.sleep(interval)
+    raise TimeoutError(f"Task {video_id} did not complete")
+
+
+def _download_compat_video_content(raw_endpoint: str, video_id: str) -> bytes:
+    content_url = _resolve_media_compat_url(raw_endpoint, video_id, "content")
+    if not content_url:
+        raise RuntimeError("compat video endpoint is not configured")
+    response = requests.get(
+        content_url,
+        headers=_media_auth_headers(),
+        timeout=_read_media_timeout_seconds(),
+    )
+    if response.status_code >= 400:
+        try:
+            detail = _compat_video_error(response.json())
+        except Exception:
+            detail = (response.text or "").strip()
+        raise RuntimeError(detail or f"compat video content returned {response.status_code}")
+
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "json" in content_type:
+        data = response.json()
+        for key in ("url", "video_url", "download_url"):
+            token = data.get(key) if isinstance(data, dict) else None
+            if token is not None and str(token).strip():
+                download = requests.get(str(token).strip(), timeout=_read_media_timeout_seconds())
+                download.raise_for_status()
+                if download.content:
+                    return download.content
+        raise RuntimeError("compat video content response missing downloadable url")
+
+    if response.content:
+        return response.content
+    raise RuntimeError("compat video content is empty")
+
+
+def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str) -> dict[str, Any]:
+    endpoint = _resolve_media_compat_url(raw_endpoint)
+    if not endpoint:
+        raise RuntimeError("compat video endpoint is not configured")
+
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("prompt is required")
+
+    size = str(payload.get("size") or "").strip()
+    if not size:
+        raise ValueError("size is required")
+
+    model = str(payload.get("model") or os.getenv("MEDIA_VIDEO_MODEL", "")).strip()
+    seconds = _video_seconds(payload.get("seconds"))
+    form_data: dict[str, str] = {
+        "model": _compat_video_scalar(model),
+        "prompt": _compat_video_scalar(prompt),
+        "seconds": _compat_video_scalar(seconds),
+        "size": _compat_video_scalar(size),
+    }
+
+    files: dict[str, tuple[str, bytes, str]] = {}
+    if first_image_url := _first_image_url(payload.get("image_urls")):
+        files["image"] = (
+            "image.png",
+            _normalize_video_reference_image(_resolve_image_bytes(first_image_url), size),
+            "image/png",
+        )
+
+    response = requests.post(
+        endpoint,
+        headers=_media_auth_headers(),
+        data=form_data,
+        files=files or None,
+        timeout=_read_media_timeout_seconds(),
+    )
+    created = _parse_compat_video_json(response, "create")
+    video_id = _compat_video_id(created)
+    if not video_id:
+        raise ValueError("compat video response missing id")
+
+    video = _wait_for_compat_video(raw_endpoint, video_id)
+    status = _compat_video_status(video)
+    if status in _VIDEO_DONE_STATUSES:
+        return {
+            "task_id": video_id,
+            "status": status,
+            "url": _save_video_to_media(_download_compat_video_content(raw_endpoint, video_id), video_id),
+        }
+
+    return {
+        "task_id": video_id,
+        "status": status or "failed",
+        "error": _compat_video_error(video) or "video generation failed",
+    }
+
+
 def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     """执行完整的视频生成主流程。
 
@@ -195,6 +370,10 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     返回值是一个结果字典：成功时包含 `task_id`、`status`、`url`，失败时包含 `task_id`、`status`、`error`。
     这个函数当前会被 `videotool()` 调用，也是整个 `video.py` 的核心入口。
     """
+    compat_endpoint = os.getenv("MEDIA_VIDEO_COMPAT_ENDPOINT", "").strip()
+    if compat_endpoint:
+        return _generate_video_media_via_compat(payload, compat_endpoint)
+
     client = openai_client_for_media()
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:

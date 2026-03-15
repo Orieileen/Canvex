@@ -6,7 +6,6 @@ from .assets import (
     _save_asset,
 )
 from .common import (
-    OPENAI_DEFAULT_BASE_URL,
     _abs_url,
     _decode_image_base64,
     _image_bytes_to_data_url,
@@ -30,7 +29,6 @@ from .video import (
 
 __all__ = [
     # common
-    "OPENAI_DEFAULT_BASE_URL",
     "_abs_url",
     "_decode_image_base64",
     "_image_bytes_to_data_url",

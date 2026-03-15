@@ -42,6 +42,34 @@ def _pick_api_base() -> str | None:
     return base or None
 
 
+def _resolve_media_compat_url(raw: str | None, *parts: str) -> str | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    if token.lower().startswith(("http://", "https://")):
+        url = token.rstrip("/")
+    else:
+        base = _pick_api_base()
+        if not base:
+            raise ValueError("MEDIA_BASE_URL is not configured")
+        url = f"{base.rstrip('/')}/{token.lstrip('/')}"
+    for part in parts:
+        suffix = str(part or "").strip().strip("/")
+        if suffix:
+            url = f"{url.rstrip('/')}/{suffix}"
+    return url
+
+
+def _media_auth_headers(content_type: str | None = None) -> dict[str, str]:
+    api_key = _pick_api_key()
+    if not api_key:
+        raise ValueError("MEDIA_API_KEY is not configured")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
 # 构建用于媒体生成的 OpenAI 客户端实例（含 API 密钥、基础地址、超时配置）。
 # 输入: 无（内部调用 _pick_api_key, _pick_api_base, _read_media_timeout_seconds）。
 # 调用方: views._analyze_video_shooting_script, image._generate_image_media,

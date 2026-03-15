@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Any
 
+import requests
 from langchain_core.tools import tool
 from PIL import Image
 
@@ -13,11 +14,16 @@ from .common import (
     _abs_url,
     _decode_image_base64,
     _image_bytes_to_data_url,
+    _media_auth_headers,
+    _read_media_timeout_seconds,
+    _resolve_image_bytes,
+    _resolve_media_compat_url,
     _to_dict_compatible,
     openai_client_for_media,
 )
 
 logger = logging.getLogger(__name__)
+_IMAGE_INLINE_KEYS = ("b64_json", "image_base64", "base64", "result")
 
 def _responses_model() -> str:
     model = os.getenv("MEDIA_RESPONSES_MODEL", "").strip()
@@ -49,6 +55,67 @@ def _extract_image_bytes_from_responses_output(response: Any) -> bytes:
     raise ValueError("responses image_generation_call result missing")
 
 
+def _extract_image_bytes_from_generation_response(response: Any) -> bytes:
+    raw_items: Any = None
+    if isinstance(response, dict):
+        raw_items = response.get("data")
+    else:
+        raw_items = getattr(response, "data", None)
+
+    if isinstance(raw_items, (list, tuple)):
+        items = list(raw_items)
+    elif raw_items:
+        items = [raw_items]
+    else:
+        items = []
+
+    if not items:
+        raise ValueError("empty image response")
+
+    for item in items:
+        item_dict = _to_dict_compatible(item)
+        for key in _IMAGE_INLINE_KEYS:
+            value = item_dict.get(key) if item_dict else getattr(item, key, None)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            token = value.strip()
+            if token.startswith(("http://", "https://")):
+                return _resolve_image_bytes(token)
+            try:
+                return _decode_image_base64(token)
+            except Exception:
+                continue
+
+        image_url = item_dict.get("url") if item_dict else getattr(item, "url", None)
+        if isinstance(image_url, str) and image_url.strip():
+            return _resolve_image_bytes(image_url.strip())
+
+    raise ValueError("image response missing usable image payload")
+
+
+def _post_compat_image_request(raw_endpoint: str, payload: dict[str, Any]) -> bytes:
+    endpoint = _resolve_media_compat_url(raw_endpoint)
+    if not endpoint:
+        raise RuntimeError("compat image endpoint is not configured")
+    response = requests.post(
+        endpoint,
+        headers=_media_auth_headers("application/json"),
+        json=payload,
+        timeout=_read_media_timeout_seconds(),
+    )
+    if response.status_code >= 400:
+        body = (response.text or "").strip()
+        snippet = f"{body[:1200]}..." if len(body) > 1200 else body
+        raise RuntimeError(
+            f"compat image endpoint returned {response.status_code}: {snippet or 'empty response body'}"
+        )
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"compat image endpoint returned invalid json: {exc}") from exc
+    return _extract_image_bytes_from_generation_response(data)
+
+
 def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
     try:
         with Image.open(io.BytesIO(source_bytes)) as original:
@@ -69,8 +136,21 @@ def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
 
 def _generate_image_media(prompt: str, size: str) -> bytes:
     """Generate an image via the Responses API image_generation tool."""
-    client = openai_client_for_media()
     image_model = os.getenv("MEDIA_IMAGE_MODEL", "").strip()
+    compat_endpoint = os.getenv("MEDIA_IMAGE_COMPAT_ENDPOINT", "").strip()
+
+    if compat_endpoint:
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "n": 1,
+        }
+        if image_model:
+            payload["model"] = image_model
+        if size:
+            payload["size"] = size
+        return _post_compat_image_request(compat_endpoint, payload)
+
+    client = openai_client_for_media()
 
     tool_config: dict[str, Any] = {
         "type": "image_generation",
@@ -93,12 +173,25 @@ def _generate_image_media(prompt: str, size: str) -> bytes:
 
 def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     """Edit an image via the Responses API image_generation tool with action='edit'."""
-    client = openai_client_for_media()
     image_model = os.getenv("MEDIA_IMAGE_EDIT_MODEL", "").strip()
     if not image_model:
         raise RuntimeError("image edit model is not configured; set MEDIA_IMAGE_EDIT_MODEL")
 
     normalized_source = _normalize_image_for_edit(source_bytes)
+    compat_endpoint = os.getenv("MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT", "").strip()
+
+    if compat_endpoint:
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "n": 1,
+            "image": _image_bytes_to_data_url(normalized_source),
+            "model": image_model,
+        }
+        if size:
+            payload["size"] = size
+        return _post_compat_image_request(compat_endpoint, payload)
+
+    client = openai_client_for_media()
 
     fidelity = os.getenv("MEDIA_IMAGE_EDIT_INPUT_FIDELITY", "high").strip().lower()
     if fidelity not in {"high", "low"}:
