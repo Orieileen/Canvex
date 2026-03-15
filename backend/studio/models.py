@@ -21,6 +21,8 @@ def excalidraw_edit_upload_to(instance, filename: str) -> str:
 
 
 class DataFolder(models.Model):
+    """表示素材库中的文件夹节点，支持层级嵌套。"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     parent = models.ForeignKey(
@@ -49,6 +51,8 @@ class DataFolder(models.Model):
 
 
 class DataAsset(models.Model):
+    """表示素材库中的单个文件资源及其元数据。"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     folder = models.ForeignKey(DataFolder, on_delete=models.CASCADE, null=True, blank=True, related_name="assets")
     file = models.ImageField(upload_to=library_upload_to)
@@ -73,6 +77,8 @@ class DataAsset(models.Model):
 
 
 class ExcalidrawScene(models.Model):
+    """表示一份 Excalidraw 画布场景及其序列化数据。"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255, blank=True)
     data = models.JSONField(default=dict, blank=True)
@@ -87,7 +93,11 @@ class ExcalidrawScene(models.Model):
 
 
 class ExcalidrawChatMessage(models.Model):
+    """表示与 Excalidraw 场景关联的一条聊天消息。"""
+
     class Role(models.TextChoices):
+        """定义 Excalidraw 对话消息的角色类型。"""
+
         USER = "user", "User"
         ASSISTANT = "assistant", "Assistant"
         SYSTEM = "system", "System"
@@ -106,7 +116,11 @@ class ExcalidrawChatMessage(models.Model):
 
 
 class ExcalidrawImageEditJob(models.Model):
+    """表示一次基于 Excalidraw 场景发起的图片编辑任务。"""
+
     class Status(models.TextChoices):
+        """定义图片编辑任务的执行状态。"""
+
         QUEUED = "QUEUED", "Queued"
         RUNNING = "RUNNING", "Running"
         SUCCEEDED = "SUCCEEDED", "Succeeded"
@@ -136,6 +150,8 @@ class ExcalidrawImageEditJob(models.Model):
 
 
 class ExcalidrawImageEditResult(models.Model):
+    """表示图片编辑任务生成的单张结果图片。"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     job = models.ForeignKey(ExcalidrawImageEditJob, on_delete=models.CASCADE, related_name="results")
     asset = models.ForeignKey(DataAsset, on_delete=models.CASCADE, related_name="image_edit_result_assets")
@@ -147,7 +163,11 @@ class ExcalidrawImageEditResult(models.Model):
 
 
 class ExcalidrawVideoJob(models.Model):
+    """表示一次基于 Excalidraw 场景发起的视频生成任务。"""
+
     class Status(models.TextChoices):
+        """定义视频生成任务的执行状态。"""
+
         QUEUED = "QUEUED", "Queued"
         RUNNING = "RUNNING", "Running"
         SUCCEEDED = "SUCCEEDED", "Succeeded"

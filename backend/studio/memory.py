@@ -16,26 +16,32 @@ MEMORY_STABILITY_MIN_COUNT = int(os.getenv("EXCALIDRAW_MEMORY_STABILITY_MIN_COUN
 
 
 def _redis_url() -> str:
+    """获取 Redis 连接地址，依次尝试 EXCALIDRAW_REDIS_URL、REDIS_URL 环境变量和 Celery 配置。"""
     return os.getenv("EXCALIDRAW_REDIS_URL") or os.getenv("REDIS_URL") or settings.CELERY_BROKER_URL
 
 
 def _client():
+    """创建并返回一个 Redis 客户端实例，启用自动解码响应。"""
     return redis.from_url(_redis_url(), decode_responses=True)
 
 
 def _summary_key(workspace_id: str, scene_id: str) -> str:
+    """生成对话摘要在 Redis 中的存储键。"""
     return f"excalidraw:summary:{workspace_id}:{scene_id}"
 
 
 def _summary_history_key(workspace_id: str, scene_id: str) -> str:
+    """生成摘要历史记录在 Redis 中的存储键。"""
     return f"excalidraw:summary_history:{workspace_id}:{scene_id}"
 
 
 def _memory_key(workspace_id: str, scene_id: str) -> str:
+    """生成长期记忆在 Redis 中的存储键。"""
     return f"excalidraw:memory:{workspace_id}:{scene_id}"
 
 
 def _get_json(key: str):
+    """从 Redis 读取指定键的值并反序列化为 Python 对象，失败时返回 None。"""
     try:
         raw = _client().get(key)
         if not raw:
@@ -46,6 +52,7 @@ def _get_json(key: str):
 
 
 def _set_json(key: str, payload: Any, ttl: int | None = None):
+    """将 Python 对象序列化为 JSON 并写入 Redis，支持可选的过期时间（秒）。"""
     ttl_value = DEFAULT_TTL_SECONDS if ttl is None else ttl
     try:
         data = json.dumps(payload, ensure_ascii=False)
@@ -59,6 +66,7 @@ def _set_json(key: str, payload: Any, ttl: int | None = None):
 
 
 def _normalize_list(value: Any) -> list[str]:
+    """将任意输入规范化为去空白的字符串列表，过滤空值。"""
     if value is None:
         return []
     if isinstance(value, str):
@@ -75,6 +83,7 @@ def _normalize_list(value: Any) -> list[str]:
 
 
 def normalize_summary_state(data: Any) -> dict[str, Any]:
+    """将原始摘要数据规范化为标准结构，包含 goal、constraints、decisions、open_questions、next_actions 字段。"""
     payload = data if isinstance(data, dict) else {}
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
@@ -87,6 +96,7 @@ def normalize_summary_state(data: Any) -> dict[str, Any]:
 
 
 def normalize_memory_state(data: Any) -> dict[str, Any]:
+    """将原始记忆数据规范化为标准结构，包含 preferences、policies、constraints、stats 字段。"""
     payload = data if isinstance(data, dict) else {}
     preferences = payload.get("preferences") if isinstance(payload.get("preferences"), dict) else {}
     stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
@@ -100,6 +110,7 @@ def normalize_memory_state(data: Any) -> dict[str, Any]:
 
 
 def get_summary_state(workspace_id: str, scene_id: str) -> dict[str, Any]:
+    """从 Redis 读取指定工作区和场景的对话摘要状态，不存在时返回空的规范化结构。"""
     payload = _get_json(_summary_key(workspace_id, scene_id))
     if isinstance(payload, dict):
         return normalize_summary_state(payload.get("summary_state"))
@@ -107,10 +118,12 @@ def get_summary_state(workspace_id: str, scene_id: str) -> dict[str, Any]:
 
 
 def set_summary_state(workspace_id: str, scene_id: str, summary_state: dict[str, Any], ttl: int | None = None):
+    """将规范化后的对话摘要状态写入 Redis，支持可选的过期时间。"""
     _set_json(_summary_key(workspace_id, scene_id), {"summary_state": normalize_summary_state(summary_state)}, ttl)
 
 
 def get_summary_history(workspace_id: str, scene_id: str) -> list[dict[str, Any]]:
+    """从 Redis 读取摘要历史记录列表，每个元素为一轮对话后的摘要快照。"""
     payload = _get_json(_summary_history_key(workspace_id, scene_id))
     if isinstance(payload, list):
         return [normalize_summary_state(item) for item in payload]
@@ -118,6 +131,7 @@ def get_summary_history(workspace_id: str, scene_id: str) -> list[dict[str, Any]
 
 
 def append_summary_history(workspace_id: str, scene_id: str, summary_state: dict[str, Any]) -> list[dict[str, Any]]:
+    """将新的摘要快照追加到历史记录，超出 SUMMARY_HISTORY_LIMIT 时裁剪旧记录。"""
     history = get_summary_history(workspace_id, scene_id)
     history.append(normalize_summary_state(summary_state))
     if SUMMARY_HISTORY_LIMIT > 0:
@@ -127,15 +141,18 @@ def append_summary_history(workspace_id: str, scene_id: str, summary_state: dict
 
 
 def get_memory_state(workspace_id: str, scene_id: str) -> dict[str, Any]:
+    """从 Redis 读取指定工作区和场景的长期记忆状态。"""
     payload = _get_json(_memory_key(workspace_id, scene_id))
     return normalize_memory_state(payload)
 
 
 def set_memory_state(workspace_id: str, scene_id: str, memory_state: dict[str, Any], ttl: int | None = None):
+    """将规范化后的长期记忆状态写入 Redis，支持可选的过期时间。"""
     _set_json(_memory_key(workspace_id, scene_id), normalize_memory_state(memory_state), ttl)
 
 
 def render_summary_state(summary_state: dict[str, Any]) -> str:
+    """将摘要状态渲染为紧凑的 JSON 字符串，仅包含非空字段；全部为空时返回空字符串。"""
     state = normalize_summary_state(summary_state)
     compact = {"schema_version": SUMMARY_SCHEMA_VERSION}
     for key in ("goal", "constraints", "decisions", "open_questions", "next_actions"):
@@ -150,6 +167,7 @@ def render_summary_state(summary_state: dict[str, Any]) -> str:
 
 
 def render_memory_guidelines(memory_state: dict[str, Any]) -> str:
+    """将长期记忆状态渲染为人类可读的多行文本，用于注入系统提示词。"""
     state = normalize_memory_state(memory_state)
     lines: list[str] = []
     preferences = state.get("preferences") or {}
