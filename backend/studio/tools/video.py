@@ -28,16 +28,6 @@ _VIDEO_DONE_STATUSES = {"completed", "succeeded", "success"}
 _VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 
 
-def _resolve_video_model(value: Any = None) -> str:
-    model = str(value or "").strip()
-    if model:
-        return model
-    model = os.getenv("MEDIA_VIDEO_MODEL", "").strip()
-    if not model:
-        raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
-    return model
-
-
 def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -> tuple[int, int]:
     """读取视频轮询配置。
 
@@ -324,7 +314,9 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     if not size:
         raise ValueError("size is required")
 
-    model = _resolve_video_model(payload.get("model"))
+    model = os.getenv("MEDIA_VIDEO_MODEL", "").strip()
+    if not model:
+        raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
     seconds = _video_seconds(payload.get("seconds"))
     form_data: dict[str, str] = {
         "model": _compat_video_scalar(model),
@@ -391,8 +383,11 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     size = str(payload.get("size") or "").strip()
     if not size:
         raise ValueError("size is required")
+    model = os.getenv("MEDIA_VIDEO_MODEL", "").strip()
+    if not model:
+        raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
     create_kwargs: dict[str, Any] = {
-        "model": _resolve_video_model(payload.get("model")),
+        "model": model,
         "prompt": prompt,
         "seconds": _video_seconds(payload.get("seconds")),
         "size": size,
