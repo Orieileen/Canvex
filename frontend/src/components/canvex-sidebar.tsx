@@ -46,13 +46,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { RingIcon } from '@/components/ui/icons/svg-spinners-270-ring'
-
-interface SceneRecord {
-  id: string
-  title?: string
-  updated_at?: string
-  data?: any
-}
+import type { SceneRecord } from '@/types/canvex'
 
 export function CanvexSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { t, i18n } = useTranslation('canvex')

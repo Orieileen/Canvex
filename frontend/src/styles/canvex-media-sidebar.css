@@ -1,0 +1,267 @@
+.canvex-host {
+  overflow: visible !important;
+}
+.canvex-host .FixedSideContainer_side_top {
+  top: 5px !important;
+}
+.canvex-host .help-icon,
+.canvex-host .help-icon-container,
+.canvex-host .HelpDialog__Icon,
+.canvex-host .HelpDialog__icon {
+  display: none !important;
+}
+.Dialog__content .HelpDialog__header {
+  display: none !important;
+}
+[data-testid="command-palette-button"] {
+  display: none !important;
+}
+.canvex-host .layer-ui__wrapper__footer-left section {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.canvex-host .layer-ui__wrapper__footer-left .undo-redo-buttons {
+  order: -1;
+}
+.canvex-host .layer-ui__wrapper__footer-left .zoom-actions {
+  order: 1;
+}
+.canvex-host .layer-ui__wrapper__footer-left .finalize-button {
+  order: 2;
+}
+.canvex-host .canvex-media-sidebar {
+  width: min(420px, calc(100vw - 24px));
+}
+.canvex-host .canvex-media-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.canvex-host .canvex-media-sidebar__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.canvex-host .canvex-media-sidebar__refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--default-border-color);
+  background: var(--island-bg-color);
+  cursor: pointer;
+}
+.canvex-host .canvex-media-sidebar__refresh:hover {
+  background: var(--button-hover-bg);
+}
+.canvex-host .canvex-media-sidebar__refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.canvex-host .canvex-media-sidebar__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem;
+  max-height: calc(100vh - 230px);
+  overflow: auto;
+}
+.canvex-host .canvex-media-sidebar__error {
+  color: #dc2626;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  padding: 0 0.125rem;
+}
+.canvex-host .canvex-media-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.canvex-host .canvex-media-folder {
+  border: 1px solid var(--default-border-color);
+  border-radius: 0.65rem;
+  overflow: hidden;
+  background: var(--island-bg-color);
+}
+.canvex-host .canvex-media-folder__trigger {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.55rem;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.canvex-host .canvex-media-folder__trigger:hover {
+  background: var(--button-hover-bg);
+}
+.canvex-host .canvex-media-folder__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.16s ease;
+  color: var(--color-gray-60);
+}
+.canvex-host .canvex-media-folder__chevron.is-open {
+  transform: rotate(90deg);
+}
+.canvex-host .canvex-media-folder__name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.canvex-host .canvex-media-folder__count {
+  font-size: 0.68rem;
+  color: var(--color-gray-60);
+  background: var(--button-hover-bg);
+  border: 1px solid var(--default-border-color);
+  border-radius: 999px;
+  padding: 0.05rem 0.35rem;
+  line-height: 1.3;
+}
+.canvex-host .canvex-media-folder__content {
+  border-top: 1px solid var(--default-border-color);
+  padding: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.canvex-host .canvex-media-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.canvex-host .canvex-media-section + .canvex-media-section {
+  margin-top: 0.15rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--default-border-color);
+}
+.canvex-host .canvex-media-section__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-gray-70);
+  letter-spacing: 0.01em;
+}
+.canvex-host .canvex-media-section__trigger {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.15rem 0.1rem;
+  border-radius: 0.35rem;
+}
+.canvex-host .canvex-media-section__trigger:hover {
+  background: var(--button-hover-bg);
+}
+.canvex-host .canvex-media-section__count {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: var(--color-gray-60);
+  background: var(--button-hover-bg);
+  border: 1px solid var(--default-border-color);
+  border-radius: 999px;
+  padding: 0.04rem 0.32rem;
+  line-height: 1.3;
+}
+.canvex-host .canvex-media-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.canvex-host .canvex-media-item {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--default-border-color);
+  border-radius: 0.6rem;
+  background: var(--island-bg-color);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+.canvex-host .canvex-media-item:hover {
+  border-color: var(--color-primary);
+}
+.canvex-host .canvex-media-item__preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #f8fafc;
+}
+.canvex-host .canvex-media-item__thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.canvex-host .canvex-media-item__thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #64748b;
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+}
+.canvex-host .canvex-media-item__badge {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+.canvex-host .canvex-media-item__meta {
+  padding: 0.4rem 0.5rem 0.45rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--color-gray-70);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvex-host .canvex-media-sidebar__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 7.5rem;
+  text-align: center;
+  color: var(--color-gray-60);
+  font-size: 0.75rem;
+  padding: 0.6rem;
+}
+.canvex-host .canvex-media-sidebar__loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-gray-60);
+  padding: 1rem 0;
+}
+@media (max-width: 640px) {
+  .canvex-host .canvex-media-grid {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}
