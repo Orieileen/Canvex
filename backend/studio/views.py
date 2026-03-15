@@ -40,7 +40,7 @@ DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 50
 WORKSPACE_ID = os.getenv("WORKSPACE_ID", "public")
 
-EXCALIDRAW_CUTOUT_PROMPT = """
+CUTOUT_PROMPT = """
 Extract ONLY the actual subject indicated by the user-drawn dashed bounding box.
 The dashed bounding box is a guide only and must NOT appear in the output.
 
@@ -57,7 +57,7 @@ If the subject touches the dashed bounding box edge, keep only the visible porti
 The final image must contain only the subject on a pure white background.
 """
 
-EXCALIDRAW_EDIT_DEFAULT_PROMPT = "Refine the image while preserving content and layout."
+EDIT_DEFAULT_PROMPT = "Refine the image while preserving content and layout."
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +388,9 @@ class ExcalidrawImageEditView(SceneMixin, APIView):
             cutout = cutout.strip().lower() in ("1", "true", "yes", "on")
         cutout = bool(cutout)
         if cutout:
-            prompt = EXCALIDRAW_CUTOUT_PROMPT
+            prompt = CUTOUT_PROMPT
         if not prompt:
-            prompt = EXCALIDRAW_EDIT_DEFAULT_PROMPT
+            prompt = EDIT_DEFAULT_PROMPT
 
         image_file = request.FILES.get("image")
         if not image_file:

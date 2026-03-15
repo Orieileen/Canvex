@@ -22,14 +22,14 @@ def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -
 
     这个函数负责统一计算轮询 OpenAI 视频任务时使用的最大轮询次数和轮询间隔。
     `default_attempts` 和 `default_interval` 由调用方传入，当前来自 `_wait_for_video()` 的默认值；
-    同时函数会再结合环境变量 `MEDIA_OPENAI_VIDEO_POLL_INTERVAL`、
-    `MEDIA_OPENAI_VIDEO_POLL_MAX_ATTEMPTS` 和 `MEDIA_OPENAI_VIDEO_TIMEOUT_SECONDS` 做最终计算。
+    同时函数会再结合环境变量 `MEDIA_VIDEO_POLL_INTERVAL`、
+    `MEDIA_VIDEO_POLL_MAX_ATTEMPTS` 和 `MEDIA_VIDEO_TIMEOUT_SECONDS` 做最终计算。
     返回值是 `(attempts, interval)`，供后续轮询接口时直接使用。
     这个函数当前只会被 `_wait_for_video()` 调用。
     """
-    interval = max(1, _read_int_env("MEDIA_OPENAI_VIDEO_POLL_INTERVAL", default_interval))
-    attempts = max(1, _read_int_env("MEDIA_OPENAI_VIDEO_POLL_MAX_ATTEMPTS", default_attempts))
-    timeout_seconds = _read_int_env("MEDIA_OPENAI_VIDEO_TIMEOUT_SECONDS", 1800)
+    interval = max(1, _read_int_env("MEDIA_VIDEO_POLL_INTERVAL", default_interval))
+    attempts = max(1, _read_int_env("MEDIA_VIDEO_POLL_MAX_ATTEMPTS", default_attempts))
+    timeout_seconds = _read_int_env("MEDIA_VIDEO_TIMEOUT_SECONDS", 1800)
     if timeout_seconds > 0:
         attempts = max(attempts, max(1, (timeout_seconds + interval - 1) // interval))
     return attempts, interval
@@ -204,7 +204,7 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     if not size:
         raise ValueError("size is required")
     create_kwargs: dict[str, Any] = {
-        "model": str(payload.get("model") or os.getenv("MEDIA_OPENAI_VIDEO_MODEL", "sora-2-pro")).strip(),
+        "model": str(payload.get("model") or os.getenv("MEDIA_VIDEO_MODEL", "")).strip(),
         "prompt": prompt,
         "seconds": _video_seconds(payload.get("seconds")),
         "size": size,

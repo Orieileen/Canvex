@@ -7,14 +7,11 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from django.conf import settings
 from openai import OpenAI
-
-OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 logger = logging.getLogger(__name__)
 
 
-# 将相对路径转为完整的绝对 URL（拼接 PUBLIC_MEDIA_BASE 等环境变量作为前缀）。
+# 将相对路径转为完整的绝对 URL（拼接 PUBLIC_MEDIA_BASE 作为前缀）。
 # 输入: url — 相对或绝对路径字符串。
 # 调用方: views.ExcalidrawImageEditJobView.get, tasks._persist_video_thumbnail,
 #          image.imagetool, video._save_video_to_media
@@ -23,33 +20,26 @@ def _abs_url(url: str | None) -> str | None:
         return None
     if url.lower().startswith(("http://", "https://")):
         return url
-    base = (
-        os.getenv("PUBLIC_MEDIA_BASE")
-        or os.getenv("PUBLIC_BASE_URL")
-        or os.getenv("VITE_API_URL")
-        or os.getenv("APP_BASE_URL")
-        or getattr(settings, "PUBLIC_BASE_URL", None)
-        or "http://localhost:8000"
-    ).rstrip("/")
+    base = os.getenv("PUBLIC_MEDIA_BASE", "").strip()
+    if not base:
+        raise RuntimeError("PUBLIC_MEDIA_BASE is not configured")
+    base = base.rstrip("/")
     return f"{base}{url}" if url.startswith("/") else f"{base}/{url}"
 
 
-# 读取 MEDIA_OPENAI_API_KEY 环境变量，返回去空格后的 API 密钥字符串。
+# 读取 MEDIA_API_KEY 环境变量，返回去空格后的 API 密钥字符串。
 # 输入: 无（从环境变量读取）。
 # 调用方: openai_client_for_media
 def _pick_api_key() -> str:
-    return os.getenv("MEDIA_OPENAI_API_KEY", "").strip()
+    return os.getenv("MEDIA_API_KEY", "").strip()
 
 
-# 优先读取 MEDIA_OPENAI_BASE_URL，其次 OPENAI_BASE_URL，返回 API 基础地址。
+# 读取 MEDIA_BASE_URL，返回 API 基础地址。
 # 输入: 无（从环境变量读取）。
 # 调用方: openai_client_for_media
 def _pick_api_base() -> str | None:
-    media_base = os.getenv("MEDIA_OPENAI_BASE_URL", "").strip().rstrip("/")
-    if media_base:
-        return media_base
-    chat_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-    return chat_base or None
+    base = os.getenv("MEDIA_BASE_URL", "").strip().rstrip("/")
+    return base or None
 
 
 # 构建用于媒体生成的 OpenAI 客户端实例（含 API 密钥、基础地址、超时配置）。
@@ -58,9 +48,11 @@ def _pick_api_base() -> str | None:
 #          image._edit_image_media, video._generate_video_media
 def openai_client_for_media() -> OpenAI:
     api_key = _pick_api_key()
-    base_url = _pick_api_base() or OPENAI_DEFAULT_BASE_URL
+    base_url = _pick_api_base()
+    if not base_url:
+        raise ValueError("MEDIA_BASE_URL is not configured")
     if not api_key:
-        raise ValueError("MEDIA_OPENAI_API_KEY is not configured")
+        raise ValueError("MEDIA_API_KEY is not configured")
     params: dict[str, Any] = {
         "api_key": api_key,
         "base_url": base_url,
@@ -83,11 +75,11 @@ def _read_int_env(name: str, default: int) -> int:
         return default
 
 
-# 读取 MEDIA_OPENAI_TIMEOUT 环境变量作为超时秒数（最小 1 秒）。
+# 读取 MEDIA_TIMEOUT 环境变量作为超时秒数（最小 1 秒）。
 # 输入: default_seconds — 默认超时秒数。
 # 调用方: openai_client_for_media
 def _read_media_timeout_seconds(default_seconds: float = 180.0) -> float:
-    timeout_raw = os.getenv("MEDIA_OPENAI_TIMEOUT", str(default_seconds))
+    timeout_raw = os.getenv("MEDIA_TIMEOUT", str(default_seconds))
     try:
         return max(1.0, float(timeout_raw))
     except Exception:
@@ -103,15 +95,11 @@ def _resolve_image_bytes(url: str) -> bytes:
     candidates: list[str] = [url]
     host = (parsed.hostname or "").lower()
     if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
-        internal_base_raw = (
-            os.getenv("INTERNAL_MEDIA_BASE")
-            or os.getenv("BACKEND_INTERNAL_BASE_URL")
-            or ""
-        ).strip()
+        internal_base_raw = os.getenv("INTERNAL_MEDIA_BASE", "").strip()
         if not internal_base_raw:
             internal_base_raw = "http://backend:8000"
             logger.warning(
-                "Neither INTERNAL_MEDIA_BASE nor BACKEND_INTERNAL_BASE_URL is set; "
+                "INTERNAL_MEDIA_BASE is not set; "
                 "falling back to %s for resolving localhost image URL %s",
                 internal_base_raw,
                 url,

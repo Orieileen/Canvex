@@ -19,15 +19,11 @@ from .common import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RESPONSES_MODEL = "gpt-4o-mini"
-
-
 def _responses_model() -> str:
-    return (
-        os.getenv("MEDIA_OPENAI_RESPONSES_MODEL", "").strip()
-        or os.getenv("EXCALIDRAW_CHAT_MODEL", "").strip()
-        or _DEFAULT_RESPONSES_MODEL
-    )
+    model = os.getenv("MEDIA_RESPONSES_MODEL", "").strip()
+    if not model:
+        raise RuntimeError("MEDIA_RESPONSES_MODEL is not configured")
+    return model
 
 
 def _extract_image_bytes_from_responses_output(response: Any) -> bytes:
@@ -74,7 +70,7 @@ def _normalize_image_for_edit(source_bytes: bytes) -> bytes:
 def _generate_image_media(prompt: str, size: str) -> bytes:
     """Generate an image via the Responses API image_generation tool."""
     client = openai_client_for_media()
-    image_model = os.getenv("MEDIA_OPENAI_IMAGE_MODEL", "").strip()
+    image_model = os.getenv("MEDIA_IMAGE_MODEL", "").strip()
 
     tool_config: dict[str, Any] = {
         "type": "image_generation",
@@ -98,13 +94,13 @@ def _generate_image_media(prompt: str, size: str) -> bytes:
 def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     """Edit an image via the Responses API image_generation tool with action='edit'."""
     client = openai_client_for_media()
-    image_model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "").strip()
+    image_model = os.getenv("MEDIA_IMAGE_EDIT_MODEL", "").strip()
     if not image_model:
-        raise RuntimeError("image edit model is not configured; set MEDIA_OPENAI_IMAGE_EDIT_MODEL")
+        raise RuntimeError("image edit model is not configured; set MEDIA_IMAGE_EDIT_MODEL")
 
     normalized_source = _normalize_image_for_edit(source_bytes)
 
-    fidelity = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_INPUT_FIDELITY", "high").strip().lower()
+    fidelity = os.getenv("MEDIA_IMAGE_EDIT_INPUT_FIDELITY", "high").strip().lower()
     if fidelity not in {"high", "low"}:
         fidelity = "high"
 

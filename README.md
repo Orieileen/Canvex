@@ -80,11 +80,11 @@ In `.env`, configure these first in most cases:
 | --- | --- | --- |
 | `OPENAI_API_KEY` | API key used by the LLM agent. | `sk-xxxx` |
 | `OPENAI_BASE_URL` | LLM agent endpoint (OpenAI or compatible gateway). | `https://api.openai.com/v1` |
-| `EXCALIDRAW_CHAT_MODEL` | Model name used by the LLM agent. | `gpt-4o-mini` |
-| `MEDIA_OPENAI_API_KEY` | API key for image/video tasks. Can be the same as `OPENAI_API_KEY`. | `sk-xxxx` |
-| `MEDIA_OPENAI_BASE_URL` | Endpoint for image/video tasks (media gateway). | `https://api.openai.com/v1` |
-| `MEDIA_OPENAI_IMAGE_EDIT_MODEL` | Model used by image edit/cutout workflow. | `gpt-image-1.5` |
-| `MEDIA_OPENAI_VIDEO_MODEL` | Model used for video generation. | `sora-2` |
+| `CHAT_MODEL` | Model name used by the LLM agent. | `gpt-4o-mini` |
+| `MEDIA_API_KEY` | API key for image/video tasks. Can be the same as `OPENAI_API_KEY`. | `sk-xxxx` |
+| `MEDIA_BASE_URL` | Endpoint for image/video tasks (media gateway). | `https://api.openai.com/v1` |
+| `MEDIA_IMAGE_EDIT_MODEL` | Model used by image edit/cutout workflow. | `gpt-image-1.5` |
+| `MEDIA_VIDEO_MODEL` | Model used for video generation. | `sora-2` |
 
 Database defaults in Docker Compose:
 
@@ -100,7 +100,7 @@ Database defaults in Docker Compose:
 Notes:
 
 - If you use a third-party compatible gateway, set `*_BASE_URL` and model names according to that gateway's supported list.
-- If chat and media use the same provider, `OPENAI_*` and `MEDIA_OPENAI_*` can share the same configuration.
+- If chat and media use the same provider, `OPENAI_*` and `MEDIA_*` can share the same configuration.
 - `docker compose up -d --build` now starts MySQL automatically. Existing `db.sqlite3` data is not migrated into MySQL automatically.
 
 After startup, open:
@@ -126,5 +126,5 @@ After startup, open:
 docker compose logs -f backend worker frontend
 ```
 
-- If image/video results are not as expected, check model configuration, endpoint URLs, and `MEDIA_OPENAI_*` variables first.
+- If image/video results are not as expected, check model configuration, endpoint URLs, and `MEDIA_*` variables first.
 - If frontend requests fail due to CORS, check backend CORS configuration.

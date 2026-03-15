@@ -33,7 +33,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 
 def _read_video_default_seconds() -> int:
-    raw = os.getenv("MEDIA_OPENAI_VIDEO_SECONDS_DEFAULT", "12")
+    raw = os.getenv("MEDIA_VIDEO_SECONDS_DEFAULT", "12")
     try:
         value = int(str(raw).strip())
     except Exception:
@@ -86,7 +86,7 @@ def _build_inline_image_data_url(image_url: str) -> str | None:
     except Exception:
         return None
 
-    max_side = _read_positive_int_env("MEDIA_OPENAI_SCRIPT_IMAGE_MAX_SIDE", 1280)
+    max_side = _read_positive_int_env("MEDIA_SCRIPT_IMAGE_MAX_SIDE", 1280)
     width, height = image.size
     if max(width, height) > max_side:
         scale = max_side / float(max(width, height))
@@ -105,7 +105,7 @@ def _build_inline_image_data_url(image_url: str) -> str | None:
     else:
         if image.mode != "RGB":
             image = image.convert("RGB")
-        quality = _read_positive_int_env("MEDIA_OPENAI_SCRIPT_IMAGE_JPEG_QUALITY", 85)
+        quality = _read_positive_int_env("MEDIA_SCRIPT_IMAGE_JPEG_QUALITY", 85)
         quality = max(40, min(95, quality))
         image.save(output, format="JPEG", optimize=True, quality=quality)
         mime_type = "image/jpeg"
@@ -202,7 +202,7 @@ def analyze_video_shooting_script(image_url: str, prompt: str, duration_seconds:
     if prompt:
         user_text = f"{user_text}\n用户需求：{prompt}"
 
-    model_name = os.getenv("MEDIA_OPENAI_SCRIPT_MODEL", "gpt-4.1-mini")
+    model_name = os.getenv("MEDIA_SCRIPT_MODEL", "gpt-4.1-mini")
     try:
         client = openai_client_for_media()
         inline_image_url = _build_inline_image_data_url(image_url)

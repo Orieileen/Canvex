@@ -80,11 +80,11 @@ docker compose up -d --build
 | --- | --- | --- |
 | `OPENAI_API_KEY` | llm agent使用的API Key。 | `sk-xxxx` |
 | `OPENAI_BASE_URL` | llm agent接口地址（OpenAI 或兼容网关）。 | `https://api.openai.com/v1` |
-| `EXCALIDRAW_CHAT_MODEL` | llm agent使用的模型名。 | `gpt-4o-mini` |
-| `MEDIA_OPENAI_API_KEY` | 图片/视频任务使用的 API Key。可与 `OPENAI_API_KEY` 相同。 | `sk-xxxx` |
-| `MEDIA_OPENAI_BASE_URL` | 图片/视频任务接口地址（媒体网关）。 | `https://api.openai.com/v1` |
-| `MEDIA_OPENAI_IMAGE_EDIT_MODEL` | 图片编辑/抠图流程使用的模型名。 | `gpt-image-1.5` |
-| `MEDIA_OPENAI_VIDEO_MODEL` | 视频生成使用的模型名。 | `sora-2` |
+| `CHAT_MODEL` | llm agent使用的模型名。 | `gpt-4o-mini` |
+| `MEDIA_API_KEY` | 图片/视频任务使用的 API Key。可与 `OPENAI_API_KEY` 相同。 | `sk-xxxx` |
+| `MEDIA_BASE_URL` | 图片/视频任务接口地址（媒体网关）。 | `https://api.openai.com/v1` |
+| `MEDIA_IMAGE_EDIT_MODEL` | 图片编辑/抠图流程使用的模型名。 | `gpt-image-1.5` |
+| `MEDIA_VIDEO_MODEL` | 视频生成使用的模型名。 | `sora-2` |
 
 Docker Compose 默认的数据库变量：
 
@@ -100,7 +100,7 @@ Docker Compose 默认的数据库变量：
 说明：
 
 - 你使用第三方兼容网关时，`*_BASE_URL` 和模型名要按该网关支持列表填写。
-- 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_OPENAI_*` 使用同一套配置。
+- 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_*` 使用同一套配置。
 - 现在执行 `docker compose up -d --build` 会自动启动 MySQL；已有 `db.sqlite3` 数据不会自动迁移进 MySQL。
 
 启动后访问：
@@ -187,5 +187,5 @@ theme → canvasElements → scenePersistence → pinning → mediaLibrary
 docker compose logs -f backend worker frontend
 ```
 
-- 图片/视频结果与预期不一致：优先检查模型配置与接口url与 `MEDIA_OPENAI_*` 变量。
+- 图片/视频结果与预期不一致：优先检查模型配置与接口url与 `MEDIA_*` 变量。
 - 前端请求报跨域：检查后端 CORS 配置。

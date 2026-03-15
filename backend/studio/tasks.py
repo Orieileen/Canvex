@@ -221,12 +221,12 @@ def _persist_video_thumbnail(job: ExcalidrawVideoJob, thumbnail_url: str | None)
 
 
 def _schedule_video_retry(job: ExcalidrawVideoJob, attempt: int, reason: str, task) -> bool:
-    max_retries = max(0, _read_int_env("EXCALIDRAW_VIDEO_RETRY_MAX", 6))
+    max_retries = max(0, _read_int_env("VIDEO_RETRY_MAX", 6))
     if attempt >= max_retries:
         return False
 
-    base_delay = max(5, _read_int_env("EXCALIDRAW_VIDEO_RETRY_BASE_SECONDS", 20))
-    max_delay = max(base_delay, _read_int_env("EXCALIDRAW_VIDEO_RETRY_MAX_DELAY_SECONDS", 180))
+    base_delay = max(5, _read_int_env("VIDEO_RETRY_BASE_SECONDS", 20))
+    max_delay = max(base_delay, _read_int_env("VIDEO_RETRY_MAX_DELAY_SECONDS", 180))
     delay = min(max_delay, base_delay * (2 ** attempt))
     next_attempt = attempt + 1
 
@@ -260,7 +260,7 @@ def _remove_white_background(image_bytes: bytes) -> bytes:
     try:
         from rembg import remove
 
-        use_alpha_matting = str(os.getenv("EXCALIDRAW_CUTOUT_REMBG_ALPHA_MATTING", "1")).strip().lower() in (
+        use_alpha_matting = str(os.getenv("CUTOUT_REMBG_ALPHA_MATTING", "1")).strip().lower() in (
             "1",
             "true",
             "yes",
@@ -271,14 +271,14 @@ def _remove_white_background(image_bytes: bytes) -> bytes:
             kwargs = {
                 "alpha_matting": True,
                 "alpha_matting_foreground_threshold": _read_int_env(
-                    "EXCALIDRAW_CUTOUT_REMBG_FOREGROUND_THRESHOLD",
+                    "CUTOUT_REMBG_FOREGROUND_THRESHOLD",
                     240,
                 ),
                 "alpha_matting_background_threshold": _read_int_env(
-                    "EXCALIDRAW_CUTOUT_REMBG_BACKGROUND_THRESHOLD",
+                    "CUTOUT_REMBG_BACKGROUND_THRESHOLD",
                     10,
                 ),
-                "alpha_matting_erode_size": _read_int_env("EXCALIDRAW_CUTOUT_REMBG_ERODE_SIZE", 6),
+                "alpha_matting_erode_size": _read_int_env("CUTOUT_REMBG_ERODE_SIZE", 6),
             }
         rembg_bytes = remove(image_bytes, **kwargs)
         if rembg_bytes:
@@ -312,9 +312,9 @@ def run_excalidraw_image_edit_job(self, job_id: str):
         job.save(update_fields=["status", "error", "updated_at"])
         return
 
-    model = os.getenv("MEDIA_OPENAI_IMAGE_EDIT_MODEL", "")
+    model = os.getenv("MEDIA_IMAGE_EDIT_MODEL", "")
     requested = max(1, int(job.num_images or 1))
-    allow_text_fallback = str(os.getenv("EXCALIDRAW_IMAGE_EDIT_ALLOW_TEXT_FALLBACK", "0")).strip().lower() in ("1", "true", "yes", "on")
+    allow_text_fallback = str(os.getenv("IMAGE_EDIT_ALLOW_TEXT_FALLBACK", "0")).strip().lower() in ("1", "true", "yes", "on")
 
     def _generate_one_image_bytes() -> bytes:
         try:
@@ -327,7 +327,7 @@ def run_excalidraw_image_edit_job(self, job_id: str):
                     "Text-only fallback is disabled because it ignores source image."
                 ) from exc
             size = job.size or ""
-            logger.warning("Image edit job %s falls back to text-only generation (EXCALIDRAW_IMAGE_EDIT_ALLOW_TEXT_FALLBACK=1)", job.id)
+            logger.warning("Image edit job %s falls back to text-only generation (IMAGE_EDIT_ALLOW_TEXT_FALLBACK=1)", job.id)
             return _generate_image_media(job.prompt, size)
 
     image_bytes_list: list[bytes] = []
@@ -413,7 +413,7 @@ def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
     job.save(update_fields=["status", "error", "updated_at"])
 
     payload = {
-        "model": job.model_name or os.getenv("MEDIA_OPENAI_VIDEO_MODEL", "sora-2-pro"),
+        "model": job.model_name or os.getenv("MEDIA_VIDEO_MODEL", ""),
         "prompt": job.prompt,
         "seconds": job.duration or 12,
         "size": _video_size_from_aspect_ratio(job.aspect_ratio or "16:9"),

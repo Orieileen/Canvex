@@ -5,19 +5,20 @@ import os
 from typing import Any
 
 import redis
-from django.conf import settings
-
 SUMMARY_SCHEMA_VERSION = 1
 MEMORY_SCHEMA_VERSION = 1
-DEFAULT_TTL_SECONDS = int(os.getenv("EXCALIDRAW_SUMMARY_TTL_SECONDS", "2592000"))
-SUMMARY_HISTORY_LIMIT = int(os.getenv("EXCALIDRAW_SUMMARY_HISTORY_LIMIT", "6"))
-MEMORY_STABILITY_WINDOW = int(os.getenv("EXCALIDRAW_MEMORY_STABILITY_WINDOW", "3"))
-MEMORY_STABILITY_MIN_COUNT = int(os.getenv("EXCALIDRAW_MEMORY_STABILITY_MIN_COUNT", "2"))
+DEFAULT_TTL_SECONDS = int(os.getenv("SUMMARY_TTL_SECONDS", "2592000"))
+SUMMARY_HISTORY_LIMIT = int(os.getenv("SUMMARY_HISTORY_LIMIT", "6"))
+MEMORY_STABILITY_WINDOW = int(os.getenv("MEMORY_STABILITY_WINDOW", "3"))
+MEMORY_STABILITY_MIN_COUNT = int(os.getenv("MEMORY_STABILITY_MIN_COUNT", "2"))
 
 
 def _redis_url() -> str:
-    """获取 Redis 连接地址，依次尝试 EXCALIDRAW_REDIS_URL、REDIS_URL 环境变量和 Celery 配置。"""
-    return os.getenv("EXCALIDRAW_REDIS_URL") or os.getenv("REDIS_URL") or settings.CELERY_BROKER_URL
+    """获取 Redis 连接地址。"""
+    url = os.getenv("REDIS_URL", "").strip()
+    if not url:
+        raise RuntimeError("REDIS_URL is not configured")
+    return url
 
 
 def _client():

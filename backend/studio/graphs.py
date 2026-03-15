@@ -100,11 +100,11 @@ def _build_chat_model(streaming: bool) -> ChatOpenAI:
         ChatOpenAI 实例。被 _invoke_json、call_llm 等几乎所有需要调用 LLM 的函数使用。
     """
     params: Dict[str, Any] = {
-        "model": os.getenv("EXCALIDRAW_CHAT_MODEL", "gpt-4o-mini"),
-        "temperature": float(os.getenv("EXCALIDRAW_CHAT_TEMPERATURE", "0.4")),
+        "model": os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+        "temperature": float(os.getenv("CHAT_TEMPERATURE", "0.4")),
         "streaming": streaming,
     }
-    max_tokens = os.getenv("EXCALIDRAW_CHAT_MAX_TOKENS")
+    max_tokens = os.getenv("CHAT_MAX_TOKENS")
     if max_tokens:
         params["max_tokens"] = int(max_tokens)
 
@@ -635,7 +635,7 @@ def _image_tool_wait_timeout() -> float:
     返回:
         超时秒数。仅被 call_llm 的 generate_image 分支用于 image_queue.get(timeout=...)。
     """
-    return float(os.getenv("EXCALIDRAW_IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200"))
+    return float(os.getenv("IMAGE_TOOL_WAIT_TIMEOUT_SECONDS", "1200"))
 
 
 # ---------------------------------------------------------------------------
