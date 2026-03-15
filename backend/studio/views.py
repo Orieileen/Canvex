@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import base64
-import io
 import json
 import logging
 import os
-import re
 from typing import Any
 
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
-from PIL import Image
 from rest_framework import parsers, permissions, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -32,7 +28,11 @@ from .serializers import (
     ExcalidrawSceneSerializer,
 )
 from .tasks import run_excalidraw_image_edit_job, run_excalidraw_video_job
-from .tools import _abs_url, _resolve_image_bytes, openai_client_for_media
+from .tools import _abs_url
+from .video_script import (
+    analyze_video_shooting_script,
+    resolve_video_duration_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ Output a PNG with a solid pure white background (no transparent pixels).
 
 Do NOT add, hallucinate, reconstruct, or extend any part of the subject.
 Do NOT include shadows, gradients, textures, or environmental context.
-Preserve the subject’s original shape, proportions, colors, and fine details.
+Preserve the subject's original shape, proportions, colors, and fine details.
 Edges must be clean and accurate, with no halos, fringing, or color bleeding.
 
 If the subject touches the dashed bounding box edge, keep only the visible portion and do not complete missing areas.
@@ -58,212 +58,32 @@ The final image must contain only the subject on a pure white background.
 """
 
 EXCALIDRAW_EDIT_DEFAULT_PROMPT = "Refine the image while preserving content and layout."
-_DURATION_HINT_RE = re.compile(r"(?P<value>\d{1,3})\s*(?:s|sec|secs|second|seconds|秒)", re.IGNORECASE)
 
 
-def _flatten_llm_content(raw) -> str:
-    if raw is None:
-        return ""
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict):
-        return json.dumps(raw, ensure_ascii=False)
-    if isinstance(raw, list):
-        pieces = []
-        for item in raw:
-            if isinstance(item, str):
-                pieces.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") or item.get("value") or ""
-                if not text and isinstance(item.get("content"), str):
-                    text = item["content"]
-                if text:
-                    pieces.append(str(text))
-        return "".join(pieces)
-    try:
-        return json.dumps(raw, ensure_ascii=False)
-    except TypeError:
-        return str(raw)
-
-
-def _read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = int(str(raw).strip())
-        if value > 0:
-            return value
-    except Exception:
-        pass
-    return default
-
-
-def _read_video_default_seconds() -> int:
-    raw = os.getenv("MEDIA_OPENAI_VIDEO_SECONDS_DEFAULT", "12")
-    try:
-        value = int(str(raw).strip())
-    except Exception:
-        value = 12
-    return max(1, min(300, value))
-
-
-def _extract_duration_seconds_from_text(text: str) -> int | None:
-    if not text:
-        return None
-    match = _DURATION_HINT_RE.search(text)
-    if not match:
-        return None
-    try:
-        value = int(match.group("value"))
-    except Exception:
-        return None
-    if value <= 0:
-        return None
-    return min(300, value)
-
-
-def _resolve_video_duration_seconds(payload: Any, prompt: str) -> tuple[int, str]:
-    raw_duration = None
-    if payload is not None and hasattr(payload, "get"):
-        try:
-            raw_duration = payload.get("duration")
-        except Exception:
-            raw_duration = None
-    if raw_duration is not None and str(raw_duration).strip() != "":
-        try:
-            value = int(str(raw_duration).strip())
-            if value > 0:
-                return min(300, value), "request"
-        except Exception:
-            pass
-
-    prompt_duration = _extract_duration_seconds_from_text(prompt)
-    if prompt_duration:
-        return prompt_duration, "prompt"
-
-    return _read_video_default_seconds(), "default"
-
-
-def _build_inline_image_data_url(image_url: str) -> str | None:
-    try:
-        image_bytes = _resolve_image_bytes(image_url)
-        with Image.open(io.BytesIO(image_bytes)) as original:
-            image = original.copy()
-    except Exception:
-        return None
-
-    max_side = _read_positive_int_env("MEDIA_OPENAI_SCRIPT_IMAGE_MAX_SIDE", 1280)
-    width, height = image.size
-    if max(width, height) > max_side:
-        scale = max_side / float(max(width, height))
-        resized_width = max(1, int(round(width * scale)))
-        resized_height = max(1, int(round(height * scale)))
-        resampling = getattr(Image, "Resampling", Image)
-        image = image.resize((resized_width, resized_height), resampling.LANCZOS)
-
-    has_alpha = "A" in image.getbands()
-    output = io.BytesIO()
-    if has_alpha:
-        if image.mode != "RGBA":
-            image = image.convert("RGBA")
-        image.save(output, format="PNG", optimize=True)
-        mime_type = "image/png"
-    else:
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-        quality = _read_positive_int_env("MEDIA_OPENAI_SCRIPT_IMAGE_JPEG_QUALITY", 85)
-        quality = max(40, min(95, quality))
-        image.save(output, format="JPEG", optimize=True, quality=quality)
-        mime_type = "image/jpeg"
-
-    encoded = base64.b64encode(output.getvalue()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
-
-
-def _request_video_shooting_script(client: Any, model_name: str, system_prompt: str, user_text: str, image_ref: str) -> str:
-    response = client.chat.completions.create(
-        model=model_name,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": image_ref}},
-                ],
-            },
-        ],
-    )
-    return _flatten_llm_content(response.choices[0].message.content).strip()
-
-
-def _analyze_video_shooting_script(image_url: str, prompt: str, duration_seconds: int, duration_source: str = "request") -> str:
-    if not image_url or not isinstance(image_url, str):
-        return ""
-    if not image_url.lower().startswith(("http://", "https://")):
-        return ""
-
-    duration_seconds = max(1, min(300, int(duration_seconds or _read_video_default_seconds())))
-    duration_source_text = {
-        "request": "用户参数指定",
-        "prompt": "用户文本指定",
-        "default": "系统默认配置",
-    }.get(duration_source, "用户参数指定")
-
-    system_prompt = (
-        "你是资深产品视频导演与分镜师。"
-        "任务：基于给定单张产品图，生成可直接用于视频生成模型的拍摄脚本。"
-        "目标：画面高级、稳定、可执行，突出产品材质、结构与卖点。"
-        "硬性约束："
-        "1) 严格保留原图主体，不改变品牌识别、外形比例、关键颜色与纹理；"
-        "2) 若原图已有清晰背景，严格保持产品背景图语义一致，允许轻微景深与透视变化；"
-        "若原图背景缺失、纯色或抠图状态，可补充与产品用途一致的写实背景，但不得喧宾夺主或引入无关主体；"
-        "3) 光影必须与原图一致并做自然适配：保持主光方向、色温与强弱关系，阴影接触关系真实，不得出现漂浮、穿帮或不合理反射；"
-        "4) 禁止添加文字、Logo、水印、字幕、UI、新物体或无关场景元素；"
-        "5) 禁止夸张跳切和不连贯运动，镜头运动要平滑、真实可实现。"
-        "时间轴规则："
-        "1) 必须覆盖从 0 秒到总时长结束的完整区间，不能有缺口或重叠；"
-        "2) 必须按时间段写分镜，每段使用“起始秒~结束秒”；"
-        "3) 示例：若总时长为 8 秒，可写 0~3 秒、4~6 秒、7~8 秒；"
-        "4) 每个时间段都要写清镜头语言：景别、机位/运动、主体表现与卖点、背景处理、光影适配要点。"
-        "输出要求："
-        "1) 仅输出脚本正文，不要标题、解释、前后缀、Markdown；"
-        "2) 以 3-6 个时间段镜头输出，每个镜头单独一行；"
-        "3) 每行固定格式：[镜头N][起始~结束秒][景别][机位/运动][主体表现][背景处理(保留/新增写实背景)][光影适配]；"
-        "4) 若用户给出时长、节奏、风格、构图、运动方向等要求，必须优先遵循；"
-        "5) 在最后追加一行“全局限制：...”总结不加新元素、不加文字、背景处理策略、光影真实适配等限制。"
-    )
-    user_text = (
-        "请分析这张图片并生成拍摄脚本。"
-        f"\n目标总时长：{duration_seconds} 秒。"
-        f"\n时长来源：{duration_source_text}。"
-        f"\n请按 {duration_seconds} 秒的总时长进行时间段分镜，时间段必须连续覆盖 0~{duration_seconds} 秒。"
-    )
-    if prompt:
-        user_text = f"{user_text}\n用户需求：{prompt}"
-
-    model_name = os.getenv("MEDIA_OPENAI_SCRIPT_MODEL", "gpt-4.1-mini")
-    try:
-        client = openai_client_for_media()
-        inline_image_url = _build_inline_image_data_url(image_url)
-        image_ref = inline_image_url or image_url
-        content = _request_video_shooting_script(client, model_name, system_prompt, user_text, image_ref)
-
-        if not content and inline_image_url:
-            # Fallback for providers that reject data URL image payloads.
-            content = _request_video_shooting_script(client, model_name, system_prompt, user_text, image_url)
-
-        return content[:1500].strip()
-    except Exception as exc:
-        logger.warning("MEDIA_OPENAI video script analysis failed: %s", exc, exc_info=True)
-        return ""
-
+# ---------------------------------------------------------------------------
+# 公用辅助
+# ---------------------------------------------------------------------------
 
 def _error_response(detail: str, code: str, http_status: int) -> Response:
     return Response({"detail": detail, "code": code}, status=http_status)
 
+
+def _parse_limit(request, default: int = 20, maximum: int = 50) -> int:
+    try:
+        limit = int(request.query_params.get("limit", default))
+    except Exception:
+        limit = default
+    return max(1, min(maximum, limit))
+
+
+class SceneMixin:
+    def get_scene(self, scene_id):
+        return get_object_or_404(ExcalidrawScene, id=scene_id)
+
+
+# ---------------------------------------------------------------------------
+# Data 资产 / 文件夹
+# ---------------------------------------------------------------------------
 
 class DataFolderViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
@@ -300,6 +120,10 @@ class DataAssetViewSet(viewsets.ModelViewSet):
         return qs
 
 
+# ---------------------------------------------------------------------------
+# Excalidraw 画布
+# ---------------------------------------------------------------------------
+
 class ExcalidrawSceneViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
     queryset = ExcalidrawScene.objects.all().order_by("-updated_at")
@@ -316,7 +140,11 @@ class ExcalidrawSceneViewSet(viewsets.ModelViewSet):
         return ExcalidrawSceneSerializer
 
 
-class ExcalidrawSceneChatView(APIView):
+# ---------------------------------------------------------------------------
+# Excalidraw 聊天
+# ---------------------------------------------------------------------------
+
+class ExcalidrawSceneChatView(SceneMixin, APIView):
     permission_classes = [permissions.AllowAny]
 
     def _wants_stream(self, request) -> bool:
@@ -324,9 +152,6 @@ class ExcalidrawSceneChatView(APIView):
             return True
         accept = request.headers.get("Accept", "")
         return "text/event-stream" in accept
-
-    def get_scene(self, scene_id):
-        return get_object_or_404(ExcalidrawScene, id=scene_id)
 
     def _chunk_text(self, text: str, size: int = 24):
         if size <= 0:
@@ -369,32 +194,16 @@ class ExcalidrawSceneChatView(APIView):
 
     def get(self, request, scene_id):
         scene = self.get_scene(scene_id)
-        try:
-            limit = int(request.query_params.get("limit", DEFAULT_HISTORY_LIMIT))
-        except Exception:
-            limit = DEFAULT_HISTORY_LIMIT
-        limit = max(1, min(MAX_HISTORY_LIMIT, limit))
+        limit = _parse_limit(request, default=DEFAULT_HISTORY_LIMIT, maximum=MAX_HISTORY_LIMIT)
         qs = ExcalidrawChatMessage.objects.filter(scene=scene).order_by("-created_at")[:limit]
         messages = list(reversed(qs))
         serializer = ExcalidrawChatMessageSerializer(messages, many=True)
         return Response(serializer.data)
 
-    def post(self, request, scene_id):
-        scene = self.get_scene(scene_id)
-        content = (request.data or {}).get("content")
-        if not isinstance(content, str) or not content.strip():
-            return _error_response("content is required", "content_required", status.HTTP_400_BAD_REQUEST)
-
-        user_message = ExcalidrawChatMessage.objects.create(
-            scene=scene,
-            role=ExcalidrawChatMessage.Role.USER,
-            content=content.strip(),
-        )
-
+    def _build_chat_state(self, scene, user_message):
         qs = ExcalidrawChatMessage.objects.filter(scene=scene).order_by("-created_at")[:DEFAULT_HISTORY_LIMIT]
         history = list(reversed(qs))
-
-        state = {
+        return {
             "scene_id": str(scene.id),
             "workspace_id": WORKSPACE_ID,
             "scene_title": scene.title or "",
@@ -410,8 +219,24 @@ class ExcalidrawSceneChatView(APIView):
             "intent": None,
         }
 
+    def post(self, request, scene_id):
+        scene = self.get_scene(scene_id)
+        content = (request.data or {}).get("content")
+        if not isinstance(content, str) or not content.strip():
+            return _error_response("content is required", "content_required", status.HTTP_400_BAD_REQUEST)
+
+        user_message = ExcalidrawChatMessage.objects.create(
+            scene=scene,
+            role=ExcalidrawChatMessage.Role.USER,
+            content=content.strip(),
+        )
+
+        state = self._build_chat_state(scene, user_message)
+
         if self._wants_stream(request):
             return self._stream_chat_response(state, scene)
+
+        state.update(load_memory(state))
 
         result = None
         tool_results = []
@@ -429,7 +254,6 @@ class ExcalidrawSceneChatView(APIView):
                     result = update
         except Exception as exc:
             logger.exception("LLM call failed: %s", exc)
-            # 兜底助手回复，避免前端报错
             assistant_content = "LLM 未配置或调用失败，请检查 OPENAI_API_KEY / MEDIA_OPENAI 配置。"
             result = {"assistant": {"role": "assistant", "content": assistant_content}}
 
@@ -439,6 +263,12 @@ class ExcalidrawSceneChatView(APIView):
             assistant_content = self._fallback_text_from_tool_results(tool_results) or ""
         if not assistant_content:
             assistant_content = "LLM 返回为空，请检查模型或网络配置。"
+
+        state["assistant"] = {"role": "assistant", "content": assistant_content}
+        try:
+            update_memory(state)
+        except Exception:
+            pass
 
         assistant_message = ExcalidrawChatMessage.objects.create(
             scene=scene,
@@ -541,11 +371,12 @@ class ExcalidrawSceneChatView(APIView):
         return f"{tool}:{serialized}"
 
 
-class ExcalidrawImageEditView(APIView):
-    permission_classes = [permissions.AllowAny]
+# ---------------------------------------------------------------------------
+# Excalidraw 图片编辑
+# ---------------------------------------------------------------------------
 
-    def get_scene(self, scene_id):
-        return get_object_or_404(ExcalidrawScene, id=scene_id)
+class ExcalidrawImageEditView(SceneMixin, APIView):
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request, scene_id):
         scene = self.get_scene(scene_id)
@@ -631,16 +462,12 @@ class ExcalidrawImageEditJobView(APIView):
         return Response(payload)
 
 
-class ExcalidrawSceneImageEditJobListView(APIView):
+class ExcalidrawSceneImageEditJobListView(SceneMixin, APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, scene_id):
-        scene = get_object_or_404(ExcalidrawScene, id=scene_id)
-        try:
-            limit = int(request.query_params.get("limit", 20))
-        except Exception:
-            limit = 20
-        limit = max(1, min(50, limit))
+        scene = self.get_scene(scene_id)
+        limit = _parse_limit(request)
 
         qs = ExcalidrawImageEditJob.objects.filter(scene=scene).order_by("-created_at")[:limit]
         data = []
@@ -658,11 +485,12 @@ class ExcalidrawSceneImageEditJobListView(APIView):
         return Response(data)
 
 
-class ExcalidrawVideoGenerateView(APIView):
-    permission_classes = [permissions.AllowAny]
+# ---------------------------------------------------------------------------
+# Excalidraw 视频生成
+# ---------------------------------------------------------------------------
 
-    def get_scene(self, scene_id):
-        return get_object_or_404(ExcalidrawScene, id=scene_id)
+class ExcalidrawVideoGenerateView(SceneMixin, APIView):
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request, scene_id):
         scene = self.get_scene(scene_id)
@@ -676,7 +504,7 @@ class ExcalidrawVideoGenerateView(APIView):
             image_urls = []
         image_urls = [item for item in image_urls if isinstance(item, str) and item.strip()]
 
-        duration, duration_source = _resolve_video_duration_seconds(request.data or {}, prompt)
+        duration, duration_source = resolve_video_duration_seconds(request.data or {}, prompt)
 
         # Prompt priority:
         # 1) user prompt -> use directly
@@ -688,7 +516,7 @@ class ExcalidrawVideoGenerateView(APIView):
                     "video_prompt_required",
                     status.HTTP_400_BAD_REQUEST,
                 )
-            script = _analyze_video_shooting_script(image_urls[0], "", duration, duration_source)
+            script = analyze_video_shooting_script(image_urls[0], "", duration, duration_source)
             script = script.strip() if isinstance(script, str) else ""
             if not script:
                 return _error_response(
@@ -741,16 +569,12 @@ class ExcalidrawVideoJobView(APIView):
         return Response(payload)
 
 
-class ExcalidrawSceneVideoJobListView(APIView):
+class ExcalidrawSceneVideoJobListView(SceneMixin, APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, scene_id):
-        scene = get_object_or_404(ExcalidrawScene, id=scene_id)
-        try:
-            limit = int(request.query_params.get("limit", 20))
-        except Exception:
-            limit = 20
-        limit = max(1, min(50, limit))
+        scene = self.get_scene(scene_id)
+        limit = _parse_limit(request)
 
         qs = ExcalidrawVideoJob.objects.filter(scene=scene).order_by("-created_at")[:limit]
         data = []
