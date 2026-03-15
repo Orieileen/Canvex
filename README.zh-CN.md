@@ -118,6 +118,67 @@ Docker Compose 默认的数据库变量：
 - 任务查询：`/api/v1/excalidraw/image-edit-jobs/{job_id}/`、`/api/v1/excalidraw/video-jobs/{job_id}/`
 
 
+## 前端架构
+
+技术栈：React 18 + TypeScript + Vite + Tailwind CSS + shadcn/ui + react-i18next + Excalidraw。
+
+### 核心页面模块划分
+
+画布主页面 `canvex.tsx` 拆分为类型、常量、工具函数、样式和 8 个自定义 Hook，主组件仅作为编排层。
+
+```
+frontend/src/
+├── types/canvex.ts                    # 共享 TypeScript 类型（SceneData, SceneRecord, ChatMessage 等）
+├── constants/canvex.ts                # API 常量、防抖时间、尺寸选项
+├── utils/canvex.ts                    # 纯函数（toSceneSummary, sanitizeAppState, normalizeMermaid 等）
+├── styles/canvex-media-sidebar.css    # 媒体库侧边栏样式
+├── hooks/
+│   ├── use-canvex-theme.ts            # 画布主题解析、视频封面生成、视频元素判断
+│   ├── use-canvas-elements.ts         # 元素创建（文本/矩形/图片）、选区计算、坐标转换
+│   ├── use-scene-persistence.ts       # localStorage 缓存、场景 CRUD、保存防抖、URL 同步
+│   ├── use-pinning.ts                 # 钉选笔记、占位符管理、闪烁动画、Mermaid 流程图插入
+│   ├── use-media-library.ts           # 媒体库加载、项目文件夹分组、图片/视频插入
+│   ├── use-image-edit-pipeline.ts     # 图片编辑工具栏、任务轮询、结果插入、编辑恢复
+│   ├── use-video-pipeline.ts          # 视频生成、任务轮询、Overlay 刷新、状态追踪
+│   └── use-chat.ts                    # SSE 流式聊天、消息持久化、工具调用分发
+└── pages/dashboard/canvex.tsx         # 编排层：初始化 Hook、组装回调、渲染 JSX
+```
+
+### Hook 初始化顺序
+
+```
+theme → canvasElements → scenePersistence → pinning → mediaLibrary
+      → imageEditPipeline → videoPipeline → chat
+```
+
+后续 Hook 可依赖前序 Hook 的返回值；跨 Hook 的循环依赖通过 `useRef` 间接引用打断：
+
+| Ref | 写入方 | 读取方 |
+|-----|--------|--------|
+| `captureSceneSnapshotRef` | 主组件（所有 Hook 初始化后赋值） | pinning, imageEdit, video |
+| `scheduleVideoOverlayRefreshRef` | 主组件（videoPipeline 初始化后赋值） | imageEdit |
+| `createPinnedImageRef` | imageEditPipeline（useEffect 赋值） | chat, mediaLibrary |
+| `createPinnedVideoRef` | videoPipeline（useEffect 赋值） | chat, mediaLibrary |
+
+### 共享状态方案
+
+不使用 React Context。原因：
+
+1. 共享数据大部分是 `useRef`（不触发渲染），Context 没有意义。
+2. 参数传递让每个 Hook 的依赖关系显式可见。
+3. 与现有 `createPinnedImageRef` / `createPinnedVideoRef` 的间接引用模式一致。
+
+主组件声明约 30 个 `useRef`，按需传给各 Hook。
+
+### 回调稳定性
+
+为防止无限重渲染，关键模式：
+
+- `searchParams`（每次渲染都是新对象）存入 `searchParamsRef`，`updateSceneParam` 只读 ref。
+- `selectScene` 使用 `sceneIdRef.current` 而非 `activeSceneId` 状态，避免自身 setState 导致回调重建。
+- `updateSelectedEditSelection` 内部通过 ref 读取 `selectedEditKey` / `selectedEditRect`，不放入 `useCallback` 依赖。
+- `captureSceneSnapshot` 和 `scheduleVideoOverlayRefresh` 通过 `useCallback(() => ref.current(), [])` 包装为稳定引用，再传给各 Hook。
+
 ## 常见问题
 
 - 媒体任务失败：查看日志

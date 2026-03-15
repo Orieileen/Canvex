@@ -49,6 +49,7 @@ class ChatState(TypedDict):
 _IMAGE_SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
 _FLOWCHART_MERMAID_BLOCK_RE = re.compile(r"```(?:\w+)?\s*([\s\S]*?)```", re.IGNORECASE)
 _FLOWCHART_EDGE_RE = re.compile(r"(-->|---|==>|-.->)")
+_FLOWCHART_QUOTED_EDGE_LABEL_RE = re.compile(r'(\|)\s*"([^"]*?)"\s*(\|)')
 _FLOWCHART_NODE_DEF_RE = re.compile(r"(?m)\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^}]*\})")
 _FLOWCHART_MAX_CHARS = 16000
 _FLOWCHART_MAX_NODES = 120
@@ -284,6 +285,10 @@ def _normalize_flowchart_mermaid(value: str) -> str:
         lines[0] = "flowchart TD"
     else:
         lines.insert(0, "flowchart TD")
+
+    # Strip quotes from edge labels: |"text"| → |text|
+    lines = [_FLOWCHART_QUOTED_EDGE_LABEL_RE.sub(r'\1\2\3', line) for line in lines]
+
     return "\n".join(lines)
 
 
@@ -340,7 +345,8 @@ def _build_flowchart_generation_prompt(prompt: str, current_mermaid: str | None 
         "- First line must be exactly: flowchart TD\n"
         "- Keep node identifiers concise and stable, such as A1, A2, B1.\n"
         "- Keep labels concise and practical.\n"
-        "- Always use quoted labels, e.g. A1[\"Start\"], B2[\"Review\"]\n"
+        "- Always use quoted labels for nodes, e.g. A1[\"Start\"], B2[\"Review\"]\n"
+        "- Edge labels must NOT use quotes. Use A1 -->|some text| B1, never A1 -->|\"some text\"| B1.\n"
         "- Label text must be plain language, not math/LaTeX syntax.\n"
         "- Do not use braces or formula notation in labels, such as { }, lim_{...}, f(x)/g(x), ->, <=, >=.\n"
         "- If the user asks for formulas, rewrite them into plain words.\n"
@@ -386,7 +392,8 @@ def _generate_flowchart_result(args: Dict[str, Any], state: ChatState) -> Dict[s
             "Constraints:\n"
             "- First line must be exactly: flowchart TD\n"
             "- Keep semantic meaning of user request.\n"
-            "- Use quoted labels only, e.g. A1[\"...\"]\n"
+            "- Use quoted labels for nodes only, e.g. A1[\"...\"]\n"
+            "- Edge labels must NOT use quotes. Use A1 -->|some text| B1, not A1 -->|\"text\"| B1.\n"
             "- Replace math/LaTeX-like label text with plain words.\n"
             "- Do not keep braces/formula tokens in labels (e.g. { }, lim_{...}, ->).\n"
             "- Avoid classDef/click/style/linkStyle directives.\n"
