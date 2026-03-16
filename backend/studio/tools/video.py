@@ -341,6 +341,10 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     duration = int(payload.get("seconds"))
     aspect_ratio = str(payload.get("aspect_ratio") or "16:9").strip()
 
+    # 字段名由环境变量决定，适配不同第三方供应商的 API 规范
+    duration_field = os.getenv("MEDIA_VIDEO_COMPAT_DURATION_FIELD", "duration").strip() or "duration"
+    size_field = os.getenv("MEDIA_VIDEO_COMPAT_SIZE_FIELD", "aspect_ratio").strip() or "aspect_ratio"
+
     content_mode = os.getenv("MEDIA_VIDEO_COMPAT_CONTENT_TYPE", "json").strip().lower()
     use_json = content_mode != "multipart"
 
@@ -348,8 +352,8 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
         json_body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
-            "duration": duration,
-            "aspect_ratio": aspect_ratio,
+            duration_field: str(duration) if duration_field == "seconds" else duration,
+            size_field: aspect_ratio if size_field != "size" else size,
         }
         image_urls = payload.get("image_urls") or []
         if isinstance(image_urls, list):
@@ -371,8 +375,8 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
         multipart_fields: dict[str, Any] = {
             "model": (None, model),
             "prompt": (None, prompt),
-            "seconds": (None, str(duration)),
-            "size": (None, size),
+            duration_field: (None, str(duration)),
+            size_field: (None, size if size_field == "size" else aspect_ratio),
         }
         if first_image_url := _first_image_url(payload.get("image_urls")):
             multipart_fields["image"] = (
