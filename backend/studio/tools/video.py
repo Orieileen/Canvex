@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import time
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import requests
 from django.core.files.base import ContentFile
@@ -149,10 +152,6 @@ def _to_video_bytes(blob: Any) -> bytes:
     if isinstance(content, (bytes, bytearray)):
         return bytes(content)
     raise ValueError("video content is empty")
-
-
-def _compat_video_scalar(value: Any) -> str:
-    return str(value)
 
 
 def _compat_video_id(value: Any) -> str:
@@ -311,27 +310,35 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     if not model:
         raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
     seconds = _video_seconds(payload.get("seconds"))
-    form_data: dict[str, str] = {
-        "model": _compat_video_scalar(model),
-        "prompt": _compat_video_scalar(prompt),
-        "seconds": _compat_video_scalar(seconds),
-        "size": _compat_video_scalar(size),
+
+    # Compat endpoint requires multipart/form-data (not url-encoded, not JSON).
+    multipart_fields: dict[str, Any] = {
+        "model": (None, model),
+        "prompt": (None, prompt),
+        "seconds": (None, seconds),
+        "size": (None, size),
     }
 
-    files: dict[str, tuple[str, bytes, str]] = {}
     if first_image_url := _first_image_url(payload.get("image_urls")):
-        files["image"] = (
+        multipart_fields["image"] = (
             "image.png",
             _normalize_video_reference_image(_resolve_image_bytes(first_image_url), size),
             "image/png",
         )
 
+    logger.info(
+        "compat video create: endpoint=%s, model=%s, has_image=%s",
+        endpoint, model, "image" in multipart_fields and len(multipart_fields["image"]) == 3,
+    )
     response = requests.post(
         endpoint,
         headers=_media_auth_headers(),
-        data=form_data,
-        files=files or None,
+        files=multipart_fields,
         timeout=_read_media_timeout_seconds(),
+    )
+    logger.info(
+        "compat video response: status=%s, body=%s",
+        response.status_code, response.text[:500],
     )
     created = _parse_compat_video_json(response, "create")
     video_id = _compat_video_id(created)
@@ -365,6 +372,10 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     这个函数当前会被 `videotool()` 调用，也是整个 `video.py` 的核心入口。
     """
     compat_endpoint = os.getenv("MEDIA_VIDEO_COMPAT_ENDPOINT", "").strip()
+    logger.info(
+        "_generate_video_media: MEDIA_VIDEO_COMPAT_ENDPOINT=%r, MEDIA_VIDEO_MODEL=%r",
+        compat_endpoint, os.getenv("MEDIA_VIDEO_MODEL", ""),
+    )
     if compat_endpoint:
         return _generate_video_media_via_compat(payload, compat_endpoint)
 
