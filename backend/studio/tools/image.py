@@ -246,23 +246,65 @@ def _wait_for_compat_image(raw_endpoint: str, task_id: str) -> dict[str, Any]:
 # Compat image request  (supports both sync and async providers)
 # ---------------------------------------------------------------------------
 
-def _post_compat_image_request(raw_endpoint: str, payload: dict[str, Any]) -> bytes:
+def _post_compat_image_request(
+    raw_endpoint: str,
+    payload: dict[str, Any],
+    *,
+    content_mode: str = "json",
+    source_bytes: bytes | None = None,
+    image_field: str = "image_urls",
+) -> bytes:
     endpoint = _resolve_media_compat_url(raw_endpoint)
     if not endpoint:
         raise RuntimeError("compat image endpoint is not configured")
 
-    logger.info(
-        "compat image create: endpoint=%s, model=%s, has_image=%s",
-        endpoint,
-        payload.get("model", ""),
-        any(k in payload for k in ("image_urls", "image")),
-    )
-    response = requests.post(
-        endpoint,
-        headers=_media_auth_headers("application/json"),
-        json=payload,
-        timeout=_read_media_timeout_seconds(),
-    )
+    use_json = content_mode != "multipart"
+
+    if use_json:
+        logger.info(
+            "compat image create [json]: endpoint=%s, model=%s, has_image=%s",
+            endpoint,
+            payload.get("model", ""),
+            any(k in payload for k in ("image_urls", "image")),
+        )
+        response = requests.post(
+            endpoint,
+            headers=_media_auth_headers("application/json"),
+            json=payload,
+            timeout=_read_media_timeout_seconds(),
+        )
+    else:
+        multipart_fields: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == image_field:
+                continue  # handled separately below
+            if isinstance(value, (list, dict)):
+                continue  # skip complex types in multipart
+            multipart_fields[key] = (None, str(value))
+
+        if source_bytes:
+            multipart_fields[image_field] = ("image.png", source_bytes, "image/png")
+        elif image_field in payload:
+            # Fallback: decode data-url from payload
+            raw = payload[image_field]
+            if isinstance(raw, list):
+                raw = raw[0] if raw else ""
+            if isinstance(raw, str) and raw.startswith("data:"):
+                multipart_fields[image_field] = ("image.png", _decode_image_base64(raw), "image/png")
+
+        logger.info(
+            "compat image create [multipart]: endpoint=%s, model=%s, has_image=%s",
+            endpoint,
+            payload.get("model", ""),
+            image_field in multipart_fields,
+        )
+        response = requests.post(
+            endpoint,
+            headers=_media_auth_headers(),
+            files=multipart_fields,
+            timeout=_read_media_timeout_seconds(),
+        )
+
     logger.info(
         "compat image response: status=%s, body=%s",
         response.status_code, (response.text or "")[:500],
@@ -378,6 +420,7 @@ def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
     if compat_endpoint:
         image_field = os.getenv("MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD", "image_urls").strip() or "image_urls"
         size_field = os.getenv("MEDIA_IMAGE_EDIT_COMPAT_SIZE_FIELD", "size").strip() or "size"
+        content_mode = os.getenv("MEDIA_IMAGE_EDIT_COMPAT_CONTENT_TYPE", "multipart").strip().lower()
 
         data_url = _image_bytes_to_data_url(normalized_source)
         payload: dict[str, Any] = {
@@ -388,7 +431,13 @@ def _edit_image_media(source_bytes: bytes, prompt: str, size: str) -> bytes:
         }
         if size:
             payload[size_field] = size
-        return _post_compat_image_request(compat_endpoint, payload)
+        return _post_compat_image_request(
+            compat_endpoint,
+            payload,
+            content_mode=content_mode,
+            source_bytes=normalized_source,
+            image_field=image_field,
+        )
 
     client = openai_client_for_media()
 
