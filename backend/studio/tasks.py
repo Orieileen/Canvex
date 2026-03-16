@@ -416,6 +416,7 @@ def run_excalidraw_video_job(self, job_id: str, attempt: int = 0):
         "prompt": job.prompt,
         "seconds": job.duration,
         "size": _video_size_from_aspect_ratio(job.aspect_ratio or "16:9"),
+        "aspect_ratio": job.aspect_ratio or "16:9",
         "image_urls": job.image_urls or [],
     }
 

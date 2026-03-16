@@ -7,8 +7,6 @@ import time
 import uuid
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 import requests
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -26,8 +24,10 @@ from .common import (
     openai_client_for_media,
 )
 
+logger = logging.getLogger(__name__)
+
 _VIDEO_DONE_STATUSES = {"completed", "succeeded", "success"}
-_VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+_VIDEO_FAILED_STATUSES = {"failed", "failure", "error", "cancelled", "canceled"}
 
 
 def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -> tuple[int, int]:
@@ -156,16 +156,25 @@ def _to_video_bytes(blob: Any) -> bytes:
 
 def _compat_video_id(value: Any) -> str:
     if isinstance(value, dict):
-        for key in ("id", "task_id", "job_id", "video_id"):
-            token = value.get(key)
-            if token is not None and str(token).strip():
-                return str(token).strip()
+        # Handle wrapped response: {"code": 200, "data": [{"task_id": "..."}]}
+        data = value.get("data")
+        if isinstance(data, list) and data:
+            value = data[0] if isinstance(data[0], dict) else value
+        if isinstance(value, dict):
+            for key in ("id", "task_id", "job_id", "video_id"):
+                token = value.get(key)
+                if token is not None and str(token).strip():
+                    return str(token).strip()
     token = str(value or "").strip()
     return token
 
 
 def _compat_video_status(value: Any) -> str:
     if isinstance(value, dict):
+        # Unwrap nested data: {"code": "success", "data": {"status": "..."}}
+        data = value.get("data")
+        if isinstance(data, dict) and "status" in data:
+            value = data
         for key in ("status", "state", "phase"):
             token = value.get(key)
             if token is not None and str(token).strip():
@@ -175,6 +184,13 @@ def _compat_video_status(value: Any) -> str:
 
 def _compat_video_error(value: Any) -> str:
     if isinstance(value, dict):
+        # Unwrap nested data: {"data": {"fail_reason": "...", ...}}
+        data = value.get("data")
+        if isinstance(data, dict):
+            fail_reason = data.get("fail_reason")
+            if fail_reason is not None and str(fail_reason).strip():
+                return str(fail_reason).strip()
+
         error = value.get("error")
         if isinstance(error, dict):
             for key in ("message", "detail", "error"):
@@ -183,11 +199,24 @@ def _compat_video_error(value: Any) -> str:
                     return str(token).strip()
         elif error is not None and str(error).strip():
             return str(error).strip()
-        for key in ("message", "detail"):
+        for key in ("message", "detail", "fail_reason"):
             token = value.get(key)
             if token is not None and str(token).strip():
                 return str(token).strip()
     return str(value or "").strip()
+
+
+def _extract_compat_video_url(value: Any) -> str:
+    """Extract video download URL from poll response data."""
+    if not isinstance(value, dict):
+        return ""
+    data = value.get("data")
+    if isinstance(data, dict):
+        for key in ("url", "video_url", "download_url", "result_url"):
+            token = data.get(key)
+            if token and isinstance(token, str) and token.startswith("http"):
+                return token.strip()
+    return ""
 
 
 def _parse_compat_video_json(response: requests.Response, action: str) -> dict[str, Any]:
@@ -309,33 +338,60 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     model = os.getenv("MEDIA_VIDEO_MODEL", "").strip()
     if not model:
         raise RuntimeError("video model is not configured; set MEDIA_VIDEO_MODEL")
-    seconds = _video_seconds(payload.get("seconds"))
+    duration = int(payload.get("seconds"))
+    aspect_ratio = str(payload.get("aspect_ratio") or "16:9").strip()
 
-    # Compat endpoint requires multipart/form-data (not url-encoded, not JSON).
-    multipart_fields: dict[str, Any] = {
-        "model": (None, model),
-        "prompt": (None, prompt),
-        "seconds": (None, seconds),
-        "size": (None, size),
-    }
+    content_mode = os.getenv("MEDIA_VIDEO_COMPAT_CONTENT_TYPE", "json").strip().lower()
+    use_json = content_mode != "multipart"
 
-    if first_image_url := _first_image_url(payload.get("image_urls")):
-        multipart_fields["image"] = (
-            "image.png",
-            _normalize_video_reference_image(_resolve_image_bytes(first_image_url), size),
-            "image/png",
+    if use_json:
+        json_body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+        }
+        image_urls = payload.get("image_urls") or []
+        if isinstance(image_urls, list):
+            image_urls = [u for u in image_urls if isinstance(u, str) and u.strip()]
+        if image_urls:
+            json_body["image_urls"] = image_urls
+
+        logger.info(
+            "compat video create [json]: endpoint=%s, body=%r",
+            endpoint, {k: v for k, v in json_body.items() if k != "prompt"},
+        )
+        response = requests.post(
+            endpoint,
+            headers=_media_auth_headers(content_type="application/json"),
+            json=json_body,
+            timeout=_read_media_timeout_seconds(),
+        )
+    else:
+        multipart_fields: dict[str, Any] = {
+            "model": (None, model),
+            "prompt": (None, prompt),
+            "seconds": (None, str(duration)),
+            "size": (None, size),
+        }
+        if first_image_url := _first_image_url(payload.get("image_urls")):
+            multipart_fields["image"] = (
+                "image.png",
+                _normalize_video_reference_image(_resolve_image_bytes(first_image_url), size),
+                "image/png",
+            )
+
+        logger.info(
+            "compat video create [multipart]: endpoint=%s, model=%s, has_image=%s",
+            endpoint, model, "image" in multipart_fields,
+        )
+        response = requests.post(
+            endpoint,
+            headers=_media_auth_headers(),
+            files=multipart_fields,
+            timeout=_read_media_timeout_seconds(),
         )
 
-    logger.info(
-        "compat video create: endpoint=%s, model=%s, has_image=%s",
-        endpoint, model, "image" in multipart_fields and len(multipart_fields["image"]) == 3,
-    )
-    response = requests.post(
-        endpoint,
-        headers=_media_auth_headers(),
-        files=multipart_fields,
-        timeout=_read_media_timeout_seconds(),
-    )
     logger.info(
         "compat video response: status=%s, body=%s",
         response.status_code, response.text[:500],
@@ -348,6 +404,17 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     video = _wait_for_compat_video(raw_endpoint, video_id)
     status = _compat_video_status(video)
     if status in _VIDEO_DONE_STATUSES:
+        # Try to extract video URL from poll response data first.
+        video_url = _extract_compat_video_url(video)
+        if video_url:
+            video_bytes = requests.get(video_url, timeout=_read_media_timeout_seconds()).content
+            if video_bytes:
+                return {
+                    "task_id": video_id,
+                    "status": status,
+                    "url": _save_video_to_media(video_bytes, video_id),
+                }
+        # Fall back to content endpoint.
         return {
             "task_id": video_id,
             "status": status,
@@ -372,10 +439,6 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
     这个函数当前会被 `videotool()` 调用，也是整个 `video.py` 的核心入口。
     """
     compat_endpoint = os.getenv("MEDIA_VIDEO_COMPAT_ENDPOINT", "").strip()
-    logger.info(
-        "_generate_video_media: MEDIA_VIDEO_COMPAT_ENDPOINT=%r, MEDIA_VIDEO_MODEL=%r",
-        compat_endpoint, os.getenv("MEDIA_VIDEO_MODEL", ""),
-    )
     if compat_endpoint:
         return _generate_video_media_via_compat(payload, compat_endpoint)
 
@@ -434,25 +497,26 @@ def videotool(
     seconds: int,
     size: str = "1280x720",
     image_urls: list[str] | None = None,
-    model: str | None = None,
     scene_id: str | None = None,
 ) -> dict[str, Any]:
     """LangChain 工具入口：根据提示词和可选参考图生成视频。
 
     这个函数负责接收外部工具调用参数，整理成内部 `payload` 后交给 `_generate_video_media()` 执行，
     再把内部结果转换成上层可消费的统一返回结构。
-    参数 `prompt`、`seconds`、`size`、`image_urls`、`model`、`scene_id`
+    参数 `prompt`、`seconds`、`size`、`image_urls`、`scene_id`
     来自工具调用方；当前会被 LangChain tool 机制、图编排逻辑或后台任务入口间接使用。
     返回值是一个字典：成功时返回 `task_id`、`status`、`url`、`scene_id`，
     失败时返回 `error` 和可选的 `scene_id`，供上层接口或任务状态更新逻辑继续处理。
     这个函数会被工具调用方直接使用，并在内部调用 `_generate_video_media()`。
     """
+    parts = size.split("x", 1)
+    aspect_ratio = "9:16" if len(parts) == 2 and int(parts[1]) > int(parts[0]) else "16:9"
     payload = {
         "prompt": prompt,
         "seconds": seconds,
         "size": size,
+        "aspect_ratio": aspect_ratio,
         "image_urls": image_urls,
-        "model": model,
     }
 
     try:

@@ -516,7 +516,7 @@ class ExcalidrawVideoGenerateView(SceneMixin, APIView):
                     "video_prompt_required",
                     status.HTTP_400_BAD_REQUEST,
                 )
-            script = analyze_video_shooting_script(image_urls[0], "", duration, duration_source)
+            script = analyze_video_shooting_script(image_urls[0], "", duration or 10, duration_source)
             script = script.strip() if isinstance(script, str) else ""
             if not script:
                 return _error_response(
@@ -538,14 +538,16 @@ class ExcalidrawVideoGenerateView(SceneMixin, APIView):
             )
 
         try:
-            job = ExcalidrawVideoJob.objects.create(
-                scene=scene,
-                prompt=prompt,
-                image_urls=image_urls,
-                duration=duration,
-                aspect_ratio=aspect_ratio,
-                status=ExcalidrawVideoJob.Status.QUEUED,
-            )
+            create_kwargs: dict[str, Any] = {
+                "scene": scene,
+                "prompt": prompt,
+                "image_urls": image_urls,
+                "aspect_ratio": aspect_ratio,
+                "status": ExcalidrawVideoJob.Status.QUEUED,
+            }
+            if duration is not None:
+                create_kwargs["duration"] = duration
+            job = ExcalidrawVideoJob.objects.create(**create_kwargs)
             run_excalidraw_video_job.apply_async(args=[str(job.id)], queue="excalidraw")
         except Exception as exc:
             logger.exception("Failed to create video job: %s", exc)
