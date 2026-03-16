@@ -74,34 +74,123 @@ docker compose up -d --build
 ```
 ### 使用前必配环境变量
 
-在`.env`中，通常只要先配下面这些：
+在 `.env` 中，最少只需配置以下变量即可启动：
 
 | 变量 | 备注 | 示例 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | llm agent使用的API Key。 | `sk-xxxx` |
-| `OPENAI_BASE_URL` | llm agent接口地址（OpenAI 或兼容网关）。 | `https://api.openai.com/v1` |
-| `CHAT_MODEL` | llm agent使用的模型名。 | `gpt-4o-mini` |
-| `MEDIA_API_KEY` | 图片/视频任务使用的 API Key。可与 `OPENAI_API_KEY` 相同。 | `sk-xxxx` |
-| `MEDIA_BASE_URL` | 图片/视频任务接口地址（媒体网关）。 | `https://api.openai.com/v1` |
-| `MEDIA_IMAGE_EDIT_MODEL` | 图片编辑/抠图流程使用的模型名。 | `gpt-image-1.5` |
-| `MEDIA_VIDEO_MODEL` | 视频生成使用的模型名。 | `sora-2` |
+| `OPENAI_API_KEY` | 聊天 LLM 的 API Key | `sk-xxxx` |
+| `OPENAI_BASE_URL` | 聊天 LLM 接口地址（OpenAI 或兼容网关） | `https://api.openai.com/v1` |
+| `CHAT_MODEL` | 聊天模型名 | `gpt-4o-mini` |
+| `MEDIA_API_KEY` | 图片/视频任务 API Key（可与 `OPENAI_API_KEY` 相同） | `sk-xxxx` |
+| `MEDIA_BASE_URL` | 图片/视频任务接口地址 | `https://api.openai.com/v1` |
+| `MEDIA_IMAGE_MODEL` | 生图模型 | `gpt-image-1.5` |
+| `MEDIA_IMAGE_EDIT_MODEL` | 图片编辑模型 | `gpt-image-1.5` |
+| `MEDIA_VIDEO_MODEL` | 视频生成模型 | `sora-2` |
+
+### 第三方供应商兼容配置
+
+图片和视频均支持两条调用路径：**OpenAI SDK**（默认）和 **Compat 兼容端点**（配置 `*_COMPAT_ENDPOINT` 后启用）。兼容端点通过环境变量自由搭配字段名和请求格式，适配任意第三方供应商。
+
+#### 图片 — 生图 & 编辑
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `MEDIA_IMAGE_COMPAT_ENDPOINT` | 生图兼容端点路径（拼接到 `MEDIA_BASE_URL` 后） | 不设 = 走 OpenAI SDK |
+| `MEDIA_IMAGE_COMPAT_SIZE_FIELD` | 生图尺寸字段名 | `size` |
+| `MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT` | 图片编辑兼容端点路径 | 不设 = 走 OpenAI SDK |
+| `MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD` | 编辑时原图字段名（含 `urls` 则包装为数组） | `image_urls` |
+| `MEDIA_IMAGE_EDIT_COMPAT_SIZE_FIELD` | 编辑时尺寸字段名 | `size` |
+| `MEDIA_IMAGE_COMPAT_POLL_ENDPOINT` | 异步供应商轮询路径 | 与创建端点相同 |
+| `MEDIA_IMAGE_POLL_INTERVAL` | 轮询间隔（秒） | `3` |
+| `MEDIA_IMAGE_POLL_MAX_ATTEMPTS` | 最大轮询次数 | `200` |
+
+#### 视频
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `MEDIA_VIDEO_COMPAT_ENDPOINT` | 兼容端点路径 | 不设 = 走 OpenAI SDK |
+| `MEDIA_VIDEO_COMPAT_CONTENT_TYPE` | 请求格式：`json` 或 `multipart` | `json` |
+| `MEDIA_VIDEO_COMPAT_DURATION_FIELD` | 时长字段名 | `duration` |
+| `MEDIA_VIDEO_COMPAT_SIZE_FIELD` | 尺寸字段名（`aspect_ratio` 发 `"16:9"`，`size` 发 `"1280x720"`） | `aspect_ratio` |
+| `MEDIA_VIDEO_COMPAT_IMAGE_FIELD` | 图片引用字段名 | `image` |
+| `MEDIA_VIDEO_POLL_INTERVAL` | 轮询间隔（秒） | `5` |
+| `MEDIA_VIDEO_POLL_MAX_ATTEMPTS` | 最大轮询次数 | `360` |
+
+#### 配置示例
+
+<details>
+<summary>OpenAI 直连（默认，不需要额外配置）</summary>
+
+```env
+MEDIA_BASE_URL=https://api.openai.com/v1
+MEDIA_IMAGE_MODEL=gpt-image-1.5
+MEDIA_VIDEO_MODEL=sora-2
+```
+
+</details>
+
+<details>
+<summary>第三方供应商 A — JSON 异步</summary>
+
+```env
+MEDIA_BASE_URL=https://your-provider-a.com/v1
+
+# 生图
+MEDIA_IMAGE_MODEL=your-image-model
+MEDIA_IMAGE_COMPAT_ENDPOINT=/images/generations
+MEDIA_IMAGE_COMPAT_POLL_ENDPOINT=/tasks
+
+# 图片编辑（使用同一端点 + image_urls 传原图）
+MEDIA_IMAGE_EDIT_MODEL=your-image-model
+MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT=/images/generations
+MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD=image_urls
+
+# 视频
+MEDIA_VIDEO_MODEL=sora-2
+MEDIA_VIDEO_COMPAT_ENDPOINT=/videos/generations
+MEDIA_VIDEO_COMPAT_CONTENT_TYPE=json
+MEDIA_VIDEO_COMPAT_DURATION_FIELD=duration
+MEDIA_VIDEO_COMPAT_SIZE_FIELD=aspect_ratio
+```
+
+</details>
+
+<details>
+<summary>第三方供应商 B — multipart</summary>
+
+```env
+MEDIA_BASE_URL=https://your-provider-b.com/v1
+
+# 视频
+MEDIA_VIDEO_MODEL=sora-2
+MEDIA_VIDEO_COMPAT_ENDPOINT=/videos
+MEDIA_VIDEO_COMPAT_CONTENT_TYPE=multipart
+MEDIA_VIDEO_COMPAT_DURATION_FIELD=seconds
+MEDIA_VIDEO_COMPAT_SIZE_FIELD=size
+MEDIA_VIDEO_COMPAT_IMAGE_FIELD=input_reference
+```
+
+</details>
+
+### 数据库
 
 Docker Compose 默认的数据库变量：
 
 | 变量 | 备注 | 示例 |
 | --- | --- | --- |
-| `MYSQL_DATABASE` | 业务库名。 | `canvex` |
-| `MYSQL_USER` | 业务库用户。 | `canvex` |
-| `MYSQL_PASSWORD` | 业务库密码。 | `canvex` |
-| `MYSQL_HOST` | MySQL 主机名。Docker Compose 场景保持为 `mysql`。 | `mysql` |
-| `MYSQL_PORT` | MySQL 端口。 | `3306` |
-| `MYSQL_ROOT_PASSWORD` | 初始化 MySQL 容器时使用的 root 密码。 | `change-me-root-password` |
+| `MYSQL_DATABASE` | 业务库名 | `canvex` |
+| `MYSQL_USER` | 业务库用户 | `canvex` |
+| `MYSQL_PASSWORD` | 业务库密码 | `canvex` |
+| `MYSQL_HOST` | MySQL 主机名（Docker Compose 场景保持为 `mysql`） | `mysql` |
+| `MYSQL_PORT` | MySQL 端口 | `3306` |
+| `MYSQL_ROOT_PASSWORD` | 初始化 MySQL 容器时使用的 root 密码 | `change-me-root-password` |
 
 说明：
 
-- 你使用第三方兼容网关时，`*_BASE_URL` 和模型名要按该网关支持列表填写。
+- 使用第三方兼容网关时，`*_BASE_URL` 和模型名按该网关文档填写。
 - 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_*` 使用同一套配置。
-- 现在执行 `docker compose up -d --build` 会自动启动 MySQL；已有 `db.sqlite3` 数据不会自动迁移进 MySQL。
+- `docker compose up -d --build` 会自动启动 MySQL；已有 `db.sqlite3` 数据不会自动迁移进 MySQL。
+- 完整环境变量参考见 [.env.example](./.env.example)。
 
 启动后访问：
 
@@ -117,6 +206,105 @@ Docker Compose 默认的数据库变量：
 - 视频生成：`/api/v1/excalidraw/scenes/{id}/video/`
 - 任务查询：`/api/v1/excalidraw/image-edit-jobs/{job_id}/`、`/api/v1/excalidraw/video-jobs/{job_id}/`
 
+
+## 后端架构
+
+技术栈：Django + DRF + Celery + Redis + MySQL + LangGraph。
+
+### 目录结构
+
+```
+backend/
+├── config/                # Django 配置
+│   ├── settings.py        # 全局设置、数据库、CORS、Celery
+│   ├── celery.py          # Celery 应用初始化
+│   └── urls.py            # 根路由
+└── studio/                # 主应用
+    ├── models.py           # 数据模型（Scene, Job, Asset, Folder）
+    ├── views.py            # API 端点（Chat, ImageEdit, Video）
+    ├── serializers.py      # DRF 序列化
+    ├── urls.py             # 应用路由
+    ├── graphs.py           # AI Agent Graph（LangGraph 编排）
+    ├── memory.py           # Redis 记忆系统（summary + memory）
+    ├── tasks.py            # Celery 异步任务（图片编辑、视频生成）
+    ├── video_script.py     # 视频分镜脚本分析
+    └── tools/              # 媒体生成工具
+        ├── image.py        # 图片生成 & 编辑（OpenAI SDK / Compat）
+        ├── video.py        # 视频生成（OpenAI SDK / Compat）
+        ├── assets.py       # 资产存储 & 文件夹管理
+        └── common.py       # 共享工具（URL 解析、图片下载、OpenAI client）
+```
+
+### 媒体生成双路径架构
+
+图片和视频均支持两条执行路径，由 `*_COMPAT_ENDPOINT` 环境变量切换：
+
+| 功能 | OpenAI SDK（默认） | Compat 兼容端点 |
+|---|---|---|
+| 生图 | Responses API + `image_generation` | POST JSON → 同步提取或异步轮询 |
+| 图片编辑 | Responses API + `image_generation(edit)` | POST JSON（含原图 data URL）→ 同步/异步 |
+| 视频 | `client.videos.create` → 轮询 → 下载 | POST JSON 或 multipart → 轮询 → 下载 |
+
+Compat 路径的字段名（尺寸、时长、图片引用）、请求格式（JSON/multipart）均通过环境变量配置，详见 [.env.example](./.env.example)。
+
+### 图片生成 & 编辑流程
+
+```
+POST /api/v1/excalidraw/scenes/{id}/image-edit/
+  → 创建 ExcalidrawImageEditJob（status=QUEUED）
+  → Celery: run_excalidraw_image_edit_job
+    → _edit_image_media(source_bytes, prompt, size)
+      ├─ COMPAT_ENDPOINT 有值 → _post_compat_image_request()
+      │   ├─ 响应含图片数据 → 同步提取 bytes
+      │   └─ 响应含 task_id  → 异步轮询 → 下载图片
+      └─ 未设置 → Responses API（image_generation action=edit）
+    → [is_cutout? → rembg 去白底]
+    → _save_asset() → ExcalidrawImageEditResult
+```
+
+AI 聊天中的生图走 `graphs.py → imagetool → _generate_image_media()`，流程类似但不经过 Job 队列。
+
+### 视频生成流程
+
+```
+POST /api/v1/excalidraw/scenes/{id}/video/
+  → 创建 ExcalidrawVideoJob（status=QUEUED）
+  → Celery: run_excalidraw_video_job
+    → _generate_video_media(payload)
+      ├─ COMPAT_ENDPOINT 有值 → JSON 或 multipart → 轮询 → 下载
+      └─ 未设置 → OpenAI Videos API → 轮询 → 下载
+    → 保存缩略图 → 更新 job（status, result_url, thumbnail_url）
+    → 失败时指数退避重试（最多 6 次，20s ~ 180s）
+```
+
+前端通过轮询 `/api/v1/excalidraw/video-jobs/{job_id}/` 获取任务状态和结果 URL。
+
+### SSE 流式响应
+
+聊天端点 `?stream=1` 返回 SSE 事件流：
+
+```
+data: {"intent": "image"}          ← 通知前端正在生成图片/视频
+data: {"tool": "imagetool", "result": {...}}  ← 工具执行结果
+data: {"delta": "文本片段"}         ← 流式文本
+data: {"done": true, "message": {...}}        ← 完成
+```
+
+### 记忆系统
+
+Redis 存储两层状态（per workspace + scene）：
+
+- **summary_state** — 当前对话摘要（goal、constraints、decisions、open_questions、next_actions）
+- **memory_state** — 长期记忆（preferences、policies、constraints）
+
+每轮对话后更新 summary；条目在滑动窗口内出现 ≥ `MEMORY_STABILITY_MIN_COUNT` 次才提升为长期 memory，避免噪声写入。
+
+### Celery 任务
+
+| 任务 | 触发方式 | 重试 |
+|---|---|---|
+| `run_excalidraw_image_edit_job` | 图片编辑 POST | 不重试 |
+| `run_excalidraw_video_job` | 视频生成 POST / AI 聊天 | 指数退避，最多 6 次 |
 
 ## 前端架构
 
