@@ -55,7 +55,6 @@ _FLOWCHART_MAX_CHARS = 16000
 _FLOWCHART_MAX_NODES = 120
 _FLOWCHART_MAX_EDGES = 240
 _MEDIA_ACTIONS = {"chat", "clarify", "generate_image", "generate_video", "generate_flowchart"}
-_VIDEO_ALLOWED_SECONDS = (4, 8, 12)
 _VIDEO_SIZE_BY_ASPECT_RATIO = {
     "16:9": "1280x720",
     "9:16": "720x1280",
@@ -444,7 +443,7 @@ def _build_media_action_prompt(state: ChatState) -> str:
         "image": {"prompt": "string", "size": "1024x1024"},
         "video": {
             "prompt": "string",
-            "seconds": 12,
+            "seconds": "integer (required)",
             "size": "1280x720",
             "image_urls": ["https://example.com/a.png"],
         },
@@ -466,8 +465,8 @@ def _build_media_action_prompt(state: ChatState) -> str:
         "- Otherwise use chat.\n"
         "Generation rules:\n"
         "- For generate_image, fill image.prompt and optional image.size (default 1024x1024).\n"
-        "- For generate_video, fill video.prompt and optional video.seconds/video.size/video.image_urls "
-        "(defaults: seconds=12, size=1280x720).\n"
+        "- For generate_video, fill video.prompt, video.seconds (required), and optional video.size/video.image_urls "
+        "(default size=1280x720).\n"
         "- For generate_flowchart, fill flowchart.prompt and optional flowchart.current_mermaid.\n"
         "Assistant text rules:\n"
         "- assistant must be concise and in the user's language.\n"
@@ -532,7 +531,7 @@ def _decide_media_action(state: ChatState) -> Dict[str, Any]:
         video_payload = _get_dict_field(decision_raw, "video")
         decision["video_args"] = {
             "prompt": str(video_payload.get("prompt") or last_user).strip(),
-            "seconds": video_payload.get("seconds") or 12,
+            "seconds": video_payload.get("seconds"),
             "size": _normalize_video_size(video_payload.get("size")),
             "image_urls": _normalize_image_urls(video_payload.get("image_urls")),
             "scene_id": state.get("scene_id"),
@@ -572,11 +571,11 @@ def _enqueue_video_job(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": "scene_id is required"}
 
     try:
-        seconds = int(args.get("seconds") or 12)
+        seconds = int(args.get("seconds"))
     except (ValueError, TypeError):
-        seconds = 12
-    if seconds not in _VIDEO_ALLOWED_SECONDS:
-        return {"error": f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}"}
+        return {"error": "seconds is required"}
+    if seconds <= 0:
+        return {"error": "seconds must be a positive integer"}
 
     size = _normalize_video_size(args.get("size"))
     aspect_ratio = _VIDEO_ASPECT_RATIO_BY_SIZE.get(size)

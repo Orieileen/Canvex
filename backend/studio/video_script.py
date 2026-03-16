@@ -32,15 +32,6 @@ def _read_positive_int_env(name: str, default: int) -> int:
     return default
 
 
-def _read_video_default_seconds() -> int:
-    raw = os.getenv("MEDIA_VIDEO_SECONDS_DEFAULT", "12")
-    try:
-        value = int(str(raw).strip())
-    except Exception:
-        value = 12
-    return max(1, min(300, value))
-
-
 def _extract_duration_seconds_from_text(text: str) -> int | None:
     if not text:
         return None
@@ -56,7 +47,7 @@ def _extract_duration_seconds_from_text(text: str) -> int | None:
     return min(300, value)
 
 
-def resolve_video_duration_seconds(payload: Any, prompt: str) -> tuple[int, str]:
+def resolve_video_duration_seconds(payload: Any, prompt: str) -> tuple[int | None, str]:
     raw_duration = None
     if payload is not None and hasattr(payload, "get"):
         try:
@@ -75,7 +66,7 @@ def resolve_video_duration_seconds(payload: Any, prompt: str) -> tuple[int, str]
     if prompt_duration:
         return prompt_duration, "prompt"
 
-    return _read_video_default_seconds(), "default"
+    return None, "none"
 
 
 def _build_inline_image_data_url(image_url: str) -> str | None:
@@ -163,7 +154,7 @@ def analyze_video_shooting_script(image_url: str, prompt: str, duration_seconds:
     if not image_url.lower().startswith(("http://", "https://")):
         return ""
 
-    duration_seconds = max(1, min(300, int(duration_seconds or _read_video_default_seconds())))
+    duration_seconds = max(1, min(300, int(duration_seconds)))
     duration_source_text = {
         "request": "用户参数指定",
         "prompt": "用户文本指定",

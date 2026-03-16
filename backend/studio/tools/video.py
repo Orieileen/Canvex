@@ -23,7 +23,6 @@ from .common import (
     openai_client_for_media,
 )
 
-_VIDEO_ALLOWED_SECONDS = (4, 8, 12)
 _VIDEO_DONE_STATUSES = {"completed", "succeeded", "success"}
 _VIDEO_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 
@@ -47,18 +46,12 @@ def _video_poll_limits(default_attempts: int = 120, default_interval: int = 5) -
 
 
 def _video_seconds(value: Any) -> str:
-    """校验并标准化视频时长。
+    """把外部传入的视频时长转换成字符串秒数。
 
-    这个函数负责把外部传入的视频时长转换成 OpenAI Videos API 需要的字符串秒数，并确保值在允许范围内。
-    参数 `value` 来自 `_generate_video_media()` 里的 `payload["seconds"]`，
-    调用方必须显式传入合法秒数。
-    返回值是形如 `"4"`、`"8"`、`"12"` 的字符串，供 `client.videos.create(...)` 直接使用。
-    这个函数当前只会被 `_generate_video_media()` 调用。
+    参数 `value` 来自 `payload["seconds"]`，调用方必须显式传入。
+    返回值是字符串形式的整数秒数，供 API 调用直接使用。
     """
-    seconds = int(value)
-    if seconds not in _VIDEO_ALLOWED_SECONDS:
-        raise ValueError(f"video seconds must be one of {list(_VIDEO_ALLOWED_SECONDS)}")
-    return str(seconds)
+    return str(int(value))
 
 
 def _parse_video_size(value: Any) -> tuple[int, int]:
@@ -427,7 +420,7 @@ def _generate_video_media(payload: dict[str, Any]) -> dict[str, Any]:
 @tool("videotool")
 def videotool(
     prompt: str,
-    seconds: int = 12,
+    seconds: int,
     size: str = "1280x720",
     image_urls: list[str] | None = None,
     model: str | None = None,
