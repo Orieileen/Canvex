@@ -344,6 +344,7 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
     # 字段名由环境变量决定，适配不同第三方供应商的 API 规范
     duration_field = os.getenv("MEDIA_VIDEO_COMPAT_DURATION_FIELD", "duration").strip() or "duration"
     size_field = os.getenv("MEDIA_VIDEO_COMPAT_SIZE_FIELD", "aspect_ratio").strip() or "aspect_ratio"
+    image_field = os.getenv("MEDIA_VIDEO_COMPAT_IMAGE_FIELD", "image").strip() or "image"
 
     content_mode = os.getenv("MEDIA_VIDEO_COMPAT_CONTENT_TYPE", "json").strip().lower()
     use_json = content_mode != "multipart"
@@ -379,15 +380,18 @@ def _generate_video_media_via_compat(payload: dict[str, Any], raw_endpoint: str)
             size_field: (None, size if size_field == "size" else aspect_ratio),
         }
         if first_image_url := _first_image_url(payload.get("image_urls")):
-            multipart_fields["image"] = (
+            multipart_fields[image_field] = (
                 "image.png",
                 _normalize_video_reference_image(_resolve_image_bytes(first_image_url), size),
                 "image/png",
             )
 
         logger.info(
-            "compat video create [multipart]: endpoint=%s, model=%s, has_image=%s",
-            endpoint, model, "image" in multipart_fields,
+            "compat video create [multipart]: endpoint=%s, model=%s, %s=%s, %s=%s, has_image=%s",
+            endpoint, model,
+            duration_field, multipart_fields[duration_field][1],
+            size_field, multipart_fields[size_field][1],
+            any(k not in ("model", "prompt", duration_field, size_field) for k in multipart_fields),
         )
         response = requests.post(
             endpoint,
