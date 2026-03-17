@@ -19,6 +19,20 @@ import { useImageEditPipeline } from '@/hooks/use-image-edit-pipeline'
 import { useVideoPipeline } from '@/hooks/use-video-pipeline'
 import { useChat } from '@/hooks/use-chat'
 
+let _webpSupported: boolean | null = null
+function supportsWebp(): boolean {
+  if (_webpSupported !== null) return _webpSupported
+  try {
+    const c = document.createElement('canvas')
+    c.width = 1
+    c.height = 1
+    _webpSupported = c.toDataURL('image/webp').startsWith('data:image/webp')
+  } catch {
+    _webpSupported = false
+  }
+  return _webpSupported
+}
+
 export default function CanvexPage() {
   const { t, i18n } = useTranslation('canvex')
   const [searchParams, setSearchParams] = useSearchParams()
@@ -64,6 +78,7 @@ export default function CanvexPage() {
   const chatInterruptedScenesRef = useRef<Set<string>>(new Set())
   const sceneSelectTokenRef = useRef(0)
   const sceneHydrateTokenRef = useRef(0)
+  const handleChangeHashRef = useRef('')
   const captureSceneSnapshotRef = useRef<() => void>(() => {})
   // Stable wrapper so hooks don't get a new function ref every render
   const captureSceneSnapshotStable = useCallback(() => captureSceneSnapshotRef.current(), [])
@@ -85,12 +100,8 @@ export default function CanvexPage() {
       const bitmap = await createImageBitmap(blob)
       const maxSide = Math.max(bitmap.width, bitmap.height)
       const limit = Number.isFinite(Number(maxDim)) && Number(maxDim) > 0 ? Number(maxDim) : 0
-      if (!limit || maxSide <= limit) {
-        const dataUrl = await toDataUrl(blob)
-        bitmap.close?.()
-        return { dataUrl, width: bitmap.width, height: bitmap.height }
-      }
-      const scale = limit / maxSide
+      const needsResize = limit > 0 && maxSide > limit
+      const scale = needsResize ? limit / maxSide : 1
       const targetWidth = Math.max(1, Math.round(bitmap.width * scale))
       const targetHeight = Math.max(1, Math.round(bitmap.height * scale))
       const canvas = document.createElement('canvas')
@@ -104,7 +115,9 @@ export default function CanvexPage() {
       }
       ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
       bitmap.close?.()
-      const dataUrl = canvas.toDataURL('image/png')
+      const dataUrl = supportsWebp()
+        ? canvas.toDataURL('image/webp', 0.90)
+        : canvas.toDataURL('image/jpeg', 0.92)
       canvas.width = 0
       canvas.height = 0
       return { dataUrl, width: targetWidth, height: targetHeight }
@@ -181,7 +194,7 @@ export default function CanvexPage() {
   const {
     scenes, activeSceneId, initialData, initialKey, loading, loadError,
     saveState, setSaveState, canvexReady, setCanvexReady,
-    normalizeScenePayload, queueLocalCacheWrite, queueSave, queueUrgentSave,
+    normalizeScenePayload, compactScenePayload, queueLocalCacheWrite, queueSave, queueUrgentSave,
     flushSave, hydrateSceneFiles, resolveVideoImageUrls,
     getChatKey, getPinLastKey, getPinOriginKey,
   } = scenePersistence
@@ -326,7 +339,10 @@ export default function CanvexPage() {
   // ── handleChange & captureSceneSnapshot (main component) ─────────────
   const handleChange = useCallback(
     (elements: readonly any[], appState: any, files: any) => {
-      const { normalized: scene, fingerprint } = normalizeScenePayload({
+      // Use lightweight compactScenePayload instead of normalizeScenePayload
+      // to avoid expensive serializeAsJSON on every interaction.
+      // The full normalization + fingerprint check happens in flushSave.
+      const scene = compactScenePayload({
         elements: elements as any[],
         appState: sanitizeAppState(appState),
         files,
@@ -348,17 +364,27 @@ export default function CanvexPage() {
       }
       currentSceneRef.current = scene
       pendingRef.current = scene
-      queueLocalCacheWrite()
-      if (!lastPinnedIdRef.current) {
-        const { latest } = getLatestElements(elements as any[])
-        if (latest?.id) {
-          lastPinnedIdRef.current = latest.id
-          pinning.setLastPinnedId(latest.id)
-        }
+
+      // Lightweight change detection: element version sum + count + file count.
+      // Avoids expensive serializeAsJSON; flushSave does the full fingerprint.
+      let versionSum = 0
+      for (let i = 0; i < elements.length; i++) {
+        versionSum += (elements[i] as any)?.version || 0
       }
-      if (fingerprint === lastSavedRef.current) {
-        setSaveState('saved')
-      } else {
+      const fileCount = files ? Object.keys(files).length : 0
+      const quickHash = `${elements.length}:${versionSum}:${fileCount}`
+      const changed = quickHash !== handleChangeHashRef.current
+      handleChangeHashRef.current = quickHash
+
+      if (changed) {
+        queueLocalCacheWrite()
+        if (!lastPinnedIdRef.current) {
+          const { latest } = getLatestElements(elements as any[])
+          if (latest?.id) {
+            lastPinnedIdRef.current = latest.id
+            pinning.setLastPinnedId(latest.id)
+          }
+        }
         lastMutationAtRef.current = Date.now()
         setSaveState('pending')
         queueSave()
@@ -366,7 +392,7 @@ export default function CanvexPage() {
       theme.syncCanvexTheme(appState?.theme)
       imageEdit.updateSelectedEditSelection(appState)
     },
-    [normalizeScenePayload, queueLocalCacheWrite, queueSave, theme.syncCanvexTheme, imageEdit.updateSelectedEditSelection, setSaveState, pinning.setLastPinnedId, videoPipeline.setVideoOverlayItems],
+    [compactScenePayload, queueLocalCacheWrite, queueSave, theme.syncCanvexTheme, imageEdit.updateSelectedEditSelection, setSaveState, pinning.setLastPinnedId, videoPipeline.setVideoOverlayItems],
   )
 
   const captureSceneSnapshot = useCallback(() => {
