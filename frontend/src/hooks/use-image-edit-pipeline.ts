@@ -1261,18 +1261,15 @@ export function useImageEditPipeline({
     setImageEditPendingIds(prev => (prev.includes(selectedEditKey) ? prev : [...prev, selectedEditKey]))
     setImageEditError(null)
 
-    // Create 2 placeholders side by side
-    const placeholders = createEditImagePlaceholders(
-      sceneId,
-      bounds,
-      t('splitWorking', { defaultValue: '拆分中…' }),
-      2,
+    // Create 2 overlapping placeholders (same position, like layers)
+    // Background layer first (below), then subject layer on top
+    const backgroundPlaceholders = createEditImagePlaceholders(
+      sceneId, bounds, t('splitBackground', { defaultValue: 'splitting...' }), 1,
     )
-    const subjectPlaceholders = placeholders.slice(0, 1)
-    const backgroundPlaceholders = placeholders.slice(1, 2)
-    // Relabel: [0] = subject, [1] = background
-    if (subjectPlaceholders[0]) updatePlaceholderText(subjectPlaceholders[0], t('splitSubject', { defaultValue: '主体…' }))
-    if (backgroundPlaceholders[0]) updatePlaceholderText(backgroundPlaceholders[0], t('splitBackground', { defaultValue: '背景…' }))
+    const subjectPlaceholders = createEditImagePlaceholders(
+      sceneId, bounds, '', 1,
+    )
+    const placeholders = [...subjectPlaceholders, ...backgroundPlaceholders]
 
     try {
       const appState = api.getAppState()
