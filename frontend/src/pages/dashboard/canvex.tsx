@@ -5,7 +5,7 @@ import { DefaultSidebar, Excalidraw, MainMenu, Sidebar } from '@excalidraw/excal
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import '@/styles/canvex-media-sidebar.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconChevronLeft, IconWand, IconScissors, IconPlayerPlay, IconSend } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconChevronLeft, IconWand, IconScissors, IconPlayerPlay, IconArrowsSplit2 } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import type { SceneData, PinOrigin, ToolResult, ImagePlaceholder, VideoOverlayItem } from '@/types/canvex'
 import { WORKSPACE_KEY, IMAGE_EDIT_SIZE_OPTIONS } from '@/constants/canvex'
@@ -1021,6 +1021,24 @@ export default function CanvexPage() {
 
                     <div className="h-5 w-px bg-border/60" />
 
+                    {/* Split element button */}
+                    <button
+                      type="button"
+                      onClick={() => void imageEdit.handleSplitElement()}
+                      disabled={isEditingSelected}
+                      className="flex h-10 items-center gap-1.5 px-3 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                      title={t('editSplit', { defaultValue: 'Split Element' })}
+                    >
+                      {isEditingSelected ? (
+                        <IconLoader size={16} stroke={1.5} className="animate-spin" />
+                      ) : (
+                        <IconArrowsSplit2 size={16} stroke={1.5} />
+                      )}
+                      <span className="text-xs font-medium">{t('editSplitLabel', { defaultValue: 'Split' })}</span>
+                    </button>
+
+                    <div className="h-5 w-px bg-border/60" />
+
                     {/* Video mode button */}
                     <button
                       type="button"
@@ -1031,6 +1049,13 @@ export default function CanvexPage() {
                       <IconVideo size={16} stroke={1.5} />
                       <span className="text-xs font-medium">{t('editVideoLabel', { defaultValue: 'Video' })}</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Main view error */}
+                {editBarView === 'main' && imageEdit.imageEditError && (
+                  <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
+                    {imageEdit.imageEditError}
                   </div>
                 )}
 

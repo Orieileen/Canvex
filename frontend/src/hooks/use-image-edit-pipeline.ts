@@ -5,6 +5,17 @@ import { request } from '@/utils/request'
 import type { HoverAnchor, ImagePlaceholder, PinRect, SelectionBounds, ToolResult } from '@/types/canvex'
 import { MAX_CANVAS_IMAGE_DIM, resolveImageEditSize } from '@/constants/canvex'
 
+const SPLIT_INPAINT_PROMPT =
+  'Identify the main subject/foreground object indicated by the user-drawn dashed bounding box. ' +
+  'The dashed bounding box is a guide only and must NOT appear in the output.\n\n' +
+  'Remove the subject completely from the image. ' +
+  'Fill the area where the subject was with a natural continuation of the surrounding background. ' +
+  'The result should look like the subject was never there.\n\n' +
+  'Do NOT add, hallucinate, or introduce any new objects. ' +
+  'Preserve all background details, lighting, textures, and perspective. ' +
+  'Edges of the filled area must blend seamlessly with the surrounding background. ' +
+  'The final image must contain only the background with no trace of the removed subject.'
+
 export function useImageEditPipeline({
   sceneIdRef,
   canvexApiRef,
@@ -883,7 +894,7 @@ export function useImageEditPipeline({
       return
     }
     const selectedElements = getSelectedElementsByIds(selectedEditIds)
-    const exportElements = selectedElements.filter((item: any) => item && !isVideoElement(item))
+    const exportElements = selectedElements.filter((item) => item && !isVideoElement(item))
     const bounds = getSelectionBounds(exportElements)
     if (!exportElements.length || !bounds) {
       if (previewUrlRef.current) {
@@ -1221,6 +1232,120 @@ export function useImageEditPipeline({
     updatePlaceholderText,
   ])
 
+  // ── Split Element: produce cutout (subject) + inpainted background ──
+  const handleSplitElement = useCallback(async () => {
+    if (!selectedEditKey || !selectedEditIds.length) return
+    if (imageEditPendingIds.includes(selectedEditKey)) return
+    const sceneId = sceneIdRef.current
+    if (!sceneId) {
+      setImageEditError(t('editNoScene', { defaultValue: 'Save the scene first.' }))
+      return
+    }
+    const api = canvexApiRef.current
+    if (!api?.getSceneElements || !api?.getAppState || !api?.getFiles) {
+      setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
+      return
+    }
+    const selectedElements = getSelectedElementsByIds(selectedEditIds)
+    const exportElements = selectedElements.filter((item) => item && !isVideoElement(item))
+    if (!exportElements.length) {
+      setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
+      return
+    }
+    const bounds = getSelectionBounds(exportElements)
+    if (!bounds) {
+      setImageEditError(t('editNoImage', { defaultValue: 'Select an image to edit.' }))
+      return
+    }
+
+    setImageEditPendingIds(prev => (prev.includes(selectedEditKey) ? prev : [...prev, selectedEditKey]))
+    setImageEditError(null)
+
+    // Create 2 placeholders side by side
+    const placeholders = createEditImagePlaceholders(
+      sceneId,
+      bounds,
+      t('splitWorking', { defaultValue: '拆分中…' }),
+      2,
+    )
+    const subjectPlaceholders = placeholders.slice(0, 1)
+    const backgroundPlaceholders = placeholders.slice(1, 2)
+    // Relabel: [0] = subject, [1] = background
+    if (subjectPlaceholders[0]) updatePlaceholderText(subjectPlaceholders[0], t('splitSubject', { defaultValue: '主体…' }))
+    if (backgroundPlaceholders[0]) updatePlaceholderText(backgroundPlaceholders[0], t('splitBackground', { defaultValue: '背景…' }))
+
+    try {
+      const appState = api.getAppState()
+      const blob = await exportToBlob({
+        elements: exportElements,
+        appState: {
+          exportBackground: false,
+          viewBackgroundColor: appState.viewBackgroundColor,
+        },
+        files: api.getFiles(),
+        mimeType: MIME_TYPES.png,
+        exportPadding: 0,
+      })
+
+      // Build two FormData payloads
+      const cutoutForm = new FormData()
+      cutoutForm.append('image', blob, 'image.png')
+      cutoutForm.append('cutout', '1')
+      cutoutForm.append('n', '1')
+
+      const inpaintForm = new FormData()
+      inpaintForm.append('image', blob, 'image.png')
+      inpaintForm.append('prompt', SPLIT_INPAINT_PROMPT)
+      inpaintForm.append('n', '1')
+
+      // Fire both requests in parallel
+      const [cutoutRes, inpaintRes] = await Promise.all([
+        request.post(`/api/v1/excalidraw/scenes/${sceneId}/image-edit/`, cutoutForm),
+        request.post(`/api/v1/excalidraw/scenes/${sceneId}/image-edit/`, inpaintForm),
+      ])
+
+      const cutoutJobId = cutoutRes.data?.job_id
+      const inpaintJobId = inpaintRes.data?.job_id
+      if (!cutoutJobId || !inpaintJobId) throw new Error('job id missing')
+
+      // Attach job IDs to placeholders
+      if (subjectPlaceholders[0]) updatePlaceholderMeta(subjectPlaceholders[0], { aiEditJobId: String(cutoutJobId) })
+      if (backgroundPlaceholders[0]) updatePlaceholderMeta(backgroundPlaceholders[0], { aiEditJobId: String(inpaintJobId) })
+
+      // Poll both jobs in parallel
+      await Promise.all([
+        pollImageEditJob(cutoutJobId, sceneId, bounds, selectedEditKey, subjectPlaceholders),
+        pollImageEditJob(inpaintJobId, sceneId, bounds, selectedEditKey, backgroundPlaceholders),
+      ])
+    } catch (error) {
+      console.error('Split element failed', error)
+      if (placeholders?.length) {
+        for (const item of placeholders) {
+          updatePlaceholderText(item, toErrorLabel(t('splitFailed', { defaultValue: '拆分失败' })))
+        }
+      } else {
+        setImageEditError(t('splitFailed', { defaultValue: '拆分失败' }))
+      }
+    } finally {
+      setImageEditPendingIds(prev => prev.filter((id) => id !== selectedEditKey))
+    }
+  }, [
+    canvexApiRef,
+    createEditImagePlaceholders,
+    getSelectedElementsByIds,
+    getSelectionBounds,
+    imageEditPendingIds,
+    isVideoElement,
+    pollImageEditJob,
+    sceneIdRef,
+    selectedEditIds,
+    selectedEditKey,
+    t,
+    toErrorLabel,
+    updatePlaceholderMeta,
+    updatePlaceholderText,
+  ])
+
   return {
     imageEditPrompt,
     setImageEditPrompt,
@@ -1254,5 +1379,6 @@ export function useImageEditPipeline({
     recoverImageEditJobsForScene,
     updateSelectedEditSelection,
     handleImageEdit,
+    handleSplitElement,
   }
 }
