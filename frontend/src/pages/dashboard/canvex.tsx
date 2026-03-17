@@ -5,7 +5,7 @@ import { DefaultSidebar, Excalidraw, MainMenu, Sidebar } from '@excalidraw/excal
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import '@/styles/canvex-media-sidebar.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconWand, IconScissors, IconPlayerPlay, IconSend } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconChevronLeft, IconWand, IconScissors, IconPlayerPlay, IconSend } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import type { SceneData, PinOrigin, ToolResult, ImagePlaceholder, VideoOverlayItem } from '@/types/canvex'
 import { WORKSPACE_KEY, IMAGE_EDIT_SIZE_OPTIONS } from '@/constants/canvex'
@@ -220,6 +220,7 @@ export default function CanvexPage() {
   }, [activeScene?.title])
 
   const canShowAiEditBar = !!activeSceneId && !isPregeneratedSpace
+  const [editBarView, setEditBarView] = useState<'main' | 'image' | 'video'>('main')
 
   // ── Hook 4: Pinning ──────────────────────────────────────────────────
   const pinning = usePinning({
@@ -280,6 +281,9 @@ export default function CanvexPage() {
     scheduleVideoOverlayRefresh: scheduleVideoOverlayRefreshStable,
     canShowAiEditBar,
   })
+
+  // Reset edit bar view when selection changes
+  useEffect(() => { setEditBarView('main') }, [imageEdit.selectedEditKey])
 
   // ── Hook 7: Video pipeline ───────────────────────────────────────────
   const videoPipeline = useVideoPipeline({
@@ -966,154 +970,273 @@ export default function CanvexPage() {
               </div>
             )}
 
-            {/* Image edit toolbar */}
+            {/* Image & Video edit toolbar */}
             {canShowAiEditBar && imageEdit.selectedEditKey && imageEdit.selectedEditRect && imageEditStyle && (
               <div
-                className="absolute z-50 flex flex-col items-center gap-1.5"
+                className="absolute z-50 flex flex-col gap-2"
                 style={imageEditStyle}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                {/* Main input row */}
-                <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
-                  {/* Preview thumbnail */}
-                  <div
-                    className="relative shrink-0 p-1.5"
-                    onMouseEnter={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                      imageEdit.setPreviewAnchor({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
-                    }}
-                    onMouseMove={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                      imageEdit.setPreviewAnchor({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
-                    }}
-                    onMouseLeave={() => imageEdit.setPreviewAnchor(null)}
-                  >
-                    <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-muted/60">
-                      {imageEdit.selectedEditPreview ? (
-                        <img
-                          src={imageEdit.selectedEditPreview}
-                          alt={t('editPreviewAlt', { defaultValue: 'Selection preview' })}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <IconPhoto size={14} className="text-muted-foreground/60" />
-                      )}
+                {/* ── Main view: Image / Video icon selector ── */}
+                {editBarView === 'main' && (
+                  <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                    {/* Preview thumbnail */}
+                    <div
+                      className="relative shrink-0 p-1.5"
+                      onMouseEnter={(e) => {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        imageEdit.setPreviewAnchor({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+                      }}
+                      onMouseMove={(e) => {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        imageEdit.setPreviewAnchor({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+                      }}
+                      onMouseLeave={() => imageEdit.setPreviewAnchor(null)}
+                    >
+                      <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-muted/60">
+                        {imageEdit.selectedEditPreview ? (
+                          <img
+                            src={imageEdit.selectedEditPreview}
+                            alt={t('editPreviewAlt', { defaultValue: 'Selection preview' })}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <IconPhoto size={14} className="text-muted-foreground/60" />
+                        )}
+                      </div>
                     </div>
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Image mode button */}
+                    <button
+                      type="button"
+                      onClick={() => setEditBarView('image')}
+                      className="flex h-10 items-center gap-1.5 px-3 text-muted-foreground transition-colors hover:text-foreground"
+                      title={t('editImageMode', { defaultValue: 'Image Edit' })}
+                    >
+                      <IconPhoto size={16} stroke={1.5} />
+                      <span className="text-xs font-medium">{t('editImageLabel', { defaultValue: 'Image' })}</span>
+                    </button>
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Video mode button */}
+                    <button
+                      type="button"
+                      onClick={() => setEditBarView('video')}
+                      className="flex h-10 items-center gap-1.5 px-3 text-muted-foreground transition-colors hover:text-foreground"
+                      title={t('editVideoMode', { defaultValue: 'Video Generate' })}
+                    >
+                      <IconVideo size={16} stroke={1.5} />
+                      <span className="text-xs font-medium">{t('editVideoLabel', { defaultValue: 'Video' })}</span>
+                    </button>
                   </div>
+                )}
 
-                  {/* Input field */}
-                  <input
-                    value={imageEdit.imageEditPrompt}
-                    onChange={(e) => {
-                      imageEdit.setImageEditPrompt(e.target.value)
-                      if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        void imageEdit.handleImageEdit()
-                      }
-                    }}
-                    placeholder={t('editPromptPlaceholder', { defaultValue: 'Describe edits…' })}
-                    className="h-10 min-w-[200px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
-                    disabled={isEditingSelected}
-                  />
+                {/* ── Image edit view ── */}
+                {editBarView === 'image' && (
+                  <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                    {/* Back button */}
+                    <button
+                      type="button"
+                      onClick={() => setEditBarView('main')}
+                      className="flex h-10 w-9 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      title={t('editBack', { defaultValue: 'Back' })}
+                    >
+                      <IconChevronLeft size={16} stroke={1.5} />
+                    </button>
 
-                  {/* Divider */}
-                  <div className="h-5 w-px bg-border/60" />
+                    <div className="h-5 w-px bg-border/60" />
 
-                  {/* Size selector */}
-                  <select
-                    value={imageEdit.imageEditSize}
-                    onChange={(e) => {
-                      imageEdit.setImageEditSize(e.target.value)
-                      if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                    }}
-                    className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
-                    disabled={isEditingSelected}
-                  >
-                    <option value="">{t('editSizeAuto', { defaultValue: 'Auto' })}</option>
-                    {IMAGE_EDIT_SIZE_OPTIONS.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                    {/* Image prompt input */}
+                    <input
+                      value={imageEdit.imageEditPrompt}
+                      onChange={(e) => {
+                        imageEdit.setImageEditPrompt(e.target.value)
+                        if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          void imageEdit.handleImageEdit()
+                        }
+                      }}
+                      placeholder={t('editPromptPlaceholder', { defaultValue: 'Describe edits…' })}
+                      className="h-10 min-w-[180px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
+                      disabled={isEditingSelected}
+                      autoFocus
+                    />
 
-                  {/* Divider */}
-                  <div className="h-5 w-px bg-border/60" />
+                    <div className="h-5 w-px bg-border/60" />
 
-                  {/* Count selector */}
-                  <select
-                    value={String(imageEdit.imageEditCount)}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value, 10)
-                      imageEdit.setImageEditCount(Number.isNaN(value) ? 1 : value)
-                      if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                    }}
-                    className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
-                    disabled={isEditingSelected}
-                  >
-                    <option value="1">×1</option>
-                    <option value="2">×2</option>
-                    <option value="4">×4</option>
-                  </select>
+                    {/* Image size */}
+                    <select
+                      value={imageEdit.imageEditSize}
+                      onChange={(e) => {
+                        imageEdit.setImageEditSize(e.target.value)
+                        if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                      }}
+                      className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                      disabled={isEditingSelected}
+                    >
+                      <option value="">{t('editSizeAuto', { defaultValue: 'Auto' })}</option>
+                      {IMAGE_EDIT_SIZE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
 
-                  {/* Divider */}
-                  <div className="h-5 w-px bg-border/60" />
+                    <div className="h-5 w-px bg-border/60" />
 
-                  {/* Action buttons */}
-                  <div className="flex items-center gap-0.5 px-1">
+                    {/* Image count */}
+                    <select
+                      value={String(imageEdit.imageEditCount)}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value, 10)
+                        imageEdit.setImageEditCount(Number.isNaN(value) ? 1 : value)
+                        if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                      }}
+                      className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                      disabled={isEditingSelected}
+                    >
+                      <option value="1">×1</option>
+                      <option value="2">×2</option>
+                      <option value="4">×4</option>
+                    </select>
+
+                    <div className="h-5 w-px bg-border/60" />
+
                     {/* Cutout */}
                     <button
                       type="button"
                       onClick={() => void imageEdit.handleImageEdit({ cutout: true })}
                       disabled={isEditingSelected}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
                       title={t('editCutout', { defaultValue: 'Cutout' })}
                     >
                       <IconScissors size={16} stroke={1.5} />
                     </button>
 
-                    {/* Generate Video */}
+                    {/* Image submit */}
                     <button
                       type="button"
-                      onClick={() => void videoPipeline.handleVideoGenerate()}
+                      onClick={() => void imageEdit.handleImageEdit()}
                       disabled={isEditingSelected}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-                      title={videoPipeline.isVideoGeneratingSelected
-                        ? t('editVideoContinue', { defaultValue: 'Generate Another' })
-                        : t('editVideo', { defaultValue: 'Generate Video' })}
+                      className="m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                      title={t('editApply', { defaultValue: 'Apply' })}
                     >
-                      <IconPlayerPlay size={16} stroke={1.5} />
+                      {isEditingSelected ? (
+                        <IconLoader size={16} stroke={1.5} className="animate-spin" />
+                      ) : (
+                        <IconWand size={16} stroke={1.5} />
+                      )}
                     </button>
                   </div>
-
-                  {/* Submit button */}
-                  <button
-                    type="button"
-                    onClick={() => void imageEdit.handleImageEdit()}
-                    disabled={isEditingSelected}
-                    className="m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {isEditingSelected ? (
-                      <IconLoader size={16} stroke={1.5} className="animate-spin" />
-                    ) : (
-                      <IconWand size={16} stroke={1.5} />
-                    )}
-                  </button>
-                </div>
-
-                {/* Status / Error messages */}
-                {videoPipeline.videoEditStatus && (
-                  <span className={`text-[11px] ${videoPipeline.videoEditStatusTone}`}>
-                    {videoPipeline.videoEditStatus}
-                  </span>
                 )}
-                {imageEdit.imageEditError && (
+
+                {/* Image error */}
+                {editBarView === 'image' && imageEdit.imageEditError && (
                   <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
                     {imageEdit.imageEditError}
                   </div>
                 )}
-                {videoPipeline.videoEditError && (
+
+                {/* ── Video generate view ── */}
+                {editBarView === 'video' && (
+                  <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                    {/* Back button */}
+                    <button
+                      type="button"
+                      onClick={() => setEditBarView('main')}
+                      className="flex h-10 w-9 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      title={t('editBack', { defaultValue: 'Back' })}
+                    >
+                      <IconChevronLeft size={16} stroke={1.5} />
+                    </button>
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Video prompt input */}
+                    <input
+                      value={imageEdit.imageEditPrompt}
+                      onChange={(e) => {
+                        imageEdit.setImageEditPrompt(e.target.value)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          void videoPipeline.handleVideoGenerate()
+                        }
+                      }}
+                      placeholder={t('editVideoPromptHint', { defaultValue: 'Describe video…' })}
+                      className="h-10 min-w-[180px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
+                      disabled={videoPipeline.isVideoGeneratingSelected}
+                      autoFocus
+                    />
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Duration selector */}
+                    <select
+                      value={String(videoPipeline.videoDuration)}
+                      onChange={(e) => videoPipeline.setVideoDuration(Number(e.target.value))}
+                      className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                      disabled={videoPipeline.isVideoGeneratingSelected}
+                    >
+                      {videoPipeline.videoDurationOptions.map((sec) => (
+                        <option key={sec} value={String(sec)}>{sec}s</option>
+                      ))}
+                    </select>
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Aspect ratio selector */}
+                    <select
+                      value={videoPipeline.videoAspectRatio}
+                      onChange={(e) => videoPipeline.setVideoAspectRatio(e.target.value)}
+                      className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                      disabled={videoPipeline.isVideoGeneratingSelected}
+                    >
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                      <option value="1:1">1:1</option>
+                    </select>
+
+                    <div className="h-5 w-px bg-border/60" />
+
+                    {/* Video status inline */}
+                    {videoPipeline.videoEditStatus && (
+                      <span className={`shrink-0 px-2 text-[11px] ${videoPipeline.videoEditStatusTone}`}>
+                        {videoPipeline.videoEditStatus}
+                      </span>
+                    )}
+
+                    {/* Video submit */}
+                    <button
+                      type="button"
+                      onClick={() => void videoPipeline.handleVideoGenerate()}
+                      disabled={isEditingSelected || videoPipeline.isVideoGeneratingSelected}
+                      className="m-1 flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                      title={videoPipeline.isVideoGeneratingSelected
+                        ? t('editVideoContinue', { defaultValue: 'Generate Another' })
+                        : t('editVideo', { defaultValue: 'Generate Video' })}
+                    >
+                      {videoPipeline.isVideoGeneratingSelected ? (
+                        <IconLoader size={14} stroke={1.5} className="animate-spin" />
+                      ) : (
+                        <IconPlayerPlay size={14} stroke={1.5} />
+                      )}
+                      <span className="text-xs font-medium">
+                        {videoPipeline.isVideoGeneratingSelected
+                          ? t('editVideoWorking', { defaultValue: 'Generating…' })
+                          : t('editVideoGenerate', { defaultValue: 'Generate' })}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Video error */}
+                {editBarView === 'video' && videoPipeline.videoEditError && (
                   <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
                     {videoPipeline.toVideoFailureLabel(videoPipeline.videoEditError)}
                   </div>

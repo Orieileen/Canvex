@@ -65,11 +65,24 @@ export function useVideoPipeline({
   setImageEditError: (error: string | null) => void
 }) {
   const { t } = useTranslation('canvex')
+
+  // Parse video duration options from env once (comma-separated seconds, first = default)
+  const videoDurationOptions = useMemo(() => {
+    const raw = import.meta.env.VITE_VIDEO_DURATION_OPTIONS ?? '10'
+    const parsed = String(raw)
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0)
+    return parsed.length ? parsed : [10]
+  }, [])
+
   const [videoOverlayItems, setVideoOverlayItems] = useState<VideoOverlayItem[]>([])
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null)
   const [videoEditPendingCountByKey, setVideoEditPendingCountByKey] = useState<Record<string, number>>({})
   const [videoEditStatusByKey, setVideoEditStatusByKey] = useState<Record<string, string | null>>({})
   const [videoEditErrorByKey, setVideoEditErrorByKey] = useState<Record<string, string | null>>({})
+  const [videoDuration, setVideoDuration] = useState<number>(videoDurationOptions[0])
+  const [videoAspectRatio, setVideoAspectRatio] = useState<string>('16:9')
   const [, forceVideoOverlayRefresh] = useReducer((value: number) => (value + 1) % 1000000, 0)
   const videoOverlayRafRef = useRef<number | null>(null)
   const lastPinnedIdRef = useRef<string | null>(null)
@@ -843,7 +856,8 @@ export function useVideoPipeline({
     }
     let submittedJobId = ''
     try {
-      const requestPayload = imageUrls.length ? { prompt, image_urls: imageUrls } : { prompt }
+      const requestPayload: Record<string, any> = { prompt, duration: videoDuration, aspect_ratio: videoAspectRatio }
+      if (imageUrls.length) requestPayload.image_urls = imageUrls
       const res = await request.post(`/api/v1/excalidraw/scenes/${sceneId}/video/`, requestPayload)
       const jobId = res.data?.job_id ? String(res.data.job_id) : ''
       if (!jobId) {
@@ -892,6 +906,8 @@ export function useVideoPipeline({
     updatePlaceholderMeta,
     updatePlaceholderText,
     videoEditSelectionByJobRef,
+    videoDuration,
+    videoAspectRatio,
   ])
 
   return {
@@ -920,5 +936,10 @@ export function useVideoPipeline({
     pollVideoJob,
     recoverVideoJobsForScene,
     handleVideoGenerate,
+    videoDurationOptions,
+    videoDuration,
+    setVideoDuration,
+    videoAspectRatio,
+    setVideoAspectRatio,
   }
 }
