@@ -1,6 +1,6 @@
 export const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 export const WORKSPACE_KEY = import.meta.env.VITE_WORKSPACE_KEY || 'public'
-export const MAX_VIDEO_POSTER_DIM = 512
+export const MAX_VIDEO_POSTER_DIM = 99999
 
 export const parsePositiveIntEnv = (raw: unknown, fallback: number) => {
   const value = Number(raw)

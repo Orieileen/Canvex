@@ -1062,7 +1062,7 @@ export function useImageEditPipeline({
       y = (placeholderRect.y || 0) + (targetHeight - height) / 2
     } else {
       const gap = 16
-      const maxWidth = 400
+      const maxWidth = MAX_CANVAS_IMAGE_DIM
       const scale = naturalWidth > 0 ? Math.min(1, maxWidth / naturalWidth) : 1
       width = Math.max(120, Math.round(naturalWidth * scale))
       height = Math.max(120, Math.round(naturalHeight * scale))

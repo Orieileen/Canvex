@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { CaptureUpdateAction } from '@excalidraw/excalidraw'
 import { request } from '@/utils/request'
 import type { ImagePlaceholder, VideoJobListItem, VideoOverlayItem } from '@/types/canvex'
-import { MAX_VIDEO_POSTER_DIM } from '@/constants/canvex'
+import { MAX_VIDEO_POSTER_DIM, MAX_CANVAS_IMAGE_DIM } from '@/constants/canvex'
 
 export function useVideoPipeline({
   sceneIdRef,
@@ -477,7 +477,7 @@ export function useVideoPipeline({
       }
       const baseX = origin.x
       const baseY = origin.y
-      const maxWidth = 400
+      const maxWidth = MAX_CANVAS_IMAGE_DIM
       const scale = naturalWidth > 0 ? Math.min(1, maxWidth / naturalWidth) : 1
       width = Math.max(160, Math.round(naturalWidth * scale))
       height = Math.max(90, Math.round(naturalHeight * scale))

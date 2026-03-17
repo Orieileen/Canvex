@@ -126,8 +126,8 @@ export default function CanvexPage() {
       ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
       bitmap.close?.()
       const dataUrl = supportsWebp()
-        ? canvas.toDataURL('image/webp', 0.90)
-        : canvas.toDataURL('image/jpeg', 0.92)
+        ? canvas.toDataURL('image/webp', 1)
+        : canvas.toDataURL('image/jpeg', 1)
       canvas.width = 0
       canvas.height = 0
       return { dataUrl, width: targetWidth, height: targetHeight }
