@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { DefaultSidebar, Excalidraw, MainMenu, Sidebar } from '@excalidraw/excalidraw'
@@ -82,6 +82,16 @@ export default function CanvexPage() {
   const captureSceneSnapshotRef = useRef<() => void>(() => {})
   // Stable wrapper so hooks don't get a new function ref every render
   const captureSceneSnapshotStable = useCallback(() => captureSceneSnapshotRef.current(), [])
+
+  // ── Selected element pixel size overlay ────────────────────────────
+  const [selectedElementInfo, setSelectedElementInfo] = useState<{
+    type: 'image' | 'video'
+    width: number
+    height: number
+    viewportRect: { x: number; y: number; width: number; height: number }
+  } | null>(null)
+  const selectedElementInfoRef = useRef(selectedElementInfo)
+  selectedElementInfoRef.current = selectedElementInfo
 
   // ── Pure utility callbacks (no hook deps) ────────────────────────────
   const loadImageDataUrl = useCallback(async (url: string, maxDim?: number | null) => {
@@ -391,8 +401,40 @@ export default function CanvexPage() {
       }
       theme.syncCanvexTheme(appState?.theme)
       imageEdit.updateSelectedEditSelection(appState)
+
+      // Update selected element pixel size overlay
+      const selectedIds = appState?.selectedElementIds || {}
+      const selIds = Object.keys(selectedIds).filter((key) => selectedIds[key])
+      let nextInfo: typeof selectedElementInfoRef.current = null
+      if (selIds.length === 1) {
+        const el = (elements || []).find((item: any) => item && String(item.id) === selIds[0] && !item.isDeleted)
+        if (el && el.type === 'image') {
+          const isVideo = theme.isVideoElement(el)
+          const rect = canvasElements.getElementViewportRect(el, appState)
+          if (rect) {
+            nextInfo = {
+              type: isVideo ? 'video' : 'image',
+              width: Math.round(el.width),
+              height: Math.round(el.height),
+              viewportRect: rect,
+            }
+          }
+        }
+      }
+      const prev = selectedElementInfoRef.current
+      const same = prev === nextInfo || (
+        prev && nextInfo
+        && prev.type === nextInfo.type
+        && prev.width === nextInfo.width
+        && prev.height === nextInfo.height
+        && Math.abs(prev.viewportRect.x - nextInfo.viewportRect.x) < 0.5
+        && Math.abs(prev.viewportRect.y - nextInfo.viewportRect.y) < 0.5
+        && Math.abs(prev.viewportRect.width - nextInfo.viewportRect.width) < 0.5
+        && Math.abs(prev.viewportRect.height - nextInfo.viewportRect.height) < 0.5
+      )
+      if (!same) setSelectedElementInfo(nextInfo)
     },
-    [compactScenePayload, queueLocalCacheWrite, queueSave, theme.syncCanvexTheme, imageEdit.updateSelectedEditSelection, setSaveState, pinning.setLastPinnedId, videoPipeline.setVideoOverlayItems],
+    [compactScenePayload, queueLocalCacheWrite, queueSave, theme.syncCanvexTheme, imageEdit.updateSelectedEditSelection, setSaveState, pinning.setLastPinnedId, videoPipeline.setVideoOverlayItems, canvasElements.getElementViewportRect, theme.isVideoElement],
   )
 
   const captureSceneSnapshot = useCallback(() => {
@@ -894,6 +936,25 @@ export default function CanvexPage() {
                     </div>
                   )
                 })}
+              </div>
+            )}
+
+            {/* Pixel size overlay for selected image/video */}
+            {selectedElementInfo && (
+              <div
+                className="pointer-events-none absolute z-40 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[11px] font-medium text-white shadow-sm"
+                style={{
+                  left: selectedElementInfo.viewportRect.x + selectedElementInfo.viewportRect.width / 2,
+                  top: selectedElementInfo.viewportRect.y + selectedElementInfo.viewportRect.height + 6,
+                  transform: 'translateX(-50%)',
+                }}
+              >
+                {selectedElementInfo.type === 'video' ? (
+                  <IconVideo size={14} stroke={1.5} />
+                ) : (
+                  <IconPhoto size={14} stroke={1.5} />
+                )}
+                <span>{selectedElementInfo.width} x {selectedElementInfo.height}</span>
               </div>
             )}
 
