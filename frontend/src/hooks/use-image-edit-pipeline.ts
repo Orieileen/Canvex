@@ -907,13 +907,8 @@ export function useImageEditPipeline({
       return
     }
     const appState = api.getAppState?.() || {}
-    const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1
-    const previewSize = 192
-    const targetSize = previewSize * dpr
-    const scale = bounds.width > 0 && bounds.height > 0
-      ? Math.min(targetSize / bounds.width, targetSize / bounds.height)
-      : 1
 
+    // Use the same export parameters as the actual AI upload (no scaling, no padding)
     exportToBlob({
       elements: exportElements,
       appState: {
@@ -922,12 +917,7 @@ export function useImageEditPipeline({
       },
       files: api.getFiles(),
       mimeType: MIME_TYPES.png,
-      exportPadding: 4,
-      getDimensions: (width: number, height: number) => ({
-        width: Math.max(1, Math.round(width * scale)),
-        height: Math.max(1, Math.round(height * scale)),
-        scale,
-      }),
+      exportPadding: 0,
     }).then((blob: Blob) => {
       if (cancelled) return
       const url = URL.createObjectURL(blob)
