@@ -5,7 +5,7 @@ import { DefaultSidebar, Excalidraw, MainMenu, Sidebar } from '@excalidraw/excal
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import '@/styles/canvex-media-sidebar.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconWand, IconScissors, IconPlayerPlay, IconSend } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import type { SceneData, PinOrigin, ToolResult, ImagePlaceholder, VideoOverlayItem } from '@/types/canvex'
 import { WORKSPACE_KEY, IMAGE_EDIT_SIZE_OPTIONS } from '@/constants/canvex'
@@ -481,9 +481,17 @@ export default function CanvexPage() {
 
   const imageEditStyle = useMemo(() => {
     if (!canShowAiEditBar || !imageEdit.selectedEditRect) return null
+    const rect = imageEdit.selectedEditRect
+    // Position toolbar centered below the element with space for pixel-size label
+    const toolbarWidth = 480
+    let left = rect.x + rect.width / 2 - toolbarWidth / 2
+    // Clamp within viewport
+    if (typeof window !== 'undefined') {
+      left = Math.max(8, Math.min(left, window.innerWidth - toolbarWidth - 8))
+    }
     return {
-      left: Math.max(8, imageEdit.selectedEditRect.x),
-      top: Math.max(8, imageEdit.selectedEditRect.y - 44),
+      left,
+      top: rect.y + rect.height + 32,
     }
   }, [canShowAiEditBar, imageEdit.selectedEditRect])
 
@@ -961,13 +969,15 @@ export default function CanvexPage() {
             {/* Image edit toolbar */}
             {canShowAiEditBar && imageEdit.selectedEditKey && imageEdit.selectedEditRect && imageEditStyle && (
               <div
-                className="absolute z-50 flex flex-col gap-1"
+                className="absolute z-50 flex flex-col items-center gap-1.5"
                 style={imageEditStyle}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center gap-2 rounded-lg border bg-background/95 px-2 py-2 shadow-md backdrop-blur">
+                {/* Main input row */}
+                <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                  {/* Preview thumbnail */}
                   <div
-                    className="relative"
+                    className="relative shrink-0 p-1.5"
                     onMouseEnter={(e) => {
                       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
                       imageEdit.setPreviewAnchor({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
@@ -978,20 +988,20 @@ export default function CanvexPage() {
                     }}
                     onMouseLeave={() => imageEdit.setPreviewAnchor(null)}
                   >
-                    <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-md border bg-muted">
+                    <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-muted/60">
                       {imageEdit.selectedEditPreview ? (
                         <img
                           src={imageEdit.selectedEditPreview}
                           alt={t('editPreviewAlt', { defaultValue: 'Selection preview' })}
-                          className="h-full w-full object-contain"
+                          className="h-full w-full object-cover"
                         />
                       ) : (
-                        <span className="text-[10px] text-muted-foreground">
-                          {t('editPreviewLabel', { defaultValue: 'Preview' })}
-                        </span>
+                        <IconPhoto size={14} className="text-muted-foreground/60" />
                       )}
                     </div>
                   </div>
+
+                  {/* Input field */}
                   <input
                     value={imageEdit.imageEditPrompt}
                     onChange={(e) => {
@@ -1005,81 +1015,106 @@ export default function CanvexPage() {
                       }
                     }}
                     placeholder={t('editPromptPlaceholder', { defaultValue: 'Describe edits…' })}
-                    className="h-8 w-56 rounded-md border px-2 text-xs outline-none"
+                    className="h-10 min-w-[200px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
                     disabled={isEditingSelected}
                   />
-                  <Button
-                    type="button" size="sm" variant="outline"
-                    onClick={() => void imageEdit.handleImageEdit({ cutout: true })}
+
+                  {/* Divider */}
+                  <div className="h-5 w-px bg-border/60" />
+
+                  {/* Size selector */}
+                  <select
+                    value={imageEdit.imageEditSize}
+                    onChange={(e) => {
+                      imageEdit.setImageEditSize(e.target.value)
+                      if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                    }}
+                    className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
                     disabled={isEditingSelected}
                   >
-                    {t('editCutout', { defaultValue: 'Cutout' })}
-                  </Button>
-                  <div className="flex items-center">
-                    <select
-                      value={imageEdit.imageEditSize}
-                      onChange={(e) => {
-                        imageEdit.setImageEditSize(e.target.value)
-                        if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                      }}
-                      className="h-8 w-24 rounded-md border px-2 text-xs outline-none"
+                    <option value="">{t('editSizeAuto', { defaultValue: 'Auto' })}</option>
+                    {IMAGE_EDIT_SIZE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+
+                  {/* Divider */}
+                  <div className="h-5 w-px bg-border/60" />
+
+                  {/* Count selector */}
+                  <select
+                    value={String(imageEdit.imageEditCount)}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10)
+                      imageEdit.setImageEditCount(Number.isNaN(value) ? 1 : value)
+                      if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                    }}
+                    className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                    disabled={isEditingSelected}
+                  >
+                    <option value="1">×1</option>
+                    <option value="2">×2</option>
+                    <option value="4">×4</option>
+                  </select>
+
+                  {/* Divider */}
+                  <div className="h-5 w-px bg-border/60" />
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-0.5 px-1">
+                    {/* Cutout */}
+                    <button
+                      type="button"
+                      onClick={() => void imageEdit.handleImageEdit({ cutout: true })}
                       disabled={isEditingSelected}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                      title={t('editCutout', { defaultValue: 'Cutout' })}
                     >
-                      <option value="">{t('editSizeAuto', { defaultValue: 'Auto' })}</option>
-                      {IMAGE_EDIT_SIZE_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex items-center">
-                    <select
-                      value={String(imageEdit.imageEditCount)}
-                      onChange={(e) => {
-                        const value = parseInt(e.target.value, 10)
-                        imageEdit.setImageEditCount(Number.isNaN(value) ? 1 : value)
-                        if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                      }}
-                      className="h-8 w-16 rounded-md border px-2 text-xs outline-none"
-                      disabled={isEditingSelected}
-                    >
-                      <option value="1">1</option>
-                      <option value="2">2</option>
-                      <option value="4">4</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      type="button" size="sm" variant="outline"
+                      <IconScissors size={16} stroke={1.5} />
+                    </button>
+
+                    {/* Generate Video */}
+                    <button
+                      type="button"
                       onClick={() => void videoPipeline.handleVideoGenerate()}
                       disabled={isEditingSelected}
-                    >
-                      {videoPipeline.isVideoGeneratingSelected
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                      title={videoPipeline.isVideoGeneratingSelected
                         ? t('editVideoContinue', { defaultValue: 'Generate Another' })
                         : t('editVideo', { defaultValue: 'Generate Video' })}
-                    </Button>
-                    {videoPipeline.videoEditStatus && (
-                      <span className={`text-[11px] ${videoPipeline.videoEditStatusTone}`}>
-                        {videoPipeline.videoEditStatus}
-                      </span>
-                    )}
+                    >
+                      <IconPlayerPlay size={16} stroke={1.5} />
+                    </button>
                   </div>
-                  <Button
-                    size="sm"
+
+                  {/* Submit button */}
+                  <button
+                    type="button"
                     onClick={() => void imageEdit.handleImageEdit()}
                     disabled={isEditingSelected}
+                    className="m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {isEditingSelected
-                      ? t('editWorking', { defaultValue: 'Editing…' })
-                      : t('editApply', { defaultValue: 'Apply' })}
-                  </Button>
+                    {isEditingSelected ? (
+                      <IconLoader size={16} stroke={1.5} className="animate-spin" />
+                    ) : (
+                      <IconWand size={16} stroke={1.5} />
+                    )}
+                  </button>
                 </div>
+
+                {/* Status / Error messages */}
+                {videoPipeline.videoEditStatus && (
+                  <span className={`text-[11px] ${videoPipeline.videoEditStatusTone}`}>
+                    {videoPipeline.videoEditStatus}
+                  </span>
+                )}
                 {imageEdit.imageEditError && (
-                  <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] text-destructive shadow-sm">
+                  <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
                     {imageEdit.imageEditError}
                   </div>
                 )}
                 {videoPipeline.videoEditError && (
-                  <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] text-destructive shadow-sm">
+                  <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
                     {videoPipeline.toVideoFailureLabel(videoPipeline.videoEditError)}
                   </div>
                 )}
