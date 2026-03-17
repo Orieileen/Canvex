@@ -502,6 +502,8 @@ export function useVideoPipeline({
         aiVideoThumbnailUrl: shouldPersistThumbnail ? resolvedPosterUrl : null,
         aiVideoJobId: videoJobId || null,
         aiImageMimeType: 'image/png',
+        aiNaturalWidth: naturalWidth,
+        aiNaturalHeight: naturalHeight,
       },
     })
 

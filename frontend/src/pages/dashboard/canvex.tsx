@@ -416,10 +416,13 @@ export default function CanvexPage() {
           const isVideo = theme.isVideoElement(el)
           const rect = canvasElements.getElementViewportRect(el, appState)
           if (rect) {
+            const data = el.customData || {}
+            const natW = Number(data.aiNaturalWidth)
+            const natH = Number(data.aiNaturalHeight)
             nextInfo = {
               type: isVideo ? 'video' : 'image',
-              width: Math.round(el.width),
-              height: Math.round(el.height),
+              width: natW > 0 ? natW : Math.round(el.width),
+              height: natH > 0 ? natH : Math.round(el.height),
               viewportRect: rect,
             }
           }

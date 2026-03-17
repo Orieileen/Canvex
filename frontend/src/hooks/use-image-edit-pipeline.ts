@@ -247,6 +247,8 @@ export function useImageEditPipeline({
         aiEditAssetId: editAssetId || result?.asset_id,
         aiEditImageUrl: url,
         aiImageMimeType: result?.mime_type || 'image/png',
+        aiNaturalWidth: naturalWidth,
+        aiNaturalHeight: naturalHeight,
         ...(resolvedEditJobId ? { aiEditJobId: resolvedEditJobId } : {}),
         ...(Number.isFinite(resolvedEditOrder) ? { aiEditOrder: resolvedEditOrder } : {}),
       },
@@ -1083,6 +1085,8 @@ export function useImageEditPipeline({
         aiChatImageUrl: url,
         aiChatAssetId: tool?.result?.asset_id,
         aiImageMimeType: tool?.result?.mime_type || 'image/png',
+        aiNaturalWidth: naturalWidth,
+        aiNaturalHeight: naturalHeight,
         ...(meta || {}),
       },
     })
