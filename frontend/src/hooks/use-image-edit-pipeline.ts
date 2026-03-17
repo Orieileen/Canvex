@@ -1318,6 +1318,33 @@ export function useImageEditPipeline({
         pollImageEditJob(cutoutJobId, sceneId, bounds, selectedEditKey, subjectPlaceholders),
         pollImageEditJob(inpaintJobId, sceneId, bounds, selectedEditKey, backgroundPlaceholders),
       ])
+
+      // Ensure cutout (subject) is above inpaint (background) in z-order.
+      // Whichever job finishes last gets appended last and ends up on top,
+      // so we need to reorder after both complete.
+      if (sceneIdRef.current === sceneId) {
+        const api2 = canvexApiRef.current
+        if (api2?.getSceneElements && api2?.updateScene) {
+          const els = api2.getSceneElements()
+          const cutoutIdx = els.findIndex((e: any) =>
+            e && !e.isDeleted && e.type === 'image' && String(e.customData?.aiEditJobId) === String(cutoutJobId),
+          )
+          const inpaintIdx = els.findIndex((e: any) =>
+            e && !e.isDeleted && e.type === 'image' && String(e.customData?.aiEditJobId) === String(inpaintJobId),
+          )
+          // If cutout is before inpaint in array, it's rendered below — swap them
+          if (cutoutIdx >= 0 && inpaintIdx >= 0 && cutoutIdx < inpaintIdx) {
+            const reordered = [...els]
+            const [cutoutEl] = reordered.splice(cutoutIdx, 1)
+            // After removing cutoutEl, inpaintIdx shifted by -1 if it was after cutoutIdx
+            reordered.splice(inpaintIdx, 0, cutoutEl)
+            api2.updateScene({
+              elements: reordered,
+              captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+            })
+          }
+        }
+      }
     } catch (error) {
       console.error('Split element failed', error)
       if (placeholders?.length) {
