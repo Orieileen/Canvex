@@ -1,9 +1,9 @@
 /**
- * Angle-to-prompt mapping matching the HuggingFace multi-angle 3D camera
- * space (multimodalart/qwen-image-multiple-angles-3d-camera).
+ * Angle-to-prompt mapping for image-edit models (e.g. gpt-image-1.5).
  *
  * Three axes: azimuth (0-360°), elevation (-30 to 60°), distance (0.6-1.4).
- * Each axis snaps to discrete steps and maps to a natural-language token.
+ * Each axis snaps to discrete steps and maps to natural-language descriptions
+ * that general-purpose image-edit models can reliably interpret.
  */
 
 // ── Azimuth: 8 positions at 45° increments ──────────────────────────────
@@ -21,6 +21,24 @@ const AZIMUTH_NAMES: Record<number, string> = {
   315: 'front-left quarter view',
 }
 
+/**
+ * Richer descriptions anchored on the subject's anatomical left / right.
+ *
+ * For image-edit models, "camera moves left/right" is easy to misread and
+ * often causes mirrored outputs. Describing which side of the subject should
+ * become visible is more stable.
+ */
+const AZIMUTH_DESCRIPTIONS: Record<number, string> = {
+  0: 'seen directly from the front, facing the viewer',
+  45: 'a front three-quarter view where more of the subject\'s right side is visible',
+  90: 'a full right-side profile view, with the subject\'s right side facing the camera',
+  135: 'seen mostly from behind, with more of the subject\'s right side visible',
+  180: 'seen from directly behind, the subject\'s back faces the camera',
+  225: 'seen mostly from behind, with more of the subject\'s left side visible',
+  270: 'a full left-side profile view, with the subject\'s left side facing the camera',
+  315: 'a front three-quarter view where more of the subject\'s left side is visible',
+}
+
 // ── Elevation: 4 positions ──────────────────────────────────────────────
 
 const ELEVATION_STEPS = [-30, 0, 30, 60] as const
@@ -32,6 +50,13 @@ const ELEVATION_NAMES: Record<number, string> = {
   60: 'high-angle shot',
 }
 
+const ELEVATION_DESCRIPTIONS: Record<number, string> = {
+  '-30': 'camera placed low, looking upward at the subject',
+  0: 'camera at eye level, looking straight ahead',
+  30: 'camera elevated above the subject, looking slightly downward',
+  60: 'camera high above, looking steeply down at the subject',
+}
+
 // ── Distance: 3 positions ───────────────────────────────────────────────
 
 const DISTANCE_STEPS = [0.6, 1.0, 1.4] as const
@@ -40,6 +65,12 @@ const DISTANCE_NAMES: Record<string, string> = {
   '0.6': 'close-up',
   '1': 'medium shot',
   '1.4': 'wide shot',
+}
+
+const DISTANCE_DESCRIPTIONS: Record<string, string> = {
+  '0.6': 'framed tightly as a close-up',
+  '1': 'framed at a standard medium distance',
+  '1.4': 'framed wide to show more of the surroundings',
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -96,8 +127,7 @@ export function snapAngles(angles: CameraAngles): CameraAngles {
 }
 
 /**
- * Build the camera prompt string: "<azimuth> <elevation> <distance>"
- * matching the HF space format.
+ * Build a short camera label: "front view eye-level shot medium shot".
  */
 export function buildCameraPromptLabel(angles: CameraAngles): string {
   const s = snapAngles(angles)
@@ -108,40 +138,43 @@ export function buildCameraPromptLabel(angles: CameraAngles): string {
 }
 
 /**
- * Build the exact HF LoRA token sequence: "<sks> <azimuth> <elevation> <distance>".
- */
-export function buildHfCameraPrompt(angles: CameraAngles): string {
-  return `<sks> ${buildCameraPromptLabel(angles)}`
-}
-
-/**
  * Build the full prompt sent to the image-edit API.
  *
- * Includes explicit numeric angles so the LLM can unambiguously interpret
- * the camera pose even when the natural-language labels are ambiguous.
+ * Strategy: use clear, natural-language photography direction that
+ * general-purpose image-edit models (e.g. gpt-image-1.5) can follow,
+ * rather than LoRA trigger tokens or raw numeric parameters.
  */
 export function buildAnglePrompt(angles: CameraAngles, userPrompt?: string): string {
   const s = snapAngles(angles)
-  const cameraPrompt = buildHfCameraPrompt(angles)
 
-  // Explicit numeric hint block – helps models that struggle with label-only prompts
-  const numericHint = [
-    `azimuth ${s.azimuth}° (0°=front, 90°=right, 180°=back, 270°=left)`,
-    `elevation ${s.elevation}° (-30°=low angle looking up, 0°=eye level, 30°=elevated, 60°=high angle looking down)`,
-    `distance ${s.distance} (0.6=close-up, 1.0=medium, 1.4=wide)`,
-  ].join(', ')
+  const azDesc = AZIMUTH_DESCRIPTIONS[s.azimuth] ?? 'seen from the front'
+  const elDesc = ELEVATION_DESCRIPTIONS[s.elevation] ?? 'camera at eye level'
+  const distDesc = DISTANCE_DESCRIPTIONS[String(s.distance)] ?? 'framed at a standard medium distance'
 
-  const preserve = [
-    'Do not rotate, re-pose, reorient, animate, or otherwise change the subject to face the camera.',
-    'Only the camera viewpoint and framing change; the subject and scene remain fixed.',
-  ].join(' ')
+  // Lead with a concise camera direction, then elaborate
+  const azName = AZIMUTH_NAMES[s.azimuth] ?? 'front view'
+  const elName = ELEVATION_NAMES[s.elevation] ?? 'eye-level shot'
+  const distName = DISTANCE_NAMES[String(s.distance)] ?? 'medium shot'
 
-  const base = `${cameraPrompt}. Camera parameters: ${numericHint}. ${preserve}`
+  const parts = [
+    'Re-photograph the entire image as the same scene from a different camera position.',
+    `Target camera: ${azName}, ${elName}, ${distName}.`,
+    `Target view details: ${azDesc}; ${elDesc}; ${distDesc}.`,
+    'This is a full-scene camera change, not a subject-only edit.',
+    'Treat the source image as the same real scene in a fixed physical state.',
+    'Only the camera angle and focal length / framing may change.',
+    'All objects, surfaces, and the background must shift consistently to the new viewpoint.',
+    'Keep the physical arrangement of the whole scene unchanged. Only the camera moves.',
+    'Keep left and right consistent with the source image; any label, logo, pattern, damage, or unique feature must stay on the same physical side of the same object.',
+    'If any person or animal appears in the scene, keep the exact same pose and action, and do not let the head, face, or eyes turn to follow the camera.',
+  ]
+
   const extra = userPrompt?.trim()
   if (extra) {
-    return `${base} Additional instructions: ${extra}`
+    parts.push(`Additional request that must not override the camera-only and physical-state-unchanged rules: ${extra}`)
   }
-  return base
+
+  return parts.join(' ')
 }
 
 /**
