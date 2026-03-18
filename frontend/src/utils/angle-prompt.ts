@@ -183,24 +183,12 @@ export function buildAnglePrompt(angles: CameraAngles, userPrompt?: string): str
   return lines.join(' ')
 }
 
-/**
- * Short label for the toolbar / tooltip: "front view · eye-level · medium".
- */
-export function buildCameraPromptLabel(angles: CameraAngles): string {
-  const s = snapAngles(angles)
-  return [
-    AZIMUTH_NAMES[s.azimuth]          ?? 'front view',
-    ELEVATION_NAMES[s.elevation]       ?? 'eye-level shot',
-    DISTANCE_NAMES[String(s.distance)] ?? 'medium shot',
-  ].join(' ')
-}
-
 export function anglesToDisplayLabel(angles: CameraAngles): string {
   const s = snapAngles(angles)
   const az   = AZIMUTH_NAMES[s.azimuth]          ?? 'front view'
   const el   = (ELEVATION_NAMES[s.elevation]       ?? 'eye-level shot').replace(' shot', '')
   const dist = (DISTANCE_NAMES[String(s.distance)] ?? 'medium shot').replace(' shot', '')
-  return `${az} · ${el} · ${dist}`
+    return `${az} · ${el} · ${dist}`
 }
 
 export { AZIMUTH_STEPS, ELEVATION_STEPS, DISTANCE_STEPS }
