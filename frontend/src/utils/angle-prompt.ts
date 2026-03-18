@@ -132,12 +132,7 @@ export function buildAnglePrompt(angles: CameraAngles, userPrompt?: string): str
   ].join(', ')
 
   const preserve = [
-    'Treat this as the same fixed scene photographed from a different camera position.',
-    "Keep the subject's identity, proportions, pose, orientation, expression, outfit or materials, colors, and all visual details exactly the same.",
     'Do not rotate, re-pose, reorient, animate, or otherwise change the subject to face the camera.',
-    'If the subject has a face, eyes, or a clear front direction, keep that gaze or facing direction exactly the same as in the source image.',
-    'Do not change the lighting direction, shadows, or color temperature.',
-    'Maintain the original background and scene environment.',
     'Only the camera viewpoint and framing change; the subject and scene remain fixed.',
   ].join(' ')
 
