@@ -1100,7 +1100,7 @@ export function useImageEditPipeline({
     createPinnedImageRef.current = createPinnedImage
   }, [createPinnedImage, createPinnedImageRef])
 
-  const handleImageEdit = useCallback(async (opts?: { cutout?: boolean }) => {
+  const handleImageEdit = useCallback(async (opts?: { cutout?: boolean; promptOverride?: string }) => {
     if (!selectedEditKey || !selectedEditIds.length) return
     if (imageEditPendingIds.includes(selectedEditKey)) return
     const prompt = imageEditPrompt.trim()
@@ -1131,7 +1131,9 @@ export function useImageEditPipeline({
       return
     }
     let promptToUse = ''
-    if (!isCutout) {
+    if (opts?.promptOverride) {
+      promptToUse = opts.promptOverride
+    } else if (!isCutout) {
       if (selectionText && prompt) {
         promptToUse = `${prompt}\n${selectionText}`
       } else if (selectionText) {

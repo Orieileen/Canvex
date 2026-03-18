@@ -5,7 +5,10 @@ import { DefaultSidebar, Excalidraw, MainMenu, Sidebar } from '@excalidraw/excal
 import '@excalidraw/excalidraw/index.css'
 import '@/styles/canvex-shadcn.css'
 import '@/styles/canvex-media-sidebar.css'
-import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconChevronLeft, IconWand, IconScissors, IconPlayerPlay, IconArrowsSplit2 } from '@tabler/icons-react'
+import { IconAlertTriangle, IconLoader, IconMessage2, IconHistory, IconCheck, IconX, IconPhoto, IconVideo, IconRefresh, IconFolder, IconChevronRight, IconChevronLeft, IconWand, IconScissors, IconPlayerPlay, IconArrowsSplit2, Icon3dCubeSphere } from '@tabler/icons-react'
+import { CameraOrbitControl } from '@/components/angle-cube'
+import { buildAnglePrompt } from '@/utils/angle-prompt'
+import type { CameraAngles } from '@/utils/angle-prompt'
 import { Button } from '@/components/ui/button'
 import type { SceneData, PinOrigin, ToolResult, ImagePlaceholder, VideoOverlayItem } from '@/types/canvex'
 import { WORKSPACE_KEY, IMAGE_EDIT_SIZE_OPTIONS } from '@/constants/canvex'
@@ -220,7 +223,8 @@ export default function CanvexPage() {
   }, [activeScene?.title])
 
   const canShowAiEditBar = !!activeSceneId && !isPregeneratedSpace
-  const [editBarView, setEditBarView] = useState<'main' | 'image' | 'video'>('main')
+  const [editBarView, setEditBarView] = useState<'main' | 'image' | 'video' | 'angle'>('main')
+  const [cameraAngles, setCameraAngles] = useState<CameraAngles>({ azimuth: 0, elevation: 0, distance: 1.0 })
 
   // ── Hook 4: Pinning ──────────────────────────────────────────────────
   const pinning = usePinning({
@@ -1042,6 +1046,19 @@ export default function CanvexPage() {
 
                     <div className="h-5 w-px bg-border/60" />
 
+                    {/* Angle mode button */}
+                    <button
+                      type="button"
+                      onClick={() => { setCameraAngles({ azimuth: 0, elevation: 0, distance: 1.0 }); setEditBarView('angle') }}
+                      className="flex h-10 items-center gap-1.5 px-3 text-muted-foreground transition-colors hover:text-foreground"
+                      title={t('editAngleMode', { defaultValue: 'Multi-Angle' })}
+                    >
+                      <Icon3dCubeSphere size={16} stroke={1.5} />
+                      <span className="text-xs font-medium">{t('editAngleLabel', { defaultValue: 'Angle' })}</span>
+                    </button>
+
+                    <div className="h-5 w-px bg-border/60" />
+
                     {/* Video mode button */}
                     <button
                       type="button"
@@ -1164,6 +1181,101 @@ export default function CanvexPage() {
 
                 {/* Image error */}
                 {editBarView === 'image' && imageEdit.imageEditError && (
+                  <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
+                    {imageEdit.imageEditError}
+                  </div>
+                )}
+
+                {/* ── Angle view ── */}
+                {editBarView === 'angle' && (
+                  <div className="flex flex-col gap-2">
+                    {/* 3D camera orbit control */}
+                    <div className="overflow-hidden rounded-xl border border-border/60 shadow-lg">
+                      <CameraOrbitControl
+                        imageUrl={imageEdit.selectedEditPreview}
+                        angles={cameraAngles}
+                        onAnglesChange={setCameraAngles}
+                        width={320}
+                        height={280}
+                      />
+                    </div>
+
+                    {/* Toolbar row */}
+                    <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                      {/* Back button */}
+                      <button
+                        type="button"
+                        onClick={() => setEditBarView('main')}
+                        className="flex h-10 w-9 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                        title={t('editBack', { defaultValue: 'Back' })}
+                      >
+                        <IconChevronLeft size={16} stroke={1.5} />
+                      </button>
+
+                      <div className="h-5 w-px bg-border/60" />
+
+                      {/* Angle prompt input */}
+                      <input
+                        value={imageEdit.imageEditPrompt}
+                        onChange={(e) => {
+                          imageEdit.setImageEditPrompt(e.target.value)
+                          if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault()
+                            const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
+                            void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
+                          }
+                        }}
+                        placeholder={t('editAnglePromptHint', { defaultValue: 'Additional instructions…' })}
+                        className="h-10 min-w-[120px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
+                        disabled={isEditingSelected}
+                      />
+
+                      <div className="h-5 w-px bg-border/60" />
+
+                      {/* Angle count */}
+                      <select
+                        value={String(imageEdit.imageEditCount)}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value, 10)
+                          imageEdit.setImageEditCount(Number.isNaN(value) ? 1 : value)
+                          if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
+                        }}
+                        className="h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground outline-none hover:text-foreground"
+                        disabled={isEditingSelected}
+                      >
+                        <option value="1">×1</option>
+                        <option value="2">×2</option>
+                        <option value="4">×4</option>
+                      </select>
+
+                      <div className="h-5 w-px bg-border/60" />
+
+                      {/* Angle submit */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
+                          void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
+                        }}
+                        disabled={isEditingSelected}
+                        className="m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                        title={t('editAngleGenerate', { defaultValue: 'Generate Angle View' })}
+                      >
+                        {isEditingSelected ? (
+                          <IconLoader size={16} stroke={1.5} className="animate-spin" />
+                        ) : (
+                          <IconWand size={16} stroke={1.5} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Angle error */}
+                {editBarView === 'angle' && imageEdit.imageEditError && (
                   <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive shadow-sm">
                     {imageEdit.imageEditError}
                   </div>
