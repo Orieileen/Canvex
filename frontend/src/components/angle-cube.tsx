@@ -18,6 +18,12 @@ const COLOR_BG = 0x1a1a2e
 
 const SNAP_DURATION = 200 // ms
 
+// Pre-allocated objects reused every frame / pointer-move to avoid GC pressure
+const _camPosVec = new THREE.Vector3()
+const _hitPlaneH = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.05)
+const _hitPlaneV = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0.8)
+const _hitPoint = new THREE.Vector3()
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function degToRad(d: number) { return d * Math.PI / 180 }
@@ -32,7 +38,7 @@ function cameraPosition(azimuth: number, elevation: number, distance: number): T
   const elRad = degToRad(elevation)
   // Mirror azimuth in the viewport so dragging the handle to screen-left
   // maps to the subject's right side, matching the user's preferred UX.
-  return new THREE.Vector3(
+  return _camPosVec.set(
     -d * Math.sin(azRad) * Math.cos(elRad),
     d * Math.sin(elRad) + CENTER.y,
     d * Math.cos(azRad) * Math.cos(elRad),
@@ -74,6 +80,7 @@ export function CameraOrbitControl({
     distanceHandle: null as THREE.Mesh | null,
     // Prompt label
     promptLabel: null as HTMLDivElement | null,
+    textureLoadId: 0,
     // Drag
     dragging: null as 'azimuth' | 'elevation' | 'distance' | null,
     dragStartY: 0,
@@ -357,20 +364,16 @@ export function CameraOrbitControl({
 
     if (s.dragging === 'azimuth') {
       // Intersect horizontal plane at y=0.05
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.05)
-      const pt = new THREE.Vector3()
-      s.raycaster.ray.intersectPlane(plane, pt)
-      if (pt) {
-        s.liveAzimuth = ((radToDeg(Math.atan2(-pt.x, pt.z)) % 360) + 360) % 360
+      s.raycaster.ray.intersectPlane(_hitPlaneH, _hitPoint)
+      if (_hitPoint) {
+        s.liveAzimuth = ((radToDeg(Math.atan2(-_hitPoint.x, _hitPoint.z)) % 360) + 360) % 360
       }
     } else if (s.dragging === 'elevation') {
       // Intersect vertical plane at x=-0.8
-      const plane = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0.8)
-      const pt = new THREE.Vector3()
-      s.raycaster.ray.intersectPlane(plane, pt)
-      if (pt) {
-        const relY = pt.y - CENTER.y
-        const relZ = pt.z
+      s.raycaster.ray.intersectPlane(_hitPlaneV, _hitPoint)
+      if (_hitPoint) {
+        const relY = _hitPoint.y - CENTER.y
+        const relZ = _hitPoint.z
         s.liveElevation = clamp(radToDeg(Math.atan2(relY, relZ)), -30, 60)
       }
     } else if (s.dragging === 'distance') {
@@ -396,24 +399,35 @@ export function CameraOrbitControl({
     s.snapAnim = { start: performance.now(), from, to }
   }, [])
 
-  // ── Image texture ───────────────────────────────────────────────────
-
-  useEffect(() => {
+  const loadImageTexture = useCallback((nextImageUrl: string | null) => {
     const s = stateRef.current
     if (!s.imagePlane) return
-    if (!imageUrl) {
-      ;(s.imagePlane.material as THREE.MeshBasicMaterial).map = null
-      ;(s.imagePlane.material as THREE.MeshBasicMaterial).color.set(0x666688)
-      ;(s.imagePlane.material as THREE.MeshBasicMaterial).needsUpdate = true
+
+    const textureLoadId = ++s.textureLoadId
+    const mat = s.imagePlane.material as THREE.MeshBasicMaterial
+
+    if (!nextImageUrl) {
+      const previousTexture = mat.map
+      mat.map = null
+      mat.color.set(0x666688)
+      mat.needsUpdate = true
+      previousTexture?.dispose()
       return
     }
+
     const loader = new THREE.TextureLoader()
-    loader.load(imageUrl, (tex) => {
-      if (!s.imagePlane) return
-      const mat = s.imagePlane.material as THREE.MeshBasicMaterial
+    loader.load(nextImageUrl, (tex) => {
+      if (textureLoadId !== stateRef.current.textureLoadId || !s.imagePlane) {
+        tex.dispose()
+        return
+      }
+      const previousTexture = mat.map
       mat.map = tex
       mat.color.set(0xffffff)
       mat.needsUpdate = true
+      if (previousTexture !== tex) {
+        previousTexture?.dispose()
+      }
       // Adjust aspect ratio
       const img = tex.image as HTMLImageElement
       if (img && img.width && img.height) {
@@ -430,7 +444,13 @@ export function CameraOrbitControl({
         s.imagePlane.scale.set(w / 1.2, h / 1.2, 1)
       }
     })
-  }, [imageUrl])
+  }, [])
+
+  // ── Image texture ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    loadImageTexture(imageUrl)
+  }, [imageUrl, loadImageTexture])
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -441,6 +461,10 @@ export function CameraOrbitControl({
     s.liveElevation = angles.elevation
     s.liveDistance = angles.distance
     updatePositions()
+    // The [imageUrl] effect declared above runs *before* this one on mount
+    // (React fires effects in declaration order), so imagePlane was still null
+    // when it ran. We must kick the initial load here, after the scene exists.
+    loadImageTexture(imageUrl)
 
     // Event listeners
     const canvas = s.renderer?.domElement
@@ -464,6 +488,24 @@ export function CameraOrbitControl({
         canvas.removeEventListener('pointermove', onPointerMove)
         canvas.removeEventListener('pointerup', onPointerUp)
         canvas.removeEventListener('pointercancel', onPointerUp)
+      }
+      // Invalidate any in-flight texture loads so late callbacks become no-ops
+      ++s.textureLoadId
+      s.imagePlane = null
+      // Dispose all GPU resources (geometries, materials, textures)
+      if (s.scene) {
+        s.scene.traverse((obj) => {
+          if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
+            obj.geometry?.dispose()
+            const mat = obj.material
+            if (Array.isArray(mat)) {
+              mat.forEach((m) => { m.map?.dispose(); m.dispose() })
+            } else if (mat) {
+              ;(mat as THREE.MeshBasicMaterial).map?.dispose()
+              mat.dispose()
+            }
+          }
+        })
       }
       s.renderer?.dispose()
       s.renderer?.domElement.remove()
