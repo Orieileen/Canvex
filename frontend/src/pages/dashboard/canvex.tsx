@@ -1201,7 +1201,7 @@ export default function CanvexPage() {
                     </div>
 
                     {/* Toolbar row */}
-                    <div className="flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
+                    <div className="w-fit self-center flex items-center gap-0 rounded-xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-md">
                       {/* Back button */}
                       <button
                         type="button"
@@ -1211,27 +1211,6 @@ export default function CanvexPage() {
                       >
                         <IconChevronLeft size={16} stroke={1.5} />
                       </button>
-
-                      <div className="h-5 w-px bg-border/60" />
-
-                      {/* Angle prompt input */}
-                      <input
-                        value={imageEdit.imageEditPrompt}
-                        onChange={(e) => {
-                          imageEdit.setImageEditPrompt(e.target.value)
-                          if (imageEdit.imageEditError) imageEdit.setImageEditError(null)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault()
-                            const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
-                            void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
-                          }
-                        }}
-                        placeholder={t('editAnglePromptHint', { defaultValue: 'Additional instructions…' })}
-                        className="h-10 min-w-[120px] flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/50"
-                        disabled={isEditingSelected}
-                      />
 
                       <div className="h-5 w-px bg-border/60" />
 
@@ -1257,7 +1236,7 @@ export default function CanvexPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
+                          const fullPrompt = buildAnglePrompt(cameraAngles)
                           void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
                         }}
                         disabled={isEditingSelected}
