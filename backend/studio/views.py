@@ -387,8 +387,14 @@ class ExcalidrawImageEditView(SceneMixin, APIView):
         if isinstance(cutout, str):
             cutout = cutout.strip().lower() in ("1", "true", "yes", "on")
         cutout = bool(cutout)
+
+        view_transform = (request.data or {}).get("view_transform")
+        if isinstance(view_transform, str):
+            view_transform = view_transform.strip().lower() in ("1", "true", "yes", "on")
+        view_transform = bool(view_transform)
         if cutout:
             prompt = CUTOUT_PROMPT
+            view_transform = False
         if not prompt:
             prompt = EDIT_DEFAULT_PROMPT
 
@@ -415,6 +421,7 @@ class ExcalidrawImageEditView(SceneMixin, APIView):
                 size=size,
                 num_images=num_images,
                 is_cutout=cutout,
+                is_view_transform=view_transform,
                 source_image=image_file,
                 status=ExcalidrawImageEditJob.Status.QUEUED,
             )

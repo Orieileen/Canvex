@@ -1225,7 +1225,10 @@ export default function CanvexPage() {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault()
                             const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
-                            void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
+                            void imageEdit.handleImageEdit({
+                              promptOverride: fullPrompt,
+                              viewTransform: { angles: cameraAngles },
+                            })
                           }
                         }}
                         placeholder={t('editAnglePromptHint', { defaultValue: 'Additional instructions…' })}
@@ -1258,7 +1261,10 @@ export default function CanvexPage() {
                         type="button"
                         onClick={() => {
                           const fullPrompt = buildAnglePrompt(cameraAngles, imageEdit.imageEditPrompt.trim())
-                          void imageEdit.handleImageEdit({ promptOverride: fullPrompt })
+                          void imageEdit.handleImageEdit({
+                            promptOverride: fullPrompt,
+                            viewTransform: { angles: cameraAngles },
+                          })
                         }}
                         disabled={isEditingSelected}
                         className="m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"

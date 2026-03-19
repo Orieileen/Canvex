@@ -314,7 +314,10 @@ def run_excalidraw_image_edit_job(self, job_id: str):
 
     model = os.getenv("MEDIA_IMAGE_EDIT_MODEL", "")
     requested = max(1, int(job.num_images or 1))
-    allow_text_fallback = str(os.getenv("IMAGE_EDIT_ALLOW_TEXT_FALLBACK", "0")).strip().lower() in ("1", "true", "yes", "on")
+    text_fallback_requested = str(os.getenv("IMAGE_EDIT_ALLOW_TEXT_FALLBACK", "0")).strip().lower() in ("1", "true", "yes", "on")
+    allow_text_fallback = text_fallback_requested and not job.is_view_transform
+    if job.is_view_transform and text_fallback_requested:
+        logger.info("Image edit job %s disables text-only fallback because it is a view-transform request.", job.id)
 
     def _generate_one_image_bytes() -> bytes:
         try:

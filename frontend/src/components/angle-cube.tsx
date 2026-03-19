@@ -37,7 +37,7 @@ function cameraPosition(azimuth: number, elevation: number, distance: number): T
   const azRad = degToRad(azimuth)
   const elRad = degToRad(elevation)
   // Mirror azimuth in the viewport so dragging the handle to screen-left
-  // maps to the subject's right side, matching the user's preferred UX.
+  // increases the orbit offset relative to the current source view.
   return _camPosVec.set(
     -d * Math.sin(azRad) * Math.cos(elRad),
     d * Math.sin(elRad) + CENTER.y,
