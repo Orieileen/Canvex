@@ -11,7 +11,6 @@ from .models import ExcalidrawImageEditJob, ExcalidrawImageEditResult, Excalidra
 from .tools import (
     _abs_url,
     _edit_image_media,
-    _generate_image_media,
     _generate_video_media,
     _resolve_excalidraw_asset_folder_id,
     _resolve_image_bytes,
@@ -314,24 +313,13 @@ def run_excalidraw_image_edit_job(self, job_id: str):
 
     model = os.getenv("MEDIA_IMAGE_EDIT_MODEL", "")
     requested = max(1, int(job.num_images or 1))
-    text_fallback_requested = str(os.getenv("IMAGE_EDIT_ALLOW_TEXT_FALLBACK", "0")).strip().lower() in ("1", "true", "yes", "on")
-    allow_text_fallback = text_fallback_requested and not job.is_view_transform
-    if job.is_view_transform and text_fallback_requested:
-        logger.info("Image edit job %s disables text-only fallback because it is a view-transform request.", job.id)
 
     def _generate_one_image_bytes() -> bytes:
         try:
             return _edit_image_media(source_bytes, job.prompt, job.size or "")
         except Exception as exc:
             logger.warning("Image edit failed for job %s, provider=%s, error=%s", job.id, model, exc)
-            if not allow_text_fallback:
-                raise RuntimeError(
-                    f"image edit provider failed ({model}): {exc}. "
-                    "Text-only fallback is disabled because it ignores source image."
-                ) from exc
-            size = job.size or ""
-            logger.warning("Image edit job %s falls back to text-only generation (IMAGE_EDIT_ALLOW_TEXT_FALLBACK=1)", job.id)
-            return _generate_image_media(job.prompt, size)
+            raise RuntimeError(f"image edit provider failed ({model}): {exc}") from exc
 
     image_bytes_list: list[bytes] = []
     errors: list[Exception] = []

@@ -4,8 +4,6 @@ import { CaptureUpdateAction, exportToBlob, MIME_TYPES } from '@excalidraw/excal
 import { request } from '@/utils/request'
 import type { HoverAnchor, ImagePlaceholder, PinRect, SelectionBounds, ToolResult } from '@/types/canvex'
 import { MAX_CANVAS_IMAGE_DIM, resolveImageEditSize } from '@/constants/canvex'
-import { snapAngles } from '@/utils/angle-prompt'
-import type { CameraAngles } from '@/utils/angle-prompt'
 
 const SPLIT_INPAINT_PROMPT =
   'Identify the main subject/foreground object indicated by the user-drawn dashed bounding box. ' +
@@ -18,37 +16,9 @@ const SPLIT_INPAINT_PROMPT =
   'Edges of the filled area must blend seamlessly with the surrounding background. ' +
   'The final image must contain only the background with no trace of the removed subject.'
 
-const ANGLE_EXPORT_PADDING_RATIO_BY_DISTANCE: Record<string, number> = {
-  '0.6': 0.08,
-  '1': 0.18,
-  '1.4': 0.36,
-}
-
-const ANGLE_EXPORT_MIN_PADDING_BY_DISTANCE: Record<string, number> = {
-  '0.6': 32,
-  '1': 72,
-  '1.4': 160,
-}
-
-const ANGLE_EXPORT_MAX_PADDING = 384
-
-type ImageEditViewTransformOptions = {
-  angles: CameraAngles
-}
-
 type HandleImageEditOptions = {
   cutout?: boolean
   promptOverride?: string
-  viewTransform?: ImageEditViewTransformOptions
-}
-
-function resolveAngleExportPadding(bounds: SelectionBounds, angles: CameraAngles): number {
-  const snapped = snapAngles(angles)
-  const distanceKey = String(snapped.distance)
-  const maxDim = Math.max(1, Math.round(Math.max(Number(bounds?.width) || 0, Number(bounds?.height) || 0)))
-  const ratioPadding = Math.round(maxDim * (ANGLE_EXPORT_PADDING_RATIO_BY_DISTANCE[distanceKey] ?? 0.18))
-  const minPadding = ANGLE_EXPORT_MIN_PADDING_BY_DISTANCE[distanceKey] ?? 72
-  return Math.min(ANGLE_EXPORT_MAX_PADDING, Math.max(minPadding, ratioPadding))
 }
 
 export function useImageEditPipeline({
@@ -1140,8 +1110,6 @@ export function useImageEditPipeline({
     if (imageEditPendingIds.includes(selectedEditKey)) return
     const prompt = imageEditPrompt.trim()
     const isCutout = Boolean(opts?.cutout)
-    const viewTransformAngles = opts?.viewTransform?.angles ?? null
-    const isViewTransform = Boolean(viewTransformAngles)
     const sceneId = sceneIdRef.current
     if (!sceneId) {
       setImageEditError(t('editNoScene', { defaultValue: 'Save the scene first.' }))
@@ -1197,9 +1165,6 @@ export function useImageEditPipeline({
     )
     try {
       const appState = api.getAppState()
-      const exportPadding = viewTransformAngles
-        ? resolveAngleExportPadding(bounds, viewTransformAngles)
-        : 0
       const blob = await exportToBlob({
         elements: exportElements,
         appState: {
@@ -1208,7 +1173,7 @@ export function useImageEditPipeline({
         },
         files: api.getFiles(),
         mimeType: MIME_TYPES.png,
-        exportPadding,
+        exportPadding: 0,
       })
       const form = new FormData()
       form.append('image', blob, 'image.png')
@@ -1216,9 +1181,6 @@ export function useImageEditPipeline({
         form.append('cutout', '1')
       } else {
         form.append('prompt', promptToUse)
-      }
-      if (isViewTransform) {
-        form.append('view_transform', '1')
       }
       const sizeInput = imageEditSize.trim()
       if (sizeInput) {

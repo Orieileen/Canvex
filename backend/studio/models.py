@@ -132,7 +132,6 @@ class ExcalidrawImageEditJob(models.Model):
     size = models.CharField(max_length=32, default="1024x1024")
     num_images = models.PositiveSmallIntegerField(default=1)
     is_cutout = models.BooleanField(default=False)
-    is_view_transform = models.BooleanField(default=False)
     source_image = models.ImageField(upload_to=excalidraw_edit_upload_to)
     result_asset = models.ForeignKey(
         DataAsset,
