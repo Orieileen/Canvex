@@ -16,29 +16,29 @@
 const AZIMUTH_STEPS = [0, 45, 90, 135, 180, 225, 270, 315] as const
 
 // Short label used in the prompt headline and UI.
-// 0° is the current source view; non-zero steps are camera orbit offsets.
+// 0° is the current source view; non-zero steps are relative viewpoints.
 const AZIMUTH_NAMES: Record<number, string> = {
-  0:   'current view',
-  45:  'orbit +45°',
-  90:  'orbit +90°',
-  135: 'orbit +135°',
-  180: 'orbit 180°',
-  225: 'orbit -135°',
-  270: 'orbit -90°',
-  315: 'orbit -45°',
+  0:   'front view',
+  45:  'front-right three-quarter view',
+  90:  'right-side view',
+  135: 'back-right three-quarter view',
+  180: 'back view',
+  225: 'back-left three-quarter view',
+  270: 'left-side view',
+  315: 'front-left three-quarter view',
 }
 
-// Azimuth convention: 0° = current source view; increasing angle = camera
-// orbits clockwise around the selected scene when viewed from above.
+// Azimuth convention: 0° = current source view. Prompt text should describe
+// the target side naturally relative to the source image, not with angles.
 const AZIMUTH_DESCRIPTIONS: Record<number, string> = {
-  0:   'Match the current source view as the baseline orientation.',
-  45:  'Orbit the camera 45 degrees clockwise around the selected scene from the source viewpoint.',
-  90:  'Orbit the camera 90 degrees clockwise around the selected scene from the source viewpoint for a strong side-on shift.',
-  135: 'Orbit the camera 135 degrees clockwise around the selected scene from the source viewpoint, approaching the far side of the scene.',
-  180: 'Orbit the camera to the opposite side of the selected scene from the source viewpoint.',
-  225: 'Orbit the camera 135 degrees counter-clockwise around the selected scene from the source viewpoint, approaching the far side from the other direction.',
-  270: 'Orbit the camera 90 degrees counter-clockwise around the selected scene from the source viewpoint for a strong side-on shift.',
-  315: 'Orbit the camera 45 degrees counter-clockwise around the selected scene from the source viewpoint.',
+  0:   'Match the source image as the baseline front view.',
+  45:  'Move the camera to the front-right three-quarter view of the selected scene relative to the source image.',
+  90:  'Move the camera to the exact right side of the selected scene relative to the source image.',
+  135: 'Move the camera to the back-right three-quarter view of the selected scene relative to the source image.',
+  180: 'Move the camera to the exact back side of the selected scene relative to the source image.',
+  225: 'Move the camera to the back-left three-quarter view of the selected scene relative to the source image.',
+  270: 'Move the camera to the exact left side of the selected scene relative to the source image.',
+  315: 'Move the camera to the front-left three-quarter view of the selected scene relative to the source image.',
 }
 
 // ── Elevation: 4 positions ───────────────────────────────────────────────────
@@ -135,11 +135,14 @@ export function buildAnglePrompt(angles: CameraAngles, userPrompt?: string): str
   const distDesc = DISTANCE_DESCRIPTIONS[String(s.distance)] ?? 'standard medium framing'
 
   const lines = [
-    `Re-render the selected scene from a new camera position. Interpret 0 degrees azimuth as the current source view. Target camera: ${azName}, ${elName}, ${distName}.`,
+    `Re-render the selected scene from a new camera position. Treat the source image as the front-view reference. Target camera: ${azName}, ${elName}, ${distName}.`,
     `Camera move: ${azDesc}; ${elDesc}; ${distDesc}.`,
-    'Keep the selected scene fixed in world space while the camera moves around it. Preserve the identity, count, materials, colours, and relative layout of all visible people, objects, text, logos, and graphic elements.',
-    'Adjust perspective, foreshortening, parallax, occlusion, cropping, and framing naturally for the new viewpoint and camera distance. Shadows and reflections may shift to match the new camera position.',
-    'If a wider framing reveals more of the same environment, extend only that existing environment consistently. Do not introduce unrelated objects, redesign the scene, or replace the background with a different place.',
+    'This must read as the exact same frozen moment captured by the same shoot, with only the camera position and framing changed.',
+    'Keep the entire scene fixed in world space while the camera moves around it. The only allowed changes are viewpoint, perspective, cropping, and framing caused by the new camera position and distance.',
+    'Do not change any person or animal in any way: preserve exact pose, gesture, facial expression, gaze direction, head angle, body orientation, limb placement, hand placement, clothing, hair, and all interactions exactly as in the source image.',
+    'Do not move, rotate, resize, restyle, add, remove, or replace any object, prop, product, furniture, accessory, text, logo, or background element. Preserve exact identity, count, materials, colours, proportions, and spatial layout.',
+    'Keep the lighting setup and scene state unchanged. Only viewpoint-dependent perspective, foreshortening, parallax, occlusion, reflections, and visibility may change naturally with the new camera position.',
+    'If a wider framing reveals more of the same environment, extend only that already-existing environment consistently. Do not introduce unrelated content, redesign the scene, or replace the background with a different place.',
     'IMPORTANT — do not mirror or horizontally flip any content. Text and logos must remain correctly readable. Left/right anatomical sides, object handedness, and layout relationships must stay consistent with the source image even though their position in the frame may change.',
   ]
 
