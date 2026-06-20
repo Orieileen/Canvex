@@ -258,3 +258,132 @@
     }
   }
 }
+
+/* ────────────────────────────────────────────────────────────────────
+   Excalidraw 原生 UI 处理(从 meired port)。Canvex 自带 sidebar / library /
+   chat / back-to-latest / minimap / ImageEditBar,所以把原生 chrome 藏掉 +
+   套 ember/frost 主题。全局 `.excalidraw.excalidraw` scope(ported workspace
+   没有 .canvex-host wrapper);旧的 canvex-shadcn.css / canvex-media-sidebar.css
+   已删(scope 在没挂载的 .canvex-host,且不再 import)。
+   ──────────────────────────────────────────────────────────────────── */
+
+/* Excalidraw 主题适配: 把默认薰衣草紫调成 meired 红 + 米色, 让画布工具栏
+ * 与右键浮窗跟整体米底视觉一致. 只覆盖对外的 CSS 变量, 不动元素选择器,
+ * Excalidraw 升级时不易破坏.
+ *
+ * 双 class .excalidraw.excalidraw 把 specificity 提到 0,2,0, 才能盖住
+ * Excalidraw 自身 .excalidraw {…} 块 —— 它的 CSS 在 workspace 内 lazy
+ * import, 后于 index.css 注入, 否则同名规则它赢. */
+.excalidraw.excalidraw {
+  /* primary 色系: 紫 → ember (橙红). canvas 走产品内层 ember 配色. */
+  --color-primary: var(--ember);
+  --color-primary-darker: var(--ember-darker);
+  --color-primary-darkest: var(--ember-darkest);
+  --color-primary-light: var(--ember-tint);
+  --color-primary-light-darker: var(--ember-tint-strong);
+  --color-primary-hover: var(--ember-darker);
+  --color-primary-contrast: var(--primary-foreground);
+  --color-brand-hover: var(--ember-darker);
+  --color-brand-active: var(--ember);
+  --color-selection: var(--ember);
+
+  /* 选中工具/属性按钮: ember 底 + cream 图标. */
+  --color-surface-primary-container: var(--ember);
+  --color-on-primary-container: var(--primary-foreground);
+
+  /* Island / Popup / 工具栏底色 → Apple frost: 白 65% 半透 + backdrop-blur
+   * (毛玻璃规则见下方 .Island/.Popover), 跟 canvas 浮层按钮 / chat 输入框统一. */
+  --island-bg-color: var(--frost);
+  --default-bg-color: var(--frost);
+  --popup-bg-color: var(--frost);
+  /* 内层按钮/输入底色: 半透黑中性色, 暖底在白磨砂面板上发黄突兀; 半透黑随面板
+   * 自适应成淡灰, 跟 Apple frost 协调. selected 态仍 ember. */
+  --color-surface-lowest: rgba(0, 0, 0, 0.025);
+  --color-surface-low: rgba(0, 0, 0, 0.04);
+  --color-surface-mid: rgba(0, 0, 0, 0.055);
+  --color-surface-high: rgba(0, 0, 0, 0.09);
+
+  /* 文字 / 图标 / 边框. */
+  --color-on-surface: var(--foreground);
+  --text-primary-color: var(--foreground);
+  --icon-fill-color: var(--foreground);
+  --default-border-color: var(--border);
+  --input-border-color: var(--border);
+
+  /* 杂项: 链接 ember, focus ring 也走 ember. */
+  --link-color: var(--ember);
+  --focus-highlight-color: var(--ember);
+}
+
+/* Apple frost: 半透白底必须配 backdrop-blur, 否则画布内容透出糊住工具图标.
+ * .Island = 工具栏 / 属性面板 / 多数浮层; .Popover__content / .popover = 颜色等弹层;
+ * .context-menu = 右键菜单. 24px 对齐 canvas 浮层按钮与 chat 输入框. */
+.excalidraw .Island,
+.excalidraw .Popover__content,
+.excalidraw .popover,
+.excalidraw .context-menu {
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+/* Excalidraw 原生 UI 层级修正: layer-ui z-index:4 暴露在父 context 里被 meired
+ * 浮层覆盖。抬到 45: 高于 z-40 内容浮层 (属性面板回到 ImageEditBar 之上),
+ * 但仍低于 z-50 角标工具按钮 (minimap / back / chat 保持可点)。 */
+.excalidraw.excalidraw .layer-ui__wrapper {
+  z-index: 45;
+}
+
+/* 隐藏 Excalidraw 自带 UI: 左上汉堡菜单, 右上 Library 触发器, 底部
+ * zoom+undo/redo, 右下帮助按钮 —— Canvex 自己的 sidebar/chat/工具已覆盖
+ * 这些功能, 原生按钮重复且占视觉空间. */
+.excalidraw .main-menu-trigger,
+.excalidraw .sidebar-trigger,
+.excalidraw .layer-ui__wrapper__footer-left,
+.excalidraw .layer-ui__wrapper__footer-right {
+  display: none !important;
+}
+
+/* 右键菜单只保留 Cut/Copy/Paste —— 其余项 (Crop / Send-to-back / Lock /
+ * Flip / Add to library 等) 走 ImageEditBar 或自有交互. 先 hide 全部再 unhide 白名单. */
+.excalidraw .context-menu li,
+.excalidraw .context-menu hr {
+  display: none !important;
+}
+.excalidraw .context-menu li[data-testid="cut"],
+.excalidraw .context-menu li[data-testid="copy"],
+.excalidraw .context-menu li[data-testid="paste"] {
+  display: list-item !important;
+}
+
+/* "Scroll back to content" 默认底部居中,会被画布底部居中的 chat 输入框遮住;
+ * help-icon 已隐藏右下角空出来, 挪过去. !important 覆盖原 left:50% / transform. */
+.excalidraw .scroll-back-to-content {
+  left: auto !important;
+  right: 1rem !important;
+  bottom: 1rem !important;
+  transform: none !important;
+}
+
+/* 选中元素浮出的 mobile 底部 toolbar 默认贴底, 窄屏与 chat 输入框重合.
+ * 加 padding-bottom 顶到输入框上方 (留 6rem≈96px 安全区). */
+.excalidraw .App-bottom-bar {
+  padding-bottom: 6rem !important;
+}
+
+/* 图大到撑满 viewport 时 ImageEditBar 已 aria-hidden; Excalidraw 自带底部
+ * selection action bar 仍浮在图上挡视线, 用 :has() 同步隐藏。display:none
+ * (非 visibility:hidden), 因 Excalidraw 内部按钮显式写了 visibility:visible. */
+[data-canvas-pane]:has(> [data-image-edit-bar][aria-hidden="true"]) .excalidraw .App-bottom-bar > .Island {
+  display: none;
+}
+
+/* mobile 模式 (excalidraw--mobile) 把角标按钮顶到 mobile bar 与 chat input
+ * 之间的间隙中央 (~61px), 否则与 chat input 横向重合。 */
+.excalidraw--mobile ~ button[data-back-to-latest],
+.excalidraw--mobile ~ button[data-minimap-toggle],
+.excalidraw--mobile ~ div[data-canvas-save-status] {
+  bottom: 61px !important;
+}
+.excalidraw--mobile ~ div[data-minimap-panel] {
+  bottom: 109px !important; /* 61 + 32 (button) + 16 (gap) */
+}
