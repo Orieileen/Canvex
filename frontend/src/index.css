@@ -1,16 +1,27 @@
+@import url("https://fonts.googleapis.com/css2?family=Bayon&family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@900&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ────────────────────────────────────────────────────────────────────
+   主题 = meired 暖色设计系统(global 采用)。core shadcn token 用 meired 的
+   warm cream-and-clay 调;Canvex 自有的 chart / sidebar / mask token 保留
+   (组件可能在用)。Excalidraw 主题不在这里 —— styles/canvex-shadcn.css 已用
+   var(--primary)/var(--background)/color-mix 驱动,token 一换它自动跟着变暖。
+   ──────────────────────────────────────────────────────────────────── */
+
 @theme inline {
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Bayon", "Inter", system-ui, sans-serif;
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  
-  /* Mask image utilities */
+
   --mask-image-radial-gradient: radial-gradient(var(--tw-gradient-stops));
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -26,9 +37,12 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  /* Canvex 自有:chart + sidebar(保留) */
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -42,28 +56,79 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* meired brand extras — hero 装饰 / badge / 渐变 */
+  --color-cream: var(--cream);
+  --color-deep: var(--deep);
+  --color-moss: var(--moss);
+
+  /* meired dashboard warm palette */
+  --color-ember: var(--ember);
+  --color-sand: var(--sand);
+  --color-linen: var(--linen);
+  --color-dune: var(--dune);
+  --color-terra: var(--terra);
+  --color-sienna: var(--sienna);
+  --color-gold: var(--gold);
+
+  /* Apple frost:canvas 浮层统一磨砂底 */
+  --color-frost: var(--frost);
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --radius: 0.75rem;
+
+  /* shadcn core,warm cream-and-clay。background/muted 跟暖色家族对齐 R>G>B。 */
+  --background: #f4f0e8;
+  --foreground: #1a1a1a;
+
+  --card: #fff8f0;
+  --card-foreground: #1a1a1a;
+
+  --popover: #fff8f0;
+  --popover-foreground: #1a1a1a;
+
+  --primary: #e33529;
+  --primary-foreground: #fff9f0;
+
+  --secondary: #f3c3cb;
+  --secondary-foreground: #1a1a1a;
+
+  --muted: #ece5d8;
+  --muted-foreground: #6b6458;
+
+  --accent: #afd8fb;
+  --accent-foreground: #2b6786;
+
+  --destructive: #d62828;
+  --destructive-foreground: #fff9f0;
+
+  --border: #dcd6c2;
+  --input: #dcd6c2;
+  --ring: #e33529;
+
+  /* brand extras */
+  --cream: #f3f3e9;
+  --deep: #2b6786;
+  --moss: #6b8e4e;
+
+  /* dashboard warm palette + ember 阶梯(hover/强调/wash) */
+  --ember: #ff6825;
+  --ember-darker: #e6541f;
+  --ember-darkest: #c44310;
+  --ember-tint: #fce4d8;
+  --ember-tint-strong: #f9d4c2;
+  --sand: #f6f1ed;
+  --linen: #f3ede3;
+  --dune: #f0e6dc;
+  --terra: #c47a5f;
+  --sienna: #df7454;
+  --gold: #eebb4e;
+
+  /* Apple frost 磨砂底 (= bg-white/65),固定白玻璃不随明暗翻面。 */
+  --frost: rgba(255, 255, 255, 0.65);
+
+  /* Canvex 自有 chart + sidebar(保留 Canvex 原值;暖化留待 QA 再调) */
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -80,24 +145,51 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --background: #1a1815;
+  --foreground: #f3f3e9;
+
+  --card: #26221d;
+  --card-foreground: #f3f3e9;
+
+  --popover: #26221d;
+  --popover-foreground: #f3f3e9;
+
+  --primary: #ef5b50;
+  --primary-foreground: #1a1815;
+
+  --secondary: #3a2a2c;
+  --secondary-foreground: #f3f3e9;
+
+  --muted: #2a2621;
+  --muted-foreground: #a8a190;
+
+  --accent: #2b6786;
+  --accent-foreground: #afd8fb;
+
+  --destructive: #ef5b50;
+  --destructive-foreground: #1a1815;
+
+  --border: #3a352d;
+  --input: #3a352d;
+  --ring: #ef5b50;
+
+  --cream: #26221d;
+  --deep: #afd8fb;
+  --moss: #8aa868;
+
+  --ember: #ef5b50;
+  --ember-darker: #d44a40;
+  --ember-darkest: #b03830;
+  --ember-tint: #3a2520;
+  --ember-tint-strong: #4f2f29;
+  --sand: #1a1815;
+  --linen: #2a2621;
+  --dune: #26221d;
+  --terra: #a87a65;
+  --sienna: #c46a50;
+  --gold: #d4a840;
+
+  /* Canvex 自有 chart + sidebar dark(保留) */
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
@@ -117,7 +209,52 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* 关掉横向 overscroll → 禁用双指横滑返回手势(仅 canvas 页面挂 .no-swipe-nav)。 */
+  html.no-swipe-nav,
+  html.no-swipe-nav body {
+    overscroll-behavior-x: none;
+  }
+  [data-canvas-pane] {
+    overscroll-behavior: none;
+  }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: 0.01em;
+  }
+}
+
+@layer utilities {
+  .pill {
+    border-radius: 9999px;
+  }
+
+  /* 预生成占位 shimmer 加载卡(CanvasGeneratingOverlay):暖色光扫 + 呼吸 ember 光晕。 */
+  @keyframes canvas-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .canvas-shimmer-sweep {
+    background-image: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, 0.55) 50%, transparent 62%);
+    background-size: 200% 100%;
+    animation: canvas-shimmer 1.6s linear infinite;
+  }
+  @keyframes canvas-glow-breathe {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.72; }
+  }
+  .canvas-glow-breathe {
+    animation: canvas-glow-breathe 2.2s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .canvas-shimmer-sweep {
+      display: none;
+    }
+    .canvas-glow-breathe {
+      animation: none;
+    }
   }
 }

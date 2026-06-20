@@ -42,10 +42,13 @@
 - [x] 自检:代码/配置零残留 mysql;4 个现有 migration 纯 Django ORM(无 MySQL 专有 SQL,PG 可直接 apply)
 - [ ] **待你验证**:`docker compose up -d --build` 起 PG + 跑 migration(我这边无 docker/PG)
 
-### 前端 — 全局主题 + radix(进行中)
-- [ ] 全局合并 meired `index.css`(535 行:`@theme inline` + `:root`/`.dark` 暖色 token + Bayon/Inter 字体 + radius 0.75)到 Canvex `frontend/src/index.css`(122)+ reconcile `styles/canvex-shadcn.css`(511 行,Canvex 自有 shadcn 覆盖);肉眼回归 Canvex 现有非 canvas 页面
-- [ ] 补 radix 缺失原语:`@radix-ui/react-popover`(SkillSelector 要),对比 meired UI 组件依赖逐个补齐
-- [ ] i18n:合并 meired `i18n/{en,zh}.json` 的 canvas 命名空间到 Canvex `i18n`(可推到 Stage 6 前端核心一起)
+### 前端 — 全局主题 + radix ✅(代码;视觉 QA 待你)
+- [x] `index.css` 换成 meired warm token system + Inter/Bayon 字体 + radius 0.75 + brand extras(ember 阶梯/terra/sienna/gold/frost/cream/deep/moss);保留 Canvex 自有 `--chart-*`/`--sidebar-*`/`--mask-*`;带 canvas-shimmer/glow + grow-in 工具类;**未带** meired landing typography(h0-h10/hero,Canvex 无 landing)
+- [x] **`styles/canvex-shadcn.css` 不动** —— 它是 token-driven(`var(--primary)`/`color-mix`),核心 token 一换 Excalidraw 自动变暖;meired 的 `.excalidraw.excalidraw` 块不带(会与 Canvex 的 `.canvex-host` scope 冲突)
+- [x] 补 `@radix-ui/react-popover`(package.json;next `npm i` / 容器重建时装,Stage 6 SkillSelector 用)
+- [ ] **视觉回归(你来)**:`localhost:5173`(docker frontend,Vite HMR 实时套 index.css),肉眼看 scene 列表 / 工作区 / 非 canvas 页有没有被暖色带歪;sidebar token 暂留 Canvex 中性值,若与暖底违和再暖化
+- [ ] i18n canvas 命名空间 → 推到 Stage 6 一起
+- 注:Canvex package.json 有 `@reduxjs/toolkit` —— Stage 6 剥 billing dispatch 时确认它是否在用
 
 ---
 
@@ -95,26 +98,19 @@
 
 > **Stage 1 后端整体重 port = 完成并 smoke 验证(2026-06-20)。** 下一步:前端(Stage 0 全局换肤 + Stage 6–8)。
 
-## Stage 6 · 前端核心
+## Stage 6–8 · 前端整体 port ✅(代码 + coherence PASS;待 tsc/vite 验)
 
-- [ ] 移 meired:`CanvasWorkspacePage`、`use-canvas-pinning`、`use-canvas-selection`、`submit-canvas-job`、六标签 `ImageEditBar`、`ChatOverlay`、`SkillSelector`、`canvas.service.ts`(NDJSON + 指数退避 + active-jobs resume)、`types`
-- [ ] 接 image/video/angle/split 四个 edit hook;**剥掉 Redux/billing dispatch**
-- [ ] `use-resume-canvas-jobs`:从 inline 提成 hook
+> **执行时合并**:meired 的 `CanvasWorkspacePage` 是 monolithic(一页 wires chat/image/video/angle/split/mockup/adjust/merge/minimap),6/7/8 拆不开 → 一次性 wholesale port,替换 Canvex 旧 canvas 前端。workflow(7 agent,Contracts→Port→Coherence)+ 我做孤儿/耦合收口。
 
-## Stage 7 · 前端浮层 + 工具
-
-- [ ] `Minimap`、`CanvasMeasureOverlay`、`CanvasImagePlacementOverlay`、`CanvasGeneratingOverlay`
-- [ ] `use-merge-layer`(客户端拍平,≤4× 导出)、`use-canvas-image-import`(拖/贴/'9' 导入)、`use-back-to-latest`、`use-suppress-swipe-nav`、`use-selection-preview`
-- [ ] lib:`excalidraw-bounds` / `excalidraw-custom-data` / `excalidraw-wheel-forward` / `canvas-skill-events` / `canvas-scene-files` / `canvas-image-output-size`
-
-## Stage 8 · 前端 3D mockup + 调色(最重)
-
-> three.js Canvex 已有(0.183);只需加 transformers.js。
-
-- [ ] `Mockup3dOverlay`(DecalGeometry + 深度位移网格 + gizmo)、`use-mockup`、`canvas-mockup.ts`
-- [ ] `ImageAdjustOverlay` + `FloatingAdjustPanel` + `use-image-adjust` + `canvas-adjust.ts` + `image-adjustments.ts`(18 滑块 / 8 段 HSL)
-- [ ] `depth-estimation.ts`(transformers.js Depth-Anything-V2-Small,WebGPU→WASM)+ `segmentation.ts`(**RMBG-1.4**)+ `transformers-env.ts`(WebGPU 丢失恢复)
-- [ ] 加依赖 `@huggingface/transformers`;文档化首次 ~50MB 模型下载(缓存 IndexedDB);React 19 strict mode 下验证 GPU/HMR 不泄漏
+- [x] **service + types**:`services/{canvas.service,createResource,errors}.ts`(api→`request`、删 auth/store/env 耦合、NDJSON 用 `import.meta.env.VITE_API_URL`)、`types/canvex.ts`(meired canvas 类型;旧 legacy 类型块暂留待删)
+- [x] **lib**(16):canvas-pinning 配套 + `canvas-{skill-events,scene-files,mockup,adjust,image-output-size}` + `excalidraw-{bounds,custom-data,wheel-forward}` + `image-adjustments` + `angle` + `download` + `depth-estimation`/`segmentation`/`transformers-env`(transformers.js,lazy)
+- [x] **hooks**(16):pinning/selection/submit-canvas-job/image-edit/video-edit/angle-edit/split/merge-layer/mockup/image-adjust/back-to-latest/suppress-swipe-nav/selection-preview/canvas-image-import/resume-canvas-jobs;**Redux/billing 全剥**(submit + 各 edit hook 的 `dispatch(loadBilling())` 删)
+- [x] **components/canvas**(11):ImageEditBar(+FloatingAdjustPanel)/ChatOverlay/SkillSelector/CanvasSidebar/AngleCube/Mockup3dOverlay/ImageAdjustOverlay/Minimap/CanvasMeasureOverlay/CanvasImagePlacementOverlay/CanvasGeneratingOverlay;i18n 暂 hardcode 英文;CanvasSidebar 去路由化(props 驱动)
+- [x] **pages + router**:`pages/canvex-workspace.tsx`(去 `useParams(:sceneId)` → sceneId 由 sidebar state 驱动;Excalidraw mount + 1.5s debounce save + pinning + AbortController 流控全保留);`Router.tsx` 单路由指向它
+- [x] **ui + deps**:补 `components/ui/{dialog,popover,tabs}`;package.json 加 `@huggingface/transformers@^4.2.0`(+ 此前 `@radix-ui/react-popover`)
+- [x] **收口**:删全部旧 canvas 文件(use-chat/use-pinning/use-*-pipeline/use-scene-persistence/use-media-library/use-canvas-elements/canvex-sidebar/angle-cube/dashboard/canvex.tsx/utils/canvex/angle-prompt/use-canvex-theme);grep 验零残留耦合 + 零孤儿引用 + CanvasSidebar 契约对上
+- [ ] **待你验(docker)**:① 重建前端容器装新依赖 ② `tsc --noEmit` 抓 noUnusedLocals + Excalidraw 0.18 API shape 漂移 ③ vite dev → localhost:5173 加载 canvas → QA
+- [ ] 收尾:删 `types/canvex.ts` 的 legacy 类型块(已无人 import);i18n canvas 命名空间正式合并(现 hardcode 英文);CanvasSidebar 的 create/delete 自动选中 UX 微调
 
 ## Stage 9 · 联调 + QA
 
