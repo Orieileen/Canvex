@@ -4,7 +4,7 @@
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
-    <a href="https://www.mysql.com/"><img src="https://img.shields.io/badge/Database-MySQL-4479A1" alt="Database"></a>
+    <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
   </p>
 </div>
@@ -178,18 +178,17 @@ Docker Compose database defaults:
 
 | Variable | Notes | Example |
 | --- | --- | --- |
-| `MYSQL_DATABASE` | App database name | `canvex` |
-| `MYSQL_USER` | App database user | `canvex` |
-| `MYSQL_PASSWORD` | App database password | `canvex` |
-| `MYSQL_HOST` | MySQL host (keep as `mysql` for Docker Compose) | `mysql` |
-| `MYSQL_PORT` | MySQL port | `3306` |
-| `MYSQL_ROOT_PASSWORD` | Root password for MySQL container initialization | `change-me-root-password` |
+| `POSTGRES_DB` | App database name | `canvex` |
+| `POSTGRES_USER` | App database user | `canvex` |
+| `POSTGRES_PASSWORD` | App database password | `canvex` |
+| `POSTGRES_HOST` | Postgres host (keep as `postgres` for Docker Compose) | `postgres` |
+| `POSTGRES_PORT` | Postgres port | `5432` |
 
 Notes:
 
 - When using a third-party compatible gateway, set `*_BASE_URL` and model names per that gateway's documentation.
 - If chat and media use the same provider, `OPENAI_*` and `MEDIA_*` can share the same configuration.
-- `docker compose up -d --build` starts MySQL automatically. Existing `db.sqlite3` data is not migrated into MySQL.
+- `docker compose up -d --build` starts Postgres automatically and runs migrations on backend startup.
 - See [.env.example](./.env.example) for a full environment variable reference.
 
 After startup, open:
@@ -209,7 +208,7 @@ After startup, open:
 
 ## Backend Architecture
 
-Tech stack: Django + DRF + Celery + Redis + MySQL + LangGraph.
+Tech stack: Django + DRF + Celery + Redis + PostgreSQL + LangGraph.
 
 ### Directory Structure
 

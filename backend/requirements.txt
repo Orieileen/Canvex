@@ -3,13 +3,20 @@ djangorestframework
 django-cors-headers
 celery
 redis
+# worker_canvas 用 celery --pool=gevent(IO 密集:图/视频/agent 长任务高并发轮询)
+gevent
 openai
+deepagents
 langchain
 langchain-openai
 langgraph
+# canvas agent /memories/ 可选 postgres 后端 (CANVAS_AGENT_STORE_BACKEND=postgres);
+# builder.py 懒加载 langgraph.store.postgres, 默认 memory 时不 import。
+langgraph-checkpoint-postgres
+psycopg-pool
 requests
 Pillow
 rembg[cpu]
 python-dotenv
 gunicorn
-mysqlclient>=2.2.1
+psycopg[binary]>=3.2

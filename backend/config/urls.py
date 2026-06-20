@@ -3,7 +3,9 @@ from django.conf.urls.static import static
 from django.urls import include, path
 
 urlpatterns = [
-    path("api/v1/", include("studio.urls")),
+    # studio (canvas) app 挂在 /api/v1/canvas/。studio.urls 内部路由不再带
+    # excalidraw/ 前缀, 由这里统一加 canvas/。
+    path("api/v1/canvas/", include("studio.urls")),
 ]
 
 if settings.DEBUG:

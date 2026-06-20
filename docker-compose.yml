@@ -1,17 +1,16 @@
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: canvex_mysql
+  postgres:
+    image: postgres:16
+    container_name: canvex_postgres
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-canvex}
-      MYSQL_USER: ${MYSQL_USER:-canvex}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-canvex}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root-password}
+      POSTGRES_DB: ${POSTGRES_DB:-canvex}
+      POSTGRES_USER: ${POSTGRES_USER:-canvex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-canvex}
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-canvex} -d $${POSTGRES_DB:-canvex}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -36,7 +35,7 @@ services:
     ports:
       - "${BACKEND_PORT:-28000}:8000"
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_started
@@ -54,7 +53,49 @@ services:
       - ./backend/media:/app/media
     command: bash -lc "celery -A config worker -l info -Q excalidraw -n excalidraw@%h -c 2 -Ofair --prefetch-multiplier=1"
     depends_on:
-      mysql:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  # canvas: LLM agent + 图/视频生成 (IO 密集) → gevent，高并发轮询不吃 CPU。
+  worker_canvas:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: canvex_worker_canvas
+    env_file:
+      - ./.env
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+    command: bash -lc "celery -A config worker -l info -Q canvas -n canvas@%h --pool=gevent -c 20 -Ofair --prefetch-multiplier=1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  # canvas_cpu: cutout rembg 白转 alpha (CPU 密集) → prefork，低并发避免吃满核。
+  worker_canvas_cpu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: canvex_worker_canvas_cpu
+    env_file:
+      - ./.env
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+    command: bash -lc "celery -A config worker -l info -Q canvas_cpu -n canvas_cpu@%h --pool=prefork -c 2 -Ofair --prefetch-multiplier=1"
+    depends_on:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_started
@@ -84,4 +125,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  mysql_data:
+  postgres_data:

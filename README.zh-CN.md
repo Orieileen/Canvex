@@ -4,7 +4,7 @@
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
-    <a href="https://www.mysql.com/"><img src="https://img.shields.io/badge/Database-MySQL-4479A1" alt="Database"></a>
+    <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
   </p>
 </div>
@@ -178,18 +178,17 @@ Docker Compose 默认的数据库变量：
 
 | 变量 | 备注 | 示例 |
 | --- | --- | --- |
-| `MYSQL_DATABASE` | 业务库名 | `canvex` |
-| `MYSQL_USER` | 业务库用户 | `canvex` |
-| `MYSQL_PASSWORD` | 业务库密码 | `canvex` |
-| `MYSQL_HOST` | MySQL 主机名（Docker Compose 场景保持为 `mysql`） | `mysql` |
-| `MYSQL_PORT` | MySQL 端口 | `3306` |
-| `MYSQL_ROOT_PASSWORD` | 初始化 MySQL 容器时使用的 root 密码 | `change-me-root-password` |
+| `POSTGRES_DB` | 业务库名 | `canvex` |
+| `POSTGRES_USER` | 业务库用户 | `canvex` |
+| `POSTGRES_PASSWORD` | 业务库密码 | `canvex` |
+| `POSTGRES_HOST` | Postgres 主机名（Docker Compose 场景保持为 `postgres`） | `postgres` |
+| `POSTGRES_PORT` | Postgres 端口 | `5432` |
 
 说明：
 
 - 使用第三方兼容网关时，`*_BASE_URL` 和模型名按该网关文档填写。
 - 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_*` 使用同一套配置。
-- `docker compose up -d --build` 会自动启动 MySQL；已有 `db.sqlite3` 数据不会自动迁移进 MySQL。
+- `docker compose up -d --build` 会自动启动 Postgres，并在 backend 启动时跑 migration。
 - 完整环境变量参考见 [.env.example](./.env.example)。
 
 启动后访问：
@@ -209,7 +208,7 @@ Docker Compose 默认的数据库变量：
 
 ## 后端架构
 
-技术栈：Django + DRF + Celery + Redis + MySQL + LangGraph。
+技术栈：Django + DRF + Celery + Redis + PostgreSQL + LangGraph。
 
 ### 目录结构
 

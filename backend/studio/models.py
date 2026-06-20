@@ -8,17 +8,32 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 
+# ─────────────────────────────── 上传路径 ───────────────────────────────
+
 def library_upload_to(instance, filename: str) -> str:
     ext = Path(filename).suffix.lower()
     now = datetime.utcnow()
     return f"library/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
 
 
-def excalidraw_edit_upload_to(instance, filename: str) -> str:
+def canvas_edit_upload_to(instance, filename: str) -> str:
+    """image-edit 源图。meired 用 UserDatedUploadPath(按 user 隔离);Canvex 单工作区
+    无 user,退化为纯 date 路径。"""
     ext = Path(filename).suffix.lower()
     now = datetime.utcnow()
-    return f"canvex_edits/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
+    return f"canvas/edits/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
 
+
+def canvas_edit_intermediate_upload_to(instance, filename: str) -> str:
+    """cutout 两段流水 stage1 的白底中间图。"""
+    ext = Path(filename).suffix.lower()
+    now = datetime.utcnow()
+    return f"canvas/edits/intermediate/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
+
+
+# ─────────────────────────── 素材库(Canvex 自有,保留)───────────────────────────
+# meired 用独立 apps/library 的 Asset/Folder;Canvex 决策复用自己的 DataAsset/DataFolder
+# 作为 canvas 结果与附件的存储层(见 services/agent/tools 的落库适配)。
 
 class DataFolder(models.Model):
     """表示素材库中的文件夹节点，支持层级嵌套。"""
@@ -76,116 +91,252 @@ class DataAsset(models.Model):
         return self.filename
 
 
-class ExcalidrawScene(models.Model):
-    """表示一份 Excalidraw 画布场景及其序列化数据。"""
+# ─────────────────────── Canvas(从 meired apps/canvas port)───────────────────────
+# 已剥:organization / user FK(单工作区)、credit_event(无计费)。
+# asset FK 指向上面的 DataAsset(非 meired 的 library.Asset)。
 
+class Scene(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
     title = models.CharField(max_length=255, blank=True)
     data = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "canvas_scenes"
+        verbose_name = "Canvas Scene"
+        verbose_name_plural = "Canvas Scenes"
         ordering = ["-updated_at"]
 
     def __str__(self):
         return self.title or f"Scene {self.id}"
 
 
-class ExcalidrawChatMessage(models.Model):
-    """表示与 Excalidraw 场景关联的一条聊天消息。"""
-
+class ChatMessage(models.Model):
     class Role(models.TextChoices):
-        """定义 Excalidraw 对话消息的角色类型。"""
-
         USER = "user", "User"
         ASSISTANT = "assistant", "Assistant"
         SYSTEM = "system", "System"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    scene = models.ForeignKey(ExcalidrawScene, on_delete=models.CASCADE, related_name="chat_messages")
+
+    scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="chat_messages")
     role = models.CharField(max_length=16, choices=Role.choices)
     content = models.TextField()
+
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "canvas_chat_messages"
+        verbose_name = "Canvas Chat Message"
+        verbose_name_plural = "Canvas Chat Messages"
         ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["scene", "created_at"], name="canvas_chat_scene_ts_idx"),
+        ]
 
     def __str__(self):
         return f"{self.role}: {self.content[:40]}"
 
 
-class ExcalidrawImageEditJob(models.Model):
-    """表示一次基于 Excalidraw 场景发起的图片编辑任务。"""
-
+class ImageEditJob(models.Model):
     class Status(models.TextChoices):
-        """定义图片编辑任务的执行状态。"""
-
         QUEUED = "QUEUED", "Queued"
         RUNNING = "RUNNING", "Running"
         SUCCEEDED = "SUCCEEDED", "Succeeded"
         FAILED = "FAILED", "Failed"
 
+    class Resolution(models.TextChoices):
+        # apimart Seedream 支持的两档. 2K 默认 (1:1=2048×2048), 4K ×2 (1:1=4096×4096).
+        TWO_K = "2K", "2K"
+        FOUR_K = "4K", "4K"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    scene = models.ForeignKey(ExcalidrawScene, on_delete=models.CASCADE, related_name="image_edit_jobs")
+
+    scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="image_edit_jobs")
+
     prompt = models.TextField()
-    size = models.CharField(max_length=32, default="1024x1024")
+    size = models.CharField(max_length=32, default="1024x1024", blank=True)
+    resolution = models.CharField(
+        max_length=4, choices=Resolution.choices, default=Resolution.TWO_K,
+    )
     num_images = models.PositiveSmallIntegerField(default=1)
+    # cutout=True 切到 rembg(去背景);否则是 refine/edit
     is_cutout = models.BooleanField(default=False)
-    source_image = models.ImageField(upload_to=excalidraw_edit_upload_to)
-    result_asset = models.ForeignKey(
-        DataAsset,
+    # Split: 一次 split 起两条 leg(background inpaint + cutout subject),互填 split_partner.
+    # Canvex 无计费,不做原子退款;split_partner 仍保留用于前端把两腿配对显示。
+    split_partner = models.ForeignKey(
+        "self",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="excalidraw_image_edit_results",
+        related_name="+",
+        db_index=True,
     )
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    # Nullable: 显式 POST /image-edit/ 带 multipart;chat agent 的 generate_image 是
+    # text-to-image 无源文件。
+    source_image = models.ImageField(
+        upload_to=canvas_edit_upload_to, null=True, blank=True,
+    )
+    # 多图(marquee)路径;与 source_image 互斥。
+    source_images = models.JSONField(default=list, blank=True)
+    # cutout 两段流水 stage1 输出(LLM 抠主体留纯白底,stage2 rembg 把白底转 alpha)。
+    intermediate_image = models.ImageField(
+        upload_to=canvas_edit_intermediate_upload_to, null=True, blank=True,
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
     error = models.TextField(blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "canvas_image_edit_jobs"
+        verbose_name = "Canvas Image Edit Job"
+        verbose_name_plural = "Canvas Image Edit Jobs"
         ordering = ["-created_at"]
 
+    def __str__(self):
+        return f"ImageEditJob({self.id}, {self.status})"
 
-class ExcalidrawImageEditResult(models.Model):
-    """表示图片编辑任务生成的单张结果图片。"""
 
+class ImageEditResult(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    job = models.ForeignKey(ExcalidrawImageEditJob, on_delete=models.CASCADE, related_name="results")
-    asset = models.ForeignKey(DataAsset, on_delete=models.CASCADE, related_name="image_edit_result_assets")
+
+    job = models.ForeignKey(ImageEditJob, on_delete=models.CASCADE, related_name="results")
+    asset = models.ForeignKey(
+        DataAsset,
+        on_delete=models.CASCADE,
+        related_name="canvas_image_edit_results",
+    )
     order = models.PositiveSmallIntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "canvas_image_edit_results"
+        verbose_name = "Canvas Image Edit Result"
+        verbose_name_plural = "Canvas Image Edit Results"
         ordering = ["order", "created_at"]
 
+    def __str__(self):
+        return f"Result({self.job_id}, #{self.order})"
 
-class ExcalidrawVideoJob(models.Model):
-    """表示一次基于 Excalidraw 场景发起的视频生成任务。"""
 
+class VideoJob(models.Model):
     class Status(models.TextChoices):
-        """定义视频生成任务的执行状态。"""
-
         QUEUED = "QUEUED", "Queued"
         RUNNING = "RUNNING", "Running"
         SUCCEEDED = "SUCCEEDED", "Succeeded"
         FAILED = "FAILED", "Failed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    scene = models.ForeignKey(ExcalidrawScene, on_delete=models.CASCADE, related_name="video_jobs")
+
+    scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="video_jobs")
+
     prompt = models.TextField()
     image_urls = models.JSONField(default=list, blank=True)
-    duration = models.PositiveSmallIntegerField(default=10)
+    duration = models.PositiveSmallIntegerField(default=10)  # seconds
     aspect_ratio = models.CharField(max_length=16, default="16:9")
+
+    # 外部 provider 的 task id,用于 long-poll
     task_id = models.CharField(max_length=128, blank=True)
     result_url = models.TextField(blank=True)
     thumbnail_url = models.TextField(blank=True)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True)
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
     error = models.TextField(blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "canvas_video_jobs"
+        verbose_name = "Canvas Video Job"
+        verbose_name_plural = "Canvas Video Jobs"
         ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"VideoJob({self.id}, {self.status})"
+
+
+class AngleJob(models.Model):
+    """图片相机视角重渲染 job —— 调 fal.ai Qwen-Image-Edit-2511-Multiple-Angles-LoRA.
+
+    和 ImageEditJob 区别:只带一个公网 image URL(LoRA provider 自己 fetch),参数是
+    相机坐标(horizontal / vertical / zoom)而非自由 prompt,provider 专一 fal.ai。
+    共通:结果落 DataAsset + AngleResult 行,前端 pin 逻辑和 image-edit 一致;num_images 1-4。
+    """
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="angle_jobs")
+
+    # 输入公网 URL —— 经 absolute_media_url() + is_public_http_url() 过滤后存
+    source_image_url = models.TextField()
+
+    # fal.ai 相机坐标: horizontal 0-360°, vertical -30-90°, zoom 0-10 (0=wide/10=close)
+    horizontal_angle = models.FloatField(default=0.0)
+    vertical_angle = models.FloatField(default=0.0)
+    zoom = models.FloatField(default=5.0)
+
+    # 可选提示词附加到 LoRA 默认 prompt 之后
+    additional_prompt = models.TextField(blank=True)
+    num_images = models.PositiveSmallIntegerField(default=1)
+
+    # provider 返的 seed,存下来用户要复现同一角度时可传回
+    seed = models.BigIntegerField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    error = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_angle_jobs"
+        verbose_name = "Canvas Angle Job"
+        verbose_name_plural = "Canvas Angle Jobs"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"AngleJob({self.id}, {self.status})"
+
+
+class AngleResult(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    job = models.ForeignKey(AngleJob, on_delete=models.CASCADE, related_name="results")
+    asset = models.ForeignKey(
+        DataAsset,
+        on_delete=models.CASCADE,
+        related_name="canvas_angle_results",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "canvas_angle_results"
+        verbose_name = "Canvas Angle Result"
+        verbose_name_plural = "Canvas Angle Results"
+        ordering = ["order", "created_at"]
+
+    def __str__(self):
+        return f"AngleResult({self.job_id}, #{self.order})"
