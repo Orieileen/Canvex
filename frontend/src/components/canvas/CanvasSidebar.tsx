@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Frame,
+  Github,
   Images,
   Loader2,
   MoreVertical,
@@ -10,6 +11,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  Twitter,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -54,6 +56,12 @@ export interface CanvasSceneRenamedDetail {
  *  pinImage + 当前 sceneId)。侧栏在外层组件、面板在内层, 用 window 事件跨过去
  *  (跟 CANVAS_SCENE_RENAMED_EVENT 同款桥接, 只是方向反过来)。 */
 export const CANVAS_OPEN_MEDIA_LIBRARY_EVENT = "canvas:open-media-library";
+
+// 作者社交链接 (用户提供)。展开=底部一排图标, 折叠=纵向堆叠。
+const SOCIAL_LINKS: { href: string; label: string; Icon: typeof Github }[] = [
+  { href: "https://x.com/real_meired", label: "Twitter", Icon: Twitter },
+  { href: "https://github.com/Orieileen/Canvex", label: "GitHub", Icon: Github },
+];
 
 // 侧栏折叠态持久化 (localStorage), 跨刷新/重开浏览器保留用户选择。
 // 取值 "1" = 折叠, 其他 (含缺失) = 展开。
@@ -245,7 +253,7 @@ export function CanvasSidebar({
     >
       {/* 顶部: 展开时 [新建 / 收起] 同排; 折叠时纵向堆叠 [展开 / 新建] */}
       {collapsed ? (
-        <div className="mb-3 flex flex-col items-center gap-1.5">
+        <div className="mb-1.5 flex flex-col items-center gap-1.5">
           <button
             type="button"
             onClick={toggleCollapsed}
@@ -266,7 +274,7 @@ export function CanvasSidebar({
           </button>
         </div>
       ) : (
-        <div className="mb-5 flex items-center gap-2">
+        <div className="mb-2 flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -287,6 +295,35 @@ export function CanvasSidebar({
           </button>
         </div>
       )}
+
+      {/* 「素材库」入口 (紧贴 New canvas 下方): 发全局事件, CanvasArea 接住打开面板。
+          无激活画布时禁用 —— 面板挂在 CanvasArea(只在有激活画布时挂载), 点了也没人
+          接事件、且无目标画布可插入。 */}
+      <div className={collapsed ? "mb-3" : "mb-5"}>
+        {collapsed ? (
+          <button
+            type="button"
+            disabled={!activeSceneId}
+            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
+            className="mx-auto flex size-9 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember disabled:pointer-events-none disabled:opacity-40"
+            aria-label="Media library"
+            title={activeSceneId ? "Media library" : "Select a canvas first"}
+          >
+            <Images className="size-4" strokeWidth={2} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={!activeSceneId}
+            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-sienna transition-colors hover:bg-card/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            title={activeSceneId ? undefined : "Select a canvas first"}
+          >
+            <Images className="size-4 shrink-0" strokeWidth={2} />
+            Media library
+          </button>
+        )}
+      </div>
 
       {/* SCENES 标题: 折叠态隐藏 (只剩图标条没有空间承载文字 label) */}
       {!collapsed && (
@@ -429,34 +466,26 @@ export function CanvasSidebar({
         )}
       </nav>
 
-      {/* 底部「素材库」入口: 发全局事件, CanvasArea 接住打开面板。展开=带文字的
-          ghost 按钮; 折叠=方形图标 + tooltip, 与 scene 列表项视觉对齐。
-          无激活画布时禁用 —— 面板挂在 CanvasArea(只在有激活画布时挂载), 此时点了
-          也没人接事件; 且无目标画布可插入。禁用比静默无响应诚实。 */}
-      <div className="mt-2 border-t border-border/60 pt-3">
-        {collapsed ? (
-          <button
-            type="button"
-            disabled={!activeSceneId}
-            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="mx-auto flex size-9 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember disabled:pointer-events-none disabled:opacity-40"
-            aria-label="Media library"
-            title={activeSceneId ? "Media library" : "Select a canvas first"}
-          >
-            <Images className="size-4" strokeWidth={2} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={!activeSceneId}
-            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-sienna transition-colors hover:bg-card/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-            title={activeSceneId ? undefined : "Select a canvas first"}
-          >
-            <Images className="size-4 shrink-0" strokeWidth={2} />
-            Media library
-          </button>
+      {/* 作者社交链接: 展开=一排图标, 折叠=纵向堆叠。外链新标签页打开。 */}
+      <div
+        className={cn(
+          "mt-2 flex",
+          collapsed ? "flex-col items-center gap-1" : "items-center gap-1 px-1",
         )}
+      >
+        {SOCIAL_LINKS.map(({ href, label, Icon }) => (
+          <a
+            key={label}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={label}
+            title={label}
+            className="flex size-8 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember"
+          >
+            <Icon className="size-4" strokeWidth={2} />
+          </a>
+        ))}
       </div>
 
       <Dialog
