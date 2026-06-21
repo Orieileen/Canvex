@@ -27,6 +27,13 @@ import { toolArgAsNonNegInt } from "@/lib/canvas-skill-events";
 import { getElementBounds, type ElementBounds } from "@/lib/excalidraw-bounds";
 import { getAiChatImageUrl } from "@/lib/excalidraw-custom-data";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
+import {
+  CHAT_FRAME_HEIGHT,
+  CHAT_FRAME_MARKER,
+  CHAT_FRAME_WIDTH,
+  findChatFrame,
+  isChatNoteElement,
+} from "@/lib/canvas-chat-frame";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -603,6 +610,9 @@ export interface PinAnchor {
 
 export interface UseCanvasPinning {
   pinMessage: (message: CanvasChatMessage) => void;
+  /** Find or create the scene's chat frame (native Excalidraw frame the
+   *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
+  ensureChatFrame: () => string | null;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1000,6 +1010,49 @@ export function useCanvasPinning(
     },
     [apiRef, pinElements],
   );
+
+  /** Find (or create) the scene's chat frame — a native Excalidraw frame the
+   *  ChatFrameOverlay anchors its scrollable panel to. First creation drops any
+   *  legacy note-text pins (chat now lives in the panel, not on the canvas).
+   *  Places the frame in the current viewport so the user sees it. Returns the
+   *  frame id, or null if the API isn't mounted. */
+  const ensureChatFrame = useCallback((): string | null => {
+    const api = apiRef.current;
+    if (!api) return null;
+    // 整个包 try —— 建框失败绝不能炸掉发消息主流程 (调用方在 try 外)。
+    try {
+      const elements = api.getSceneElements();
+      const existing = findChatFrame(elements);
+      if (existing) return existing.id;
+
+      const app = api.getAppState();
+      const zoom = app.zoom?.value ?? 1;
+      const viewW = (app.width ?? 1200) / zoom;
+      const viewH = (app.height ?? 800) / zoom;
+      const x = -(app.scrollX ?? 0) + Math.min(80, viewW * 0.06);
+      const y = -(app.scrollY ?? 0) + Math.max(40, (viewH - CHAT_FRAME_HEIGHT) / 2);
+      // skeleton 必须带 children (空也要给) —— convertToExcalidrawElements 内部对
+      // frame skeleton 做 `children.forEach`, 缺了直接抛。TS skeleton 类型未含 frame,
+      // 故 cast 收口。customData / name 会被 convert 丢掉, 创建后再盖上 (findChatFrame
+      // 靠 customData.aiChatType 认这个聊天框)。
+      const created = convertToExcalidrawElements([
+        { type: "frame", x, y, width: CHAT_FRAME_WIDTH, height: CHAT_FRAME_HEIGHT, children: [] },
+      ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
+      if (!created.length) return null;
+      const frame = {
+        ...created[0],
+        name: "Chat",
+        customData: { aiChatType: CHAT_FRAME_MARKER },
+      } as ExcalidrawElement;
+      // 迁移: 去掉旧版聊天文字 pin —— 现在聊天在面板里, 不再撒到画布上。
+      const kept = elements.filter((el) => !isChatNoteElement(el));
+      api.updateScene({ elements: [...kept, frame] });
+      return frame.id;
+    } catch (err) {
+      console.error("ensureChatFrame failed", err);
+      return null;
+    }
+  }, [apiRef]);
 
   const commitImagePin = useCallback(
     async ({ dataURL, mimeType, customData, startAt }: {
@@ -1543,6 +1596,7 @@ export function useCanvasPinning(
 
   return {
     pinMessage,
+    ensureChatFrame,
     pinImage,
     pinVideo,
     pinMergedImage,

@@ -8,6 +8,7 @@ import { Mockup3dOverlay } from "@/components/canvas/Mockup3dOverlay";
 import { CanvasMeasureOverlay } from "@/components/canvas/CanvasMeasureOverlay";
 import { CanvasImagePlacementOverlay } from "@/components/canvas/CanvasImagePlacementOverlay";
 import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOverlay";
+import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,7 @@ import {
 import { skillSlugFromToolCall, toolArgAsNonNegInt, toolArgAsString } from "@/lib/canvas-skill-events";
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import type {
+  CanvasChatMessage,
   CanvasMediaImage,
   CanvasMediaVideo,
   CanvasScene,
@@ -145,6 +147,15 @@ function extractMarkdownImageUrls(text: string): string[] {
     urls.push(m[1]);
   }
   return urls;
+}
+
+/** Append a chat message to the transcript, skipping it if its id is already
+ *  present (stream can re-emit; history may already hold it). */
+function appendUniqueMessage(
+  prev: CanvasChatMessage[],
+  message: CanvasChatMessage,
+): CanvasChatMessage[] {
+  return prev.some((m) => m.id === message.id) ? prev : [...prev, message];
 }
 
 /**
@@ -254,6 +265,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
 
   // ── chat stream state ─────────────────────────────────────────────────────
   const [isStreaming, setIsStreaming] = useState(false);
+  // Chat transcript shown in the frame-anchored ChatFrameOverlay (no longer
+  // pinned to the canvas as text). Loaded from history on scene mount, appended
+  // during streaming.
+  const [chatMessages, setChatMessages] = useState<CanvasChatMessage[]>([]);
   const [chatStatus, setChatStatus] = useState<ChatOverlayStatus | null>(null);
   const [toolBadge, setToolBadge] = useState<string | null>(null);
   // Skills loaded this turn — sniffed from read_file tool_calls via
@@ -329,7 +344,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
 
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
-    pinMessage,
+    ensureChatFrame,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -520,6 +535,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     polledJobIdsRef.current.clear();
     setLoading(true);
     setLoadError(null);
+    setChatMessages([]);
     (async () => {
       try {
         const { data } = await canvasService.retrieveScene(activeSceneId);
@@ -533,6 +549,22 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         handleChangeHashRef.current = null;
         setSaveState("idle");
         resetPinning();
+        // Chat history → frame-anchored panel (best-effort; non-critical to load).
+        // Merge (don't replace): if a slow history response lands AFTER the user
+        // already sent a message this session, keep those just-streamed messages
+        // (appended to `live`) instead of clobbering them with stale history.
+        canvasService
+          .listChat(activeSceneId, 50)
+          .then(({ data: history }) => {
+            if (cancelled) return;
+            setChatMessages((live) => {
+              const ids = new Set(history.map((m) => m.id));
+              return [...history, ...live.filter((m) => !ids.has(m.id))];
+            });
+          })
+          .catch(() => {
+            /* leave the panel empty — chat history is non-critical */
+          });
       } catch (err) {
         if (cancelled) return;
         setLoadError(extractApiError(err, "Failed to load canvas"));
@@ -793,6 +825,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       setIsStreaming(true);
       setChatStatus(null);
       setToolBadge(null);
+      // Make sure the scene has a chat frame for the panel to anchor to (created
+      // on the first message; no-op thereafter). Recreates it if the user deleted it.
+      ensureChatFrame();
       // Per-message ephemeral: drop attachment chips immediately on send.
       setAttachments(clearIfNonEmpty);
       // Pack-mode 横排状态是 per-turn 的:本轮若不重置, turn-2 的 slot 复用
@@ -808,7 +843,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         )) {
           switch (event.event) {
             case "user_created":
-              pinMessage(event.message);
+              setChatMessages((prev) => appendUniqueMessage(prev, event.message));
               break;
             case "tool_call": {
               // Skill loads route to skillBadges (ember pill); skip the
@@ -906,7 +941,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               }
               break;
             case "assistant":
-              pinMessage(event.message);
+              setChatMessages((prev) => appendUniqueMessage(prev, event.message));
               break;
             case "error":
               showTransientStatus({ label: "Reply failed", variant: "error" });
@@ -948,7 +983,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       createPlaceholder,
       markPlaceholdersFailed,
       pinImage,
-      pinMessage,
+      ensureChatFrame,
       pollAndPinJob,
       resetPackRow,
       showTransientStatus,
@@ -1066,6 +1101,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         tick={excalidrawTick}
       />
       <CanvasGeneratingOverlay excalidrawApiRef={excalidrawApiRef} tick={excalidrawTick} />
+      <ChatFrameOverlay
+        excalidrawApiRef={excalidrawApiRef}
+        tick={excalidrawTick}
+        messages={chatMessages}
+        streaming={isStreaming}
+      />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
         paneRef={canvasPaneRef}

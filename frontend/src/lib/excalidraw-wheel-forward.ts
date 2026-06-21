@@ -1,4 +1,19 @@
-import type { WheelEvent as ReactWheelEvent } from "react";
+/** The wheel fields the forwarder needs — satisfied by both React's synthetic
+ *  WheelEvent and the native WheelEvent, so callers can use it as a React
+ *  `onWheel` handler OR pass a native event from an addEventListener handler. */
+type WheelLike = Pick<
+  WheelEvent,
+  | "deltaX"
+  | "deltaY"
+  | "deltaZ"
+  | "deltaMode"
+  | "clientX"
+  | "clientY"
+  | "ctrlKey"
+  | "shiftKey"
+  | "metaKey"
+  | "altKey"
+>;
 
 /**
  * Wheel forwarder for any UI sitting above Excalidraw with
@@ -7,7 +22,7 @@ import type { WheelEvent as ReactWheelEvent } from "react";
  * overlay. Re-dispatch the wheel event on Excalidraw's own canvas so
  * scrolling continues to move the scene.
  */
-export function forwardWheelToExcalidrawCanvas(e: ReactWheelEvent<HTMLElement>) {
+export function forwardWheelToExcalidrawCanvas(e: WheelLike) {
   const canvas = document.querySelector<HTMLElement>(
     ".excalidraw .interactive, .excalidraw canvas",
   );
