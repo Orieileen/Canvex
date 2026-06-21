@@ -91,6 +91,52 @@ export interface CanvasAngleJob {
   results?: CanvasImageEditResult[];
 }
 
+/** 素材库 (GET /api/v1/canvas/media-library/) —— 跨全部画布的已生成素材。
+ *  url 为相对 `/media/...` (图片) 或 provider 外链 (视频), 展示前用 absoluteMediaUrl。
+ *  scene_id / scene_title = 所属画布, 前端按它分文件夹 (scene_title 可能为空)。 */
+export interface CanvasMediaImage {
+  asset_id: string;
+  url: string;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+  scene_id: string;
+  scene_title: string;
+}
+
+export interface CanvasMediaVideo {
+  job_id: string;
+  url: string;
+  thumbnail_url: string;
+  created_at: string;
+  scene_id: string;
+  scene_title: string;
+}
+
+/** 一个文件夹 = 一个有过生成的画布。计数是后端精确聚合 (不靠已加载数组长度推)。
+ *  cover_url 可能为空 → 前端用文件夹图标占位。 */
+export interface CanvasMediaFolder {
+  scene_id: string;
+  scene_title: string;
+  image_count: number;
+  video_count: number;
+  cover_url: string;
+  latest_at: string;
+}
+
+export interface CanvasMediaFolderList {
+  folders: CanvasMediaFolder[];
+}
+
+/** 文件夹内某一类型 (images / videos) 的一页, offset 分页。 */
+export interface CanvasMediaFolderPage<T> {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+}
+
 /** GET /api/v1/canvas/skills/  返当前 agent 加载的所有 skill.
  *
  * 用于 ChatOverlay 的 SkillSelector popover — 用户能看到 + 勾选本次

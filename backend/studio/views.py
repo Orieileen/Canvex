@@ -1,7 +1,9 @@
 import json
 import logging
+from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db.models import Count, Max
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import parsers, permissions, status, viewsets
@@ -12,7 +14,15 @@ from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
-from .models import AngleJob, ChatMessage, ImageEditJob, Scene, VideoJob
+from .models import (
+    AngleJob,
+    AngleResult,
+    ChatMessage,
+    ImageEditJob,
+    ImageEditResult,
+    Scene,
+    VideoJob,
+)
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
 from .serializers import (
     AngleJobCreateSerializer,
@@ -23,11 +33,15 @@ from .serializers import (
     ImageEditJobCreateSerializer,
     ImageEditJobSerializer,
     ImageEditResultSerializer,
+    MediaLibraryFolderSerializer,
+    MediaLibraryImageSerializer,
+    MediaLibraryVideoSerializer,
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
     VideoJobCreateSerializer,
     VideoJobSerializer,
+    result_asset_url,
 )
 from .services.agent.builder import (
     CanvasAgentInvocationError,
@@ -423,8 +437,9 @@ class SceneSplitView(APIView):
         scene, _ = get_scene_and_org(request.user, scene_id)
         # Plan B: subject region (box → coordinates) for the split prompts; "" → fallback.
         region_clause = (request.data.get("region") or "").strip()
+        resolution = (request.data.get("resolution") or "").strip()
         background, cutout = create_split_jobs(
-            scene=scene, image_file=image_file, region_clause=region_clause,
+            scene=scene, image_file=image_file, region_clause=region_clause, resolution=resolution,
         )
         # Lazy import: tasks.py → image_client 顶层可能有 settings 未就绪的副作用.
         # bg leg → canvas (gevent inpaint, 单 task). cutout leg → stage 1 (LLM 白底,
@@ -662,4 +677,196 @@ class SceneAngleJobListView(ListAPIView):
         return (
             filter_canvas_for_user(AngleJob.objects.filter(scene=scene), self.request.user)
             .order_by("-created_at")[:limit]
+        )
+
+
+# ---------------------------------------------------------------------------
+# 素材库 (跨全部画布的已生成素材, 按画布分文件夹 + 文件夹内分页)
+# ---------------------------------------------------------------------------
+
+DEFAULT_FOLDER_ITEMS_LIMIT = 60
+MAX_FOLDER_ITEMS_LIMIT = 200
+
+
+def _parse_offset_limit(request):
+    """文件夹内分页参数: limit 复用 _parse_limit 的 clamp, offset 取非负整数 (默认 0)。"""
+    limit = _parse_limit(
+        request, default=DEFAULT_FOLDER_ITEMS_LIMIT, maximum=MAX_FOLDER_ITEMS_LIMIT
+    )
+    try:
+        offset = int(request.query_params.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return max(0, offset), limit
+
+
+def _media_cover_map(scene_ids):
+    """scene_id → 封面 url。优先该画布最新一张图(相对 /media, 前端补 base),
+    无图回落最新视频缩略图(provider 外链)。
+
+    用 Postgres `DISTINCT ON (scene)` 一次取每画布最新一行 —— 精确且有界, 不像
+    "扫最新 N 行靠 cap 兜底" 会漏掉旧画布。两类图各取每画布最新, 再取较新者。
+    """
+    covers = {}
+    chosen_ts = {}  # scene_id → 已选图封面的时间, 用于在 image-edit / angle 间取较新
+    for model in (ImageEditResult, AngleResult):
+        rows = (
+            model.objects.filter(job__scene_id__in=scene_ids)
+            .order_by("job__scene_id", "-asset__created_at", "-asset__id")
+            .distinct("job__scene_id")
+            .select_related("asset", "job")
+        )
+        for r in rows:
+            sid = r.job.scene_id
+            ts = r.asset.created_at
+            if sid not in chosen_ts or ts > chosen_ts[sid]:
+                chosen_ts[sid] = ts
+                covers[sid] = result_asset_url(r)
+    missing = [sid for sid in scene_ids if sid not in covers]
+    if missing:
+        vids = (
+            VideoJob.objects.filter(
+                scene_id__in=missing, status=VideoJob.Status.SUCCEEDED
+            )
+            .exclude(result_url="")
+            .order_by("scene_id", "-created_at", "-id")
+            .distinct("scene_id")
+        )
+        for v in vids:
+            covers[v.scene_id] = v.thumbnail_url or ""
+    return covers
+
+
+class MediaLibraryFoldersView(APIView):
+    """GET /media-library/folders/  每个有过生成的画布一行 (= 一个文件夹)。
+
+    单工作区 (Canvex): 全局可见, 不按 scene/user 过滤。每行带 *精确* 的 image_count /
+    video_count + 封面 + 最新时间, 按最新时间倒序。文件夹列表本身不分页 (画布数量级
+    小); 文件夹内的素材才分页 (见 MediaLibraryFolderItemsView), 这样大画布也不会被
+    静默截断、计数永远准确。
+
+    计数用三条独立的 GROUP BY 查询在 Python 里归并 —— 不能在单个 Scene.annotate 里
+    同时 Count(image_edit_jobs) + Count(angle_jobs), 两个 JOIN 会相乘把两个计数都灌大。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        folders = {}  # scene_id → {image_count, video_count, latest_at}
+
+        def bump(sid, *, images=0, videos=0, latest=None):
+            f = folders.setdefault(
+                sid, {"image_count": 0, "video_count": 0, "latest_at": None}
+            )
+            f["image_count"] += images
+            f["video_count"] += videos
+            if latest and (f["latest_at"] is None or latest > f["latest_at"]):
+                f["latest_at"] = latest
+
+        for row in ImageEditResult.objects.values("job__scene_id").annotate(
+            n=Count("id"), latest=Max("asset__created_at")
+        ):
+            bump(row["job__scene_id"], images=row["n"], latest=row["latest"])
+        for row in AngleResult.objects.values("job__scene_id").annotate(
+            n=Count("id"), latest=Max("asset__created_at")
+        ):
+            bump(row["job__scene_id"], images=row["n"], latest=row["latest"])
+        for row in (
+            VideoJob.objects.filter(status=VideoJob.Status.SUCCEEDED)
+            .exclude(result_url="")
+            .values("scene_id")
+            .annotate(n=Count("id"), latest=Max("created_at"))
+        ):
+            bump(row["scene_id"], videos=row["n"], latest=row["latest"])
+
+        if not folders:
+            return Response({"folders": []})
+
+        scene_ids = list(folders.keys())
+        titles = dict(Scene.objects.filter(id__in=scene_ids).values_list("id", "title"))
+        covers = _media_cover_map(scene_ids)
+        rows = [
+            {
+                "scene_id": sid,
+                "scene_title": titles.get(sid, ""),
+                "image_count": f["image_count"],
+                "video_count": f["video_count"],
+                "cover_url": covers.get(sid, ""),
+                "latest_at": f["latest_at"],
+            }
+            for sid, f in folders.items()
+        ]
+        rows.sort(key=lambda r: r["latest_at"], reverse=True)
+        return Response(
+            {"folders": MediaLibraryFolderSerializer(rows, many=True).data}
+        )
+
+
+class MediaLibraryFolderItemsView(APIView):
+    """GET /media-library/folders/<scene_id>/items/?kind=images|videos&offset=&limit=
+
+    一个画布、一种类型的一页素材 (最新在前) + has_more。前端 Images / Videos 两段
+    各用独立 offset 流 + "Load more", 互不挤占 —— 这才能让大文件夹完整浏览。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, scene_id):
+        scene = _get_scene_for_user(request.user, scene_id)
+        kind = request.query_params.get("kind", "images")
+        if kind not in ("images", "videos"):
+            raise ValidationError({"kind": ["Must be 'images' or 'videos'."]})
+        offset, limit = _parse_offset_limit(request)
+        end = offset + limit
+
+        if kind == "images":
+            # images 跨两表 (ImageEditResult + AngleResult)。要按全局最新分页又不漏,
+            # 必须各取最新 end+1 条再归并切 [offset:end] —— 不能各自切 [offset:end]
+            # 再合 (某表第 offset 之后、但全局更新的项会被另一表挤掉 = 静默丢失)。
+            # 各表取到 ≥end 条就保证全局最新 end 条全在并集里, 故合并后切片精确。
+            #
+            # 排序键带 asset.id 兜底 (DB + Python 都按 (created_at, id) 降序): 同一
+            # 时间戳 (multi-image job 一个 tight loop 里 auto_now_add 会撞微秒) 没有
+            # 唯一次序的话, 跨请求两页会重排 → 边界项要么重复 (前端去重能吸) 要么
+            # *永久丢失* (后端任何页都不返)。UUID 在 PG 与 Python 都按大端整数序, 一致。
+            imgs = (
+                ImageEditResult.objects.filter(job__scene=scene)
+                .select_related("asset", "job__scene")
+                .order_by("-asset__created_at", "-asset__id")[: end + 1]
+            )
+            angs = (
+                AngleResult.objects.filter(job__scene=scene)
+                .select_related("asset", "job__scene")
+                .order_by("-asset__created_at", "-asset__id")[: end + 1]
+            )
+            page = sorted(
+                chain(imgs, angs),
+                key=lambda r: (r.asset.created_at, r.asset.id),
+                reverse=True,
+            )[offset:end]
+            total = (
+                ImageEditResult.objects.filter(job__scene=scene).count()
+                + AngleResult.objects.filter(job__scene=scene).count()
+            )
+            data = MediaLibraryImageSerializer(page, many=True).data
+        else:
+            qs = (
+                VideoJob.objects.filter(
+                    scene=scene, status=VideoJob.Status.SUCCEEDED
+                )
+                .exclude(result_url="")
+                .select_related("scene")
+                .order_by("-created_at", "-id")
+            )
+            total = qs.count()
+            data = MediaLibraryVideoSerializer(qs[offset:end], many=True).data
+
+        return Response(
+            {
+                "items": data,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": end < total,
+            }
         )

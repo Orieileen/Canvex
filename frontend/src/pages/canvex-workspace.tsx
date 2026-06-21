@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { History, Loader2, Map as MapIcon } from "lucide-react";
 
@@ -8,7 +8,8 @@ import { Mockup3dOverlay } from "@/components/canvas/Mockup3dOverlay";
 import { CanvasMeasureOverlay } from "@/components/canvas/CanvasMeasureOverlay";
 import { CanvasImagePlacementOverlay } from "@/components/canvas/CanvasImagePlacementOverlay";
 import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOverlay";
-import { CanvasSidebar } from "@/components/canvas/CanvasSidebar";
+import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
+import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
 import { canvasService, waitForCanvasJob } from "@/services/canvas.service";
@@ -41,7 +42,14 @@ import {
 } from "@/lib/canvas-scene-files";
 import { skillSlugFromToolCall, toolArgAsNonNegInt, toolArgAsString } from "@/lib/canvas-skill-events";
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
-import type { CanvasScene, CanvasSceneData, CanvasSkill, ChatAttachment } from "@/types/canvex";
+import type {
+  CanvasMediaImage,
+  CanvasMediaVideo,
+  CanvasScene,
+  CanvasSceneData,
+  CanvasSkill,
+  ChatAttachment,
+} from "@/types/canvex";
 
 import "@excalidraw/excalidraw/index.css";
 import { Excalidraw } from "@excalidraw/excalidraw";
@@ -225,6 +233,21 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const activeSceneId = sceneId;
 
   const [scene, setScene] = useState<CanvasScene | null>(null);
+  // Stable initialData reference. The inline buildInitialData(scene.data) below
+  // ran on EVERY render (setExcalidrawTick bumps ~60x/s during any interaction),
+  // handing Excalidraw a fresh object each time; re-applying it left the loaded
+  // scene non-interactive (selectable but not draggable) until the first local
+  // edit committed it — drawing any shape "unstuck" everything.
+  //
+  // Keyed on scene.id (not the scene object) to mirror Excalidraw's own
+  // `key={scene.id}` remount — initialData is consumed once per scene, so a
+  // future post-load setScene with the same id can't churn this reference and
+  // re-break interactivity.
+  const initialData = useMemo(
+    () => (scene ? buildInitialData(scene.data) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- per-scene-id mount-only data
+    [scene?.id],
+  );
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -317,6 +340,25 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     reset: resetPinning,
     resetPackRow,
   } = pinning;
+
+  // 素材库面板挂在这里 (而非外层 CanvasSidebar 所在组件) —— 插入要用本组件的
+  // pinImage/pinVideo + 当前 sceneId。侧栏按钮发 window 事件, 这里接住打开。
+  const [mediaLibraryOpen, setMediaLibraryOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setMediaLibraryOpen(true);
+    window.addEventListener(CANVAS_OPEN_MEDIA_LIBRARY_EVENT, open);
+    return () => window.removeEventListener(CANVAS_OPEN_MEDIA_LIBRARY_EVENT, open);
+  }, []);
+  // 库里的 url 跟生成结果同形 (图片相对 /media, 视频 provider 外链), 原样交给
+  // pinImage/pinVideo —— 内部 fetchAsBlob 自己补 base / 透传; dedupKey 用 id 防重复 pin。
+  const handleInsertLibraryImage = useCallback(
+    (item: CanvasMediaImage) => pinImage({ url: item.url, dedupKey: item.asset_id }),
+    [pinImage],
+  );
+  const handleInsertLibraryVideo = useCallback(
+    (item: CanvasMediaVideo) => pinVideo({ videoUrl: item.url, dedupKey: item.job_id }),
+    [pinVideo],
+  );
 
   const { selection, update: updateSelection } = useCanvasSelection();
   const { previewUrls } = useSelectionPreview(selection, excalidrawApiRef);
@@ -942,7 +984,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     <div ref={canvasPaneRef} data-canvas-pane className="relative min-h-0 flex-1 overflow-hidden">
       <Excalidraw
         key={scene.id}
-        initialData={buildInitialData(scene.data)}
+        initialData={initialData}
         excalidrawAPI={handleExcalidrawApi}
         onChange={handleExcalidrawChange}
         // Seeds object snapping for new/empty scenes (see FORCE_OBJECTS_SNAP).
@@ -1075,8 +1117,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           split={{
             isSubmitting: splitEdit.isSubmitting,
             error: splitEdit.error,
-            onSubmit: () =>
-              void splitEdit.submit({ selection }),
+            onSubmit: ({ resolution }) =>
+              void splitEdit.submit({ selection, resolution }),
             onDismissError: splitEdit.dismissError,
           }}
           merge={{
@@ -1139,6 +1181,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           onClose={() => setAdjustOpen(false)}
         />
       )}
+      <MediaLibrary
+        open={mediaLibraryOpen}
+        onOpenChange={setMediaLibraryOpen}
+        onInsertImage={handleInsertLibraryImage}
+        onInsertVideo={handleInsertLibraryVideo}
+      />
     </div>
   );
 }

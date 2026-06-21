@@ -26,6 +26,7 @@ import { getSelectionElements, type CanvasSelection } from "@/hooks/use-canvas-s
 import { toolArgAsNonNegInt } from "@/lib/canvas-skill-events";
 import { getElementBounds, type ElementBounds } from "@/lib/excalidraw-bounds";
 import { getAiChatImageUrl } from "@/lib/excalidraw-custom-data";
+import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -100,18 +101,13 @@ const PACK_ROW_SLOTS = 7;
 const PLACEHOLDER_TEXT_COLOR = "#64748b";
 const PLACEHOLDER_ERROR_TEXT_COLOR = "#b91c1c";
 
-// 后端结果图 URL 是根相对 `/media/...`(serializer 故意返相对)。前端 api 直连
-// VITE_API_URL、没有 media proxy,所以根相对必须补上 api base,否则会按前端源
-// (:5173)解析成 404。data: / blob: / http(s): 原样不动。
-const MEDIA_API_BASE =
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? "http://localhost:8000" : "");
-
 /** Shared by the pinning flow (dataURL for Excalidraw addFiles) and the
  *  image-edit flow (File for multipart upload). Splits the fetch step so
- *  downstream callers pick the right container shape without a double fetch. */
+ *  downstream callers pick the right container shape without a double fetch.
+ *  根相对 `/media/...` 经 absoluteMediaUrl 补 api base (前端无 media proxy,
+ *  否则按前端源 :5173 解析成 404); data:/blob:/http(s): 原样不动。 */
 export async function fetchAsBlob(url: string): Promise<Blob> {
-  const target = url.startsWith("/") ? `${MEDIA_API_BASE}${url}` : url;
+  const target = absoluteMediaUrl(url);
   const resp = await fetch(target);
   if (!resp.ok) throw new Error(`fetch ${target} failed: HTTP ${resp.status}`);
   return resp.blob();
@@ -500,16 +496,25 @@ export const PLACEHOLDER_STATUS_FAILED = "failed";
 export const CANVAS_JOB_ID_KEY = "canvasJobId";
 export const CANVAS_JOB_KIND_KEY = "canvasJobKind";
 
-/** True if `el` is a placeholder rect/text in the "pending" state. Used by
- *  the resume scan on scene reload. */
-export function isPendingPlaceholder(el: ExcalidrawElement): boolean {
+/** True if `el` is a placeholder rect/text in the given lifecycle status. */
+function isPlaceholderInStatus(el: ExcalidrawElement, status: string): boolean {
   const cd = el.customData;
   if (!cd) return false;
   return (
     typeof cd.aiChatType === "string"
     && cd.aiChatType.endsWith(PLACEHOLDER_TYPE_SUFFIX)
-    && cd.aiChatStatus === PLACEHOLDER_STATUS_PENDING
+    && cd.aiChatStatus === status
   );
+}
+
+/** Pending placeholder — resume scan on scene reload + the generating card. */
+export function isPendingPlaceholder(el: ExcalidrawElement): boolean {
+  return isPlaceholderInStatus(el, PLACEHOLDER_STATUS_PENDING);
+}
+
+/** Failed (tombstone) placeholder — drives the failure card in CanvasGeneratingOverlay. */
+export function isFailedPlaceholder(el: ExcalidrawElement): boolean {
+  return isPlaceholderInStatus(el, PLACEHOLDER_STATUS_FAILED);
 }
 
 /** Extract the `{ jobId, kind }` tag stamped by `tagPlaceholderWithJob`, or

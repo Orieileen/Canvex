@@ -1,4 +1,5 @@
 import { request } from "@/utils/request";
+import { MEDIA_API_BASE } from "@/lib/canvas-media-url";
 import { createResource } from "./createResource";
 import type {
   CanvasAngleJob,
@@ -6,6 +7,10 @@ import type {
   CanvasChatStreamEvent,
   CanvasImageEditJob,
   CanvasJobStatus,
+  CanvasMediaFolderList,
+  CanvasMediaFolderPage,
+  CanvasMediaImage,
+  CanvasMediaVideo,
   CanvasScene,
   CanvasSceneListItem,
   CanvasSkill,
@@ -13,17 +18,16 @@ import type {
   ChatAttachment,
 } from "@/types/canvex";
 
-// NDJSON 流式 (fetch) 的 base —— 与 utils/request.tsx 同款解析:
-// 优先 VITE_API_URL；dev 模式下默认指向本地后端；否则相对路径 (同域)。
-const API_URL =
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? "http://localhost:8000" : "");
+// NDJSON 流式 (fetch) 的 base —— 复用 canvas-media-url 的同一 api base
+// (VITE_API_URL，dev 回落本地后端，否则同域相对)，避免各处各写一份。
+const API_URL = MEDIA_API_BASE;
 
 const SCENES = "/api/v1/canvas/scenes/";
 const IMAGE_EDIT_JOBS = "/api/v1/canvas/image-edit-jobs/";
 const VIDEO_JOBS = "/api/v1/canvas/video-jobs/";
 const ANGLE_JOBS = "/api/v1/canvas/angle-jobs/";
 const SKILLS = "/api/v1/canvas/skills/";
+const MEDIA_LIBRARY_FOLDERS = "/api/v1/canvas/media-library/folders/";
 
 const TERMINAL_JOB_STATUSES: readonly CanvasJobStatus[] = ["SUCCEEDED", "FAILED"];
 
@@ -275,6 +279,22 @@ export const canvasService = {
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜
   listSkills: () => request.get<CanvasSkill[]>(SKILLS),
 
+  // ── Media library (按画布分文件夹 + 文件夹内分页) ──────────────────────────
+  // 文件夹列表: 每个有过生成的画布一行, 精确计数 + 封面 (一次拉全, 不分页)。
+  getMediaFolders: () =>
+    request.get<CanvasMediaFolderList>(MEDIA_LIBRARY_FOLDERS),
+  // 文件夹内某一类型的一页 (offset 分页, 各类型独立流)。
+  getMediaFolderItems: (
+    sceneId: string,
+    kind: "images" | "videos",
+    offset: number,
+    limit?: number,
+  ) =>
+    request.get<CanvasMediaFolderPage<CanvasMediaImage | CanvasMediaVideo>>(
+      `${MEDIA_LIBRARY_FOLDERS}${sceneId}/items/`,
+      { params: { kind, offset, ...(limit ? { limit } : {}) } },
+    ),
+
   // ── Send-to-chat attachment upload ────────────────────────────────────────
   // 用户拖入 Excalidraw 的本地图只有 blob:/data: URL, agent 后端 + provider
   // 都拿不到. Send-to-chat 时先 multipart 上传到 qiniu → 拿 CDN URL → 当作
@@ -319,12 +339,13 @@ export const canvasService = {
   // 后端原子 split: 一次 POST 创两条 leg (bg inpaint + cutout subject), 互填
   // split_partner. Canvex 免费无钱包, 两条 leg 都 0 计费; 任一失败时 backend
   // task 收口逻辑保持. 不再走 createImageEdit 两次 (那样没 partner FK)。
-  createSplit: (sceneId: string, image: File, region = "") => {
+  createSplit: (sceneId: string, image: File, region = "", resolution = "") => {
     const form = new FormData();
     form.append("image", image);
     // Plan B: subject region (box → coordinates) folded into the split prompts;
     // empty when nothing was drawn → backend falls back to "most prominent subject".
     if (region) form.append("region", region);
+    if (resolution) form.append("resolution", resolution);
     return request.post<{
       background: { job_id: string; status: string };
       cutout: { job_id: string; status: string };

@@ -69,7 +69,7 @@ def create_image_edit_job(*, scene, image_file=None, image_files=None, validated
     return job
 
 
-def create_split_jobs(*, scene, image_file, region_clause: str = ""):
+def create_split_jobs(*, scene, image_file, region_clause: str = "", resolution: str = ""):
     """Create atomic split pair: 1 background inpaint job + 1 cutout subject job.
 
     两条 leg 互填 split_partner 形成 pair, 前端靠它把两腿配对显示。Canvex 无计费:
@@ -89,6 +89,10 @@ def create_split_jobs(*, scene, image_file, region_clause: str = ""):
     输出尺寸用 size=auto, apimart 服务端按源图比例匹配 (两 leg 共享一致比例).
     """
     saved_path = save_canvas_source_image(image_file)
+    # 画质档位(1K/2K/4K),两腿共用;非法/缺省落 2K。
+    tier = (resolution or "").strip().upper()
+    if tier not in {r.value for r in ImageEditJob.Resolution}:
+        tier = ImageEditJob.Resolution.TWO_K
     bg_prompt = (
         f"{SPLIT_INPAINT_PROMPT}\n\n{region_clause}" if region_clause else SPLIT_INPAINT_PROMPT
     )
@@ -99,6 +103,7 @@ def create_split_jobs(*, scene, image_file, region_clause: str = ""):
             scene=scene,
             prompt=bg_prompt,
             size=_AUTO_SIZE,
+            resolution=tier,
             num_images=1,
             is_cutout=False,
             source_image=saved_path,
@@ -110,6 +115,7 @@ def create_split_jobs(*, scene, image_file, region_clause: str = ""):
             scene=scene,
             prompt=region_clause,
             size=_AUTO_SIZE,
+            resolution=tier,
             num_images=1,
             is_cutout=True,
             source_image=saved_path,

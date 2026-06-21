@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Frame,
+  Images,
   Loader2,
   MoreVertical,
   PanelLeftClose,
@@ -48,6 +49,11 @@ export interface CanvasSceneRenamedDetail {
   id: string;
   title: string;
 }
+
+/** 全局事件: 侧栏「素材库」按钮 dispatch, 由 CanvasArea 监听打开面板 (那里才有
+ *  pinImage + 当前 sceneId)。侧栏在外层组件、面板在内层, 用 window 事件跨过去
+ *  (跟 CANVAS_SCENE_RENAMED_EVENT 同款桥接, 只是方向反过来)。 */
+export const CANVAS_OPEN_MEDIA_LIBRARY_EVENT = "canvas:open-media-library";
 
 // 侧栏折叠态持久化 (localStorage), 跨刷新/重开浏览器保留用户选择。
 // 取值 "1" = 折叠, 其他 (含缺失) = 展开。
@@ -422,6 +428,36 @@ export function CanvasSidebar({
           </ul>
         )}
       </nav>
+
+      {/* 底部「素材库」入口: 发全局事件, CanvasArea 接住打开面板。展开=带文字的
+          ghost 按钮; 折叠=方形图标 + tooltip, 与 scene 列表项视觉对齐。
+          无激活画布时禁用 —— 面板挂在 CanvasArea(只在有激活画布时挂载), 此时点了
+          也没人接事件; 且无目标画布可插入。禁用比静默无响应诚实。 */}
+      <div className="mt-2 border-t border-border/60 pt-3">
+        {collapsed ? (
+          <button
+            type="button"
+            disabled={!activeSceneId}
+            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
+            className="mx-auto flex size-9 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember disabled:pointer-events-none disabled:opacity-40"
+            aria-label="Media library"
+            title={activeSceneId ? "Media library" : "Select a canvas first"}
+          >
+            <Images className="size-4" strokeWidth={2} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={!activeSceneId}
+            onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-sienna transition-colors hover:bg-card/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            title={activeSceneId ? undefined : "Select a canvas first"}
+          >
+            <Images className="size-4 shrink-0" strokeWidth={2} />
+            Media library
+          </button>
+        )}
+      </div>
 
       <Dialog
         open={createOpen}

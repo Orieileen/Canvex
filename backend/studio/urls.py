@@ -4,6 +4,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AngleJobRetrieveView,
     ImageEditJobRetrieveView,
+    MediaLibraryFolderItemsView,
+    MediaLibraryFoldersView,
     SceneActiveJobsView,
     SceneAngleGenerateView,
     SceneAngleJobListView,
@@ -23,6 +25,16 @@ router = DefaultRouter()
 router.register(r"scenes", SceneViewSet, basename="canvas-scene")
 
 urlpatterns = router.urls + [
+    path(
+        "media-library/folders/",
+        MediaLibraryFoldersView.as_view(),
+        name="canvas-media-folders",
+    ),
+    path(
+        "media-library/folders/<uuid:scene_id>/items/",
+        MediaLibraryFolderItemsView.as_view(),
+        name="canvas-media-folder-items",
+    ),
     path(
         "scenes/<uuid:scene_id>/active-jobs/",
         SceneActiveJobsView.as_view(),

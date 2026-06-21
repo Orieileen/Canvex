@@ -9,7 +9,7 @@ import {
   type CanvasEditPinning,
 } from "@/hooks/use-canvas-pinning";
 import type { CanvasSelection } from "@/hooks/use-canvas-selection";
-import { imageEditSizeSource } from "@/hooks/use-image-edit";
+import { imageEditSizeSource, type ImageEditResolution } from "@/hooks/use-image-edit";
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { subjectRegionClause } from "@/lib/canvas-spatial-prompt";
 import type { CanvasImageEditJob } from "@/types/canvex";
@@ -34,6 +34,7 @@ import type { CanvasImageEditJob } from "@/types/canvex";
 
 export interface SubmitSplitParams {
   selection: CanvasSelection;
+  resolution: ImageEditResolution;
 }
 
 export function useSplit({
@@ -57,7 +58,7 @@ export function useSplit({
   const inFlightRef = useRef(false);
 
   const submit = useCallback(
-    async ({ selection }: SubmitSplitParams) => {
+    async ({ selection, resolution }: SubmitSplitParams) => {
       if (!sceneId || !excalidrawApiRef.current) return;
       // UI disables Split tab for multi-image; type-level narrow for
       // selectionToSourceFile's SingleSourceSelection signature.
@@ -81,7 +82,7 @@ export function useSplit({
       // 主体 overlay 复用此 geometry (createPlaceholderOverlay)。
       const backgroundPh = pinning.createPlaceholder(
         "image", "Splitting background…", narrowed.bounds, undefined,
-        imageEditOutputSize("auto", undefined, imageEditSizeSource(narrowed)),
+        imageEditOutputSize("auto", resolution, imageEditSizeSource(narrowed)),
       );
       const subjectPh = backgroundPh
         ? pinning.createPlaceholderOverlay(backgroundPh, "Splitting subject…")
@@ -109,7 +110,7 @@ export function useSplit({
           shapes: narrowed.kind === "image-with-shapes" ? narrowed.shapes : [],
         });
         // 一次 POST 起 atomic pair, backend 自动处理双 leg 的协调 + 任一失败时收口.
-        ({ data: enqueued } = await canvasService.createSplit(sceneId, file, region));
+        ({ data: enqueued } = await canvasService.createSplit(sceneId, file, region, resolution));
         // 立刻 tag 两个 placeholder 带各自的 job_id —— 关页+重进时 resume hook
         // 按 job_id 配对 (cutout rembg 秒级完成, 不 tag 的话会被当 tagless leftover
         // 标 "submission lost").

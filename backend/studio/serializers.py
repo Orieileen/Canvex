@@ -130,12 +130,23 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
         return data
 
 
+def result_asset_url(obj) -> str:
+    """结果行 → 其 asset 文件的相对 /media URL; 缺文件 / asset 为 None → ""。
+
+    返相对 /media URL 而非 `request.build_absolute_uri`: Vite proxy changeOrigin
+    把 Host 改成 docker 内网 `web:8000`, 浏览器解析不了 (前端自己补 base)。若
+    MEDIA_URL 指 S3/CDN (绝对 URL), FieldFile.url 原样就是绝对, 透传即可。
+    ValueError: FieldFile without a saved file; AttributeError: asset is None。
+    """
+    try:
+        return obj.asset.file.url
+    except (ValueError, AttributeError):
+        return ""
+
+
 class _AssetResultSerializerBase(serializers.ModelSerializer):
     """共享的 canvas 结果行序列化形状 (order + asset_id + url).
 
-    返相对 /media URL 而非 `request.build_absolute_uri`: Vite proxy changeOrigin
-    把 Host 改成 docker 内网 `web:8000`, 浏览器解析不了. 若 MEDIA_URL 指 S3/CDN
-    (绝对 URL), FieldFile.url 原样就是绝对, 透传即可.
     具体子类只要设 `Meta.model`; 结果模型必须有 (order, asset) 两个字段.
     asset 指向 studio.models.DataAsset (Canvex 自有素材库)。
     """
@@ -148,11 +159,7 @@ class _AssetResultSerializerBase(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_url(self, obj):
-        # ValueError: FieldFile without a saved file; AttributeError: asset is None
-        try:
-            return obj.asset.file.url
-        except (ValueError, AttributeError):
-            return ""
+        return result_asset_url(obj)
 
 
 class ImageEditResultSerializer(_AssetResultSerializerBase):
@@ -225,3 +232,59 @@ class AngleJobCreateSerializer(serializers.Serializer):
 class AngleResultSerializer(_AssetResultSerializerBase):
     class Meta(_AssetResultSerializerBase.Meta):
         model = AngleResult
+
+
+# ---------------------------------------------------------------------------
+# Media library (跨全部画布的已生成素材)
+# ---------------------------------------------------------------------------
+
+class MediaLibraryImageSerializer(serializers.Serializer):
+    """一条已生成的图片素材 —— 输入是 ImageEditResult / AngleResult 结果行
+    (两者都有 `.asset` 和 `.job.scene`, 同一个 serializer 通吃)。
+
+    带上所属画布 (scene_id / scene_title), 供前端按画布名分文件夹。
+    URL 同 `_AssetResultSerializerBase`: 返相对 /media (前端补 base), 缺文件返 ""。
+    `asset_id` 当 dedupKey —— 前端 pinImage 用它防同图重复 pin。
+    """
+
+    asset_id = serializers.UUIDField(source="asset.id", read_only=True)
+    url = serializers.SerializerMethodField()
+    # DataAsset.width/height 是 null=True (无 PIL 抽尺寸时为空); 显式 allow_null
+    # 对齐前端 `number | null` 契约。
+    width = serializers.IntegerField(source="asset.width", read_only=True, allow_null=True)
+    height = serializers.IntegerField(source="asset.height", read_only=True, allow_null=True)
+    created_at = serializers.DateTimeField(source="asset.created_at", read_only=True)
+    scene_id = serializers.UUIDField(source="job.scene.id", read_only=True)
+    scene_title = serializers.CharField(source="job.scene.title", read_only=True)
+
+    def get_url(self, obj):
+        return result_asset_url(obj)
+
+
+class MediaLibraryVideoSerializer(serializers.ModelSerializer):
+    """一条已生成的视频 (VideoJob)。result_url 是 provider 外链 (绝对 http),
+    前端直接当 <video>/缩略图 src 用; thumbnail_url 可能为空。
+    同样带所属画布供分文件夹。"""
+
+    job_id = serializers.UUIDField(source="id", read_only=True)
+    url = serializers.CharField(source="result_url", read_only=True)
+    scene_id = serializers.UUIDField(source="scene.id", read_only=True)
+    scene_title = serializers.CharField(source="scene.title", read_only=True)
+
+    class Meta:
+        model = VideoJob
+        fields = ("job_id", "url", "thumbnail_url", "created_at", "scene_id", "scene_title")
+        read_only_fields = fields
+
+
+class MediaLibraryFolderSerializer(serializers.Serializer):
+    """一个文件夹 = 一个有过生成的画布。输入是 view 拼好的 dict (非 model 实例),
+    带 *精确* 计数 + 封面 + 最新时间。cover_url: 图封面为相对 /media (前端补 base),
+    视频缩略图封面已是 provider 外链; 可能为 "" → 前端用文件夹图标占位。"""
+
+    scene_id = serializers.UUIDField(read_only=True)
+    scene_title = serializers.CharField(read_only=True, allow_blank=True)
+    image_count = serializers.IntegerField(read_only=True)
+    video_count = serializers.IntegerField(read_only=True)
+    cover_url = serializers.CharField(read_only=True, allow_blank=True)
+    latest_at = serializers.DateTimeField(read_only=True)

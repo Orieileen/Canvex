@@ -276,7 +276,7 @@ interface ImageEditBarProps {
   split: {
     isSubmitting: boolean;
     error: string | null;
-    onSubmit: () => void;
+    onSubmit: (params: { resolution: ImageEditResolution }) => void;
     onDismissError: () => void;
   };
   merge: {
@@ -933,19 +933,41 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
 
 interface SplitPanelProps {
   isSubmitting: boolean;
-  onSubmit: () => void;
+  onSubmit: (params: { resolution: ImageEditResolution }) => void;
 }
 
-/** Split 用固定 cutout + SPLIT_INPAINT_PROMPT 管线; 用户要 tweak 切回 Image tab. */
+/** Split = subject cutout + clean-bg inpaint (fixed pipeline); the only knob is
+ *  the resolution tier (1K/2K/4K). For other tweaks, switch to the Image tab. */
 function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
+  const [resolution, setResolution] = useState<ImageEditResolution>("2K");
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (isSubmitting) return;
+    onSubmit({ resolution });
+  }
   return (
-    <NoInputPanel
-      description={t("edit.splitDesc")}
-      label={t("edit.splitBtn")}
-      icon={<SplitSquareHorizontal className="size-4" strokeWidth={1.5} />}
-      isSubmitting={isSubmitting}
-      onSubmit={onSubmit}
-    />
+    <form onSubmit={handleSubmit} className={toolbarClass}>
+      <div className="flex-1 px-3 text-xs text-muted-foreground">{t("edit.splitDesc")}</div>
+      <Divider />
+      <select
+        value={resolution}
+        onChange={(e) => setResolution(e.target.value as ImageEditResolution)}
+        disabled={isSubmitting}
+        className={selectClass}
+      >
+        {IMAGE_EDIT_RESOLUTIONS.map((r) => (
+          <option key={r} value={r}>{r}</option>
+        ))}
+      </select>
+      <Divider />
+      <IconButton type="submit" disabled={isSubmitting} label={t("edit.splitBtn")} variant="primary">
+        {isSubmitting ? (
+          <Loader2 className="size-4 animate-spin" strokeWidth={1.5} />
+        ) : (
+          <SplitSquareHorizontal className="size-4" strokeWidth={1.5} />
+        )}
+      </IconButton>
+    </form>
   );
 }
 
