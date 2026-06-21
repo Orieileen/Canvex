@@ -100,12 +100,20 @@ const PACK_ROW_SLOTS = 7;
 const PLACEHOLDER_TEXT_COLOR = "#64748b";
 const PLACEHOLDER_ERROR_TEXT_COLOR = "#b91c1c";
 
+// 后端结果图 URL 是根相对 `/media/...`(serializer 故意返相对)。前端 api 直连
+// VITE_API_URL、没有 media proxy,所以根相对必须补上 api base,否则会按前端源
+// (:5173)解析成 404。data: / blob: / http(s): 原样不动。
+const MEDIA_API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://localhost:8000" : "");
+
 /** Shared by the pinning flow (dataURL for Excalidraw addFiles) and the
  *  image-edit flow (File for multipart upload). Splits the fetch step so
  *  downstream callers pick the right container shape without a double fetch. */
 export async function fetchAsBlob(url: string): Promise<Blob> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`fetch ${url} failed: HTTP ${resp.status}`);
+  const target = url.startsWith("/") ? `${MEDIA_API_BASE}${url}` : url;
+  const resp = await fetch(target);
+  if (!resp.ok) throw new Error(`fetch ${target} failed: HTTP ${resp.status}`);
   return resp.blob();
 }
 
@@ -164,6 +172,22 @@ export async function selectionToSourceFile(
   }
   const blob = await rasterizeSelection(selection, api);
   return new File([blob], "selection.png", { type: "image/png" });
+}
+
+/** Image-edit source ("plan B"): the ORIGINAL image bytes, never a shape-baked
+ *  composite. Arrows/shapes drawn over the image are conveyed to the model as
+ *  spatial text (`buildSpatialPrompt`) instead of being burned into the pixels,
+ *  so the edited result stays free of annotation marks. Single-source only;
+ *  multi-image still uses `selectionToSourceFiles`.
+ *
+ *  Distinct from `selectionToSourceFile` (which DOES rasterize shapes) because
+ *  that path is shared with Split, where the shape-baked composite is the
+ *  intended source — only image-edit wants the clean original. */
+export async function selectionToCleanSourceFile(
+  selection: SingleSourceSelection,
+  api: ExcalidrawImperativeAPI,
+): Promise<File> {
+  return imageElementToFile(selection.sourceUrl, selection.fileId, api);
 }
 
 /** Resolve a multi-image selection to an array of `File`s for the provider's
@@ -231,8 +255,9 @@ export async function selectionToRawImageFiles(
 
 /** Rasterize a selection into N preview blobs that mirror what the upload
  *  payload will look like:
- *  - single-image / image-with-shapes → 1 composite blob (same as the upload's
- *    single source File)
+ *  - single-image / image-with-shapes → 1 blob of the CLEAN image only (no
+ *    shape/arrow overlay), matching `selectionToCleanSourceFile`. Arrows show
+ *    up in the spatial-prompt tile instead, never burned into the source.
  *  - multi-image → N blobs, one per image (each containing the shapes that
  *    overlap that image; orphan shapes ignored, mirroring `selectionToSourceFiles`)
  *
@@ -244,7 +269,7 @@ export async function selectionToPreviewBlobs(
   api: ExcalidrawImperativeAPI,
 ): Promise<Blob[]> {
   if (selection.kind !== "multi-image") {
-    return [await rasterizeSelection(selection, api, { exportPadding: 8 })];
+    return [await rasterizeElements([selection.image], api, { exportPadding: 8 })];
   }
   const plan = attributeShapesPerImage(selection);
   return Promise.all(

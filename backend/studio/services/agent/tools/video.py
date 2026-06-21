@@ -33,6 +33,8 @@ from .common import (
     enqueue_on_commit,
     is_public_http_url,
     job_lifecycle,
+    our_media_relpath,
+    source_to_inline_uri,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,11 +67,6 @@ def run_video_job(job: VideoJob) -> None:
         # FAILED path (same shape as image.py client init).
         cfg = _require_config()
 
-        # 防 "纯文字兜底": reference image URL 不通时 provider 会静默走纯文生
-        # 视频, 跟原图无关. image.py 同款防御 — empty 列表是合法 (无 reference).
-        for url in (job.image_urls or []):
-            assert_source_url_reachable(url)
-
         task_id = _submit(job, cfg)
         job.task_id = task_id
         job.save(update_fields=["task_id", "updated_at"])
@@ -100,9 +97,10 @@ def enqueue_video_generation(
     from studio.tasks import canvas_video_job_task
 
     duration_clamped = max(1, min(60, int(duration)))
-    # SSRF 防护: 只留公网 http(s) URL; LLM tool call 被注入私网 IP 会被丢掉
+    # SSRF 防护: 留我们自己的 media(提交时读盘内联)+ 公网 http(s) URL;LLM tool
+    # call 被注入私网 IP 会被丢掉。
     raw_urls = [u for u in (reference_image_urls or []) if isinstance(u, str) and u.strip()]
-    urls = [u for u in raw_urls if is_public_http_url(u)]
+    urls = [u for u in raw_urls if our_media_relpath(u) is not None or is_public_http_url(u)]
     rejected = [u for u in raw_urls if u not in urls]
     if rejected:
         logger.warning("enqueue_video_generation: rejected non-public URLs: %s", rejected)
@@ -179,7 +177,13 @@ def _submit(job: VideoJob, cfg: _Config) -> str:
         "aspect_ratio": job.aspect_ratio or "16:9",
     }
     if job.image_urls:
-        body["image_urls"] = list(job.image_urls)
+        # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网
+        # URL 原样传 + 可达性预检(防 provider 拿不到 reference 时静默走纯文生视频)。
+        inlined = [source_to_inline_uri(u) for u in job.image_urls]
+        for u in inlined:
+            if u.startswith(("http://", "https://")):
+                assert_source_url_reachable(u)
+        body["image_urls"] = inlined
 
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",

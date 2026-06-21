@@ -25,7 +25,8 @@ export function imageEditOutputSize(
   resolution: string | undefined,
   source: { width: number; height: number },
 ): { width: number; height: number } {
-  const edge = (resolution ?? "").toUpperCase() === "4K" ? 4096 : 2048; // tier edge
+  const upper = (resolution ?? "").toUpperCase();
+  const edge = upper === "4K" ? 4096 : upper === "1K" ? 1024 : 2048; // tier edge
   const budget = edge * edge; // pixel-area budget, kept constant across aspects
 
   const aspect = parseAspect(size);

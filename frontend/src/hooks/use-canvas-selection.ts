@@ -15,7 +15,8 @@ import { getAiChatImageUrl } from "@/lib/excalidraw-custom-data";
  * 三种 mode 由 { images数量, 非text shape数量 } 决定; per-mode tab 启用矩阵由
  * ImageEditBar::computeSupportMatrix 拥有 (在那里改, 不在这里复述).
  *   - single-image:    1 image, 0 非text shape
- *   - image-with-shapes: 1 image, ≥1 非text shape (shapes 当编辑指令合成进源图)
+ *   - image-with-shapes: 1 image, ≥1 非text shape (Image 编辑: shapes/箭头经
+ *     buildSpatialPrompt 转成带坐标的区域指令, 源图保持干净; 不烧进源图)
  *   - multi-image:     ≥2 image (± shapes)
  *
  * Text elements 单独抽到 `texts` 字段, 不进 `shapes` —— 它们当 prompt input

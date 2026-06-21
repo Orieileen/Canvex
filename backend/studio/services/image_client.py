@@ -48,6 +48,12 @@ def _sniff_image_mime(content: bytes) -> str:
     return f"image/{fmt.lower()}" if fmt else "image/png"
 
 
+def bytes_to_data_uri(content: bytes) -> str:
+    """原始图片字节 → data:image/...;base64,...(MIME 按字节头嗅探)。
+    本地源图内联下发给 provider 时用 —— 免公网 URL / 隧道。"""
+    return f"data:{_sniff_image_mime(content)};base64,{base64.b64encode(content).decode('ascii')}"
+
+
 def _url_to_data_uri(url: str, session: requests.Session, timeout=_INLINE_DOWNLOAD_TIMEOUT) -> str:
     """Download an http(s) image URL and return a `data:image/...;base64,...` URI.
 
@@ -102,7 +108,10 @@ class ImageClient:
     watermark: bool | None = None
     # 把源图 URL 下载下来改成 base64 内联下发, 而不是把 URL 交给 provider 自己 fetch.
     # 火山 (Beijing) 跨境拉海外 CDN (qiniu 新加坡) 会 download timeout, 但后端能直连 →
-    # 后端下好再内联. 仅火山这类 fetch 不到源的 provider 开; apimart 收不了 base64, 别开.
+    # 后端下好再内联. 仅给"自己 fetch 不到远程源"的 provider (如火山) 开;能直接 fetch
+    # URL 的 (如 apimart) 不必开。注: 服务层 source_to_inline_uri 已把我们自己的 media
+    # 预先内联成 data URI(apimart / 火山 实测都吃 base64), 本开关只对仍是 http(s) 的
+    # 外部源生效。
     inline_image: bool = False
     # 自动重试 transient 5xx / 429 (tu-zi 一天偶尔抖一次). build_image_client 用
     # functools.cache 单例化 → 同 prefix 同进程一个 ImageClient → 一个 Session →
@@ -195,7 +204,7 @@ def build_image_client(prefix: str) -> ImageClient:
         {prefix}_RESPONSE_FORMAT    响应格式         (默认 "b64_json")
         {prefix}_QUALITY            质量参数         (可选)
         {prefix}_WATERMARK          是否打水印       (未设=不传; 火山默认 true 需显式 false)
-        {prefix}_INLINE_IMAGE       源图下载转 base64 (默认 false; 火山拉不到源时设 true, apimart 别开)
+        {prefix}_INLINE_IMAGE       外部源 URL 下载转 base64 (默认 false; 火山拉不到远程源时设 true)
         {prefix}_TIMEOUT            请求超时秒数     (默认 300)
     """
     base_url = env(f"{prefix}_BASE_URL") or env("OPENAI_BASE_URL")

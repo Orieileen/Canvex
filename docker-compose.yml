@@ -113,7 +113,6 @@ services:
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:28000}
       VITE_CANVEX_ASSET_PATH: ${VITE_CANVEX_ASSET_PATH:-/canvex-assets/}
-      VITE_WORKSPACE_KEY: ${VITE_WORKSPACE_KEY:-public}
     volumes:
       - ./frontend:/app
       - /app/node_modules

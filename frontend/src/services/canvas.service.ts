@@ -233,7 +233,7 @@ export interface ImageEditCreatePayload {
   prompt?: string;
   cutout?: boolean;
   size?: string;
-  resolution?: "2K" | "4K";
+  resolution?: "1K" | "2K" | "4K";
   n?: 1 | 2 | 4;
 }
 
@@ -319,9 +319,12 @@ export const canvasService = {
   // 后端原子 split: 一次 POST 创两条 leg (bg inpaint + cutout subject), 互填
   // split_partner. Canvex 免费无钱包, 两条 leg 都 0 计费; 任一失败时 backend
   // task 收口逻辑保持. 不再走 createImageEdit 两次 (那样没 partner FK)。
-  createSplit: (sceneId: string, image: File) => {
+  createSplit: (sceneId: string, image: File, region = "") => {
     const form = new FormData();
     form.append("image", image);
+    // Plan B: subject region (box → coordinates) folded into the split prompts;
+    // empty when nothing was drawn → backend falls back to "most prominent subject".
+    if (region) form.append("region", region);
     return request.post<{
       background: { job_id: string; status: string };
       cutout: { job_id: string; status: string };

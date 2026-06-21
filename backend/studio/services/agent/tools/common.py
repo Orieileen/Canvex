@@ -21,11 +21,12 @@ import socket
 import uuid
 from contextlib import contextmanager
 from typing import Iterable, Iterator, Sequence
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
 from PIL import Image
 
@@ -276,6 +277,77 @@ def absolute_media_url(media_url: str) -> str:
     # urljoin 需要 base 带 trailing slash 才能把它当目录拼接, 否则它会吃掉最后一段
     base = _public_media_base().rstrip("/") + "/"
     return urljoin(base, media_url.lstrip("/"))
+
+
+def our_media_relpath(url: str) -> str | None:
+    """If `url` points at our own media (served under `MEDIA_URL`), return the
+    storage-relative path; otherwise None.
+
+    Matches on the URL's *path* component, so both `/media/x.png` and an
+    absolute `http://localhost:28000/media/x.png` resolve to the same storage
+    key `x.png` — a dev/localhost URL the worker can't HTTP-fetch still maps to
+    a direct storage read. A remote CDN URL (MEDIA_URL points at S3/qiniu, or
+    the path has no `/media/` prefix) returns None → the caller passes it through
+    for the provider to fetch."""
+    media_path = urlparse(settings.MEDIA_URL).path or settings.MEDIA_URL
+    if not media_path.startswith("/"):
+        return None  # MEDIA_URL is a remote base (S3/qiniu) — not local storage
+    path = unquote(urlparse(url).path)
+    if path.startswith(media_path):
+        return path[len(media_path):]
+    return None
+
+
+def _read_source_bytes(ref) -> bytes:
+    """Local source bytes via storage (no HTTP). `ref` = Django FieldFile or a
+    storage-relative path string."""
+    if hasattr(ref, "open"):  # FieldFile
+        ref.open("rb")
+        try:
+            return ref.read()
+        finally:
+            ref.close()
+    with default_storage.open(ref, "rb") as fh:  # storage-relative path
+        return fh.read()
+
+
+def source_to_inline_uri(ref) -> str:
+    """Any canvas image source → `data:image/...;base64,...` whenever we can read
+    it from our own storage, so providers never need a public URL / tunnel.
+
+    - FieldFile / storage-relative path → read storage → data URI
+    - our-media http(s) URL (under MEDIA_URL, incl. an unreachable localhost dev
+      URL) → strip to storage path → read storage → data URI
+    - already a `data:` URI → returned unchanged
+    - external http(s) URL (public CDN, not our media) → passthrough; the
+      provider fetches it directly (caller still asserts reachability)
+
+    只对能从本地 storage 读到字节的源内联;读不到(远程 CDN / 外部 URL)原样返,
+    交给 provider 自己 fetch —— 自托管开箱即用,无需 ngrok / PUBLIC_MEDIA_BASE。"""
+    from studio.services.image_client import bytes_to_data_uri  # noqa: PLC0415 — avoid import cycle
+
+    if not isinstance(ref, str):
+        return bytes_to_data_uri(_read_source_bytes(ref))  # FieldFile
+    if ref.startswith("data:"):
+        return ref
+
+    is_url = ref.startswith(("http://", "https://"))
+    # our-media path handles both absolute (http://host/media/x) and root-relative
+    # (/media/x) refs → storage key; bare storage paths (no /media/ prefix) read as-is.
+    rel = our_media_relpath(ref)
+    if rel is not None:
+        try:
+            return bytes_to_data_uri(_read_source_bytes(rel))
+        except (FileNotFoundError, OSError) as exc:
+            if is_url:
+                # Storage miss on an absolute URL → passthrough; a public URL may
+                # still be fetchable by the provider.
+                logger.warning("source_to_inline_uri: storage read failed for %r (%s); passthrough", rel, exc)
+                return ref
+            raise  # root-relative /media path with no file → fail loud
+    if is_url:
+        return ref  # external public URL → passthrough
+    return bytes_to_data_uri(_read_source_bytes(ref))  # bare storage-relative path
 
 
 _SOURCE_URL_HEAD_TIMEOUT_SECONDS = 5

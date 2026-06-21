@@ -39,7 +39,9 @@ from .agent.tools.common import (
     assert_source_url_reachable,
     is_public_http_url,
     job_lifecycle,
+    our_media_relpath,
     persist_canvas_image_results,
+    source_to_inline_uri,
 )
 from .billing import reserve as reserve_canvas_credit
 
@@ -70,7 +72,11 @@ def create_angle_job(*, scene, validated, image_file=None) -> AngleJob:
     else:
         absolute = absolute_media_url(validated["image_url"].strip())
 
-    if not is_public_http_url(absolute):
+    # Our-own media is inlined from storage at submit (works even when the public
+    # URL isn't reachable — e.g. localhost dev with no tunnel), so only block
+    # non-public EXTERNAL URLs (SSRF). External public URLs still pass straight
+    # to the provider.
+    if our_media_relpath(absolute) is None and not is_public_http_url(absolute):
         logger.warning(
             "create_angle_job: rejected non-public URL for scene %s: %s",
             scene.id, absolute,
@@ -109,9 +115,6 @@ def run_angle_job(job: AngleJob) -> list[AngleResult]:
         if not api_key:
             raise RuntimeError("missing env: CANVAS_ANGLE_FAL_API_KEY")
 
-        # 防 "纯文字兜底": source URL 不通时 fal 会静默 rerender 无关图.
-        assert_source_url_reachable(job.source_image_url)
-
         response = _submit(job, api_key)
         # 立刻落 seed —— 和 video.py 存 task_id 同理: 若后续 download/persist 抛错,
         # job_lifecycle 走 FAILED 分支只会存 status/error/updated_at, seed 会丢.
@@ -133,8 +136,14 @@ def _submit(job: AngleJob, api_key: str) -> dict:
     model = settings.CANVAS_ANGLE_FAL_MODEL
     endpoint = f"{base}/{model}"
 
+    # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网 URL
+    # 原样传 + 可达性预检(防 fal 拿不到源时静默 rerender 无关图)。fal 接受 data URI。
+    source = source_to_inline_uri(job.source_image_url)
+    if source.startswith(("http://", "https://")):
+        assert_source_url_reachable(source)
+
     body: dict = {
-        "image_urls": [job.source_image_url],
+        "image_urls": [source],
         "horizontal_angle": job.horizontal_angle,
         "vertical_angle": job.vertical_angle,
         "zoom": job.zoom,

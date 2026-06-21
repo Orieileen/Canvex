@@ -7,6 +7,7 @@ import {
   selectionToSourceFile,
   type CanvasEditPinning,
 } from "@/hooks/use-canvas-pinning";
+import { imageEditSizeSource } from "@/hooks/use-image-edit";
 import { submitCanvasJob } from "@/hooks/submit-canvas-job";
 import { anglesToFalPayload, type CameraAngles } from "@/lib/angle";
 
@@ -59,6 +60,10 @@ export function useAngleEdit({
         sceneId, excalidrawApiRef, sceneAbortRef, pinning, inFlightRef,
         setError, setSubmitting: setIsSubmitting,
         anchor: selection.bounds,
+        // fal keeps the INPUT image's size (no size arg sent), so reserve the
+        // image's own dims — NOT a 2K tier. Use the image element (not
+        // selection.bounds) so a text label in the selection doesn't widen the box.
+        resultSize: imageEditSizeSource(selection),
         createJob: async () => {
           const api = excalidrawApiRef.current!;
           const angleParams = anglesToFalPayload(angles);

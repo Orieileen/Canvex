@@ -32,7 +32,6 @@ from math import gcd
 from typing import Iterable
 
 import requests
-from django.core.files.storage import default_storage
 from django.db import transaction
 from langchain.tools import ToolRuntime, tool
 
@@ -44,13 +43,13 @@ from studio.services.listings_utils import env, env_bool, handle_poll_if_needed
 
 from ..context import CanvasAgentContext
 from .common import (
-    absolute_media_url,
     assert_source_url_reachable,
     bytes_to_django_file,
     enqueue_on_commit,
     extract_images_from_response,
     job_lifecycle,
     persist_canvas_image_results,
+    source_to_inline_uri,
 )
 
 logger = logging.getLogger(__name__)
@@ -295,23 +294,21 @@ def _generate_with_fallback(
 
 
 def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
-    # source_images entries: storage path ("library/.../foo.jpg") for legacy
-    # multipart-upload path, OR absolute URL ("https://.../foo.jpg") for
-    # agent chat attachment path. Empty = text-to-image.
+    # source_images entries: storage path ("library/.../foo.jpg") for multipart
+    # upload, OR absolute URL ("https://.../foo.jpg") for agent chat attachment.
+    # 空 = text-to-image。本地 / our-media 源读盘内联成 data URI(见
+    # source_to_inline_uri),只有外部公网 URL 才原样走 URL。
     image_urls: list[str] = []
     if job.source_images:
-        image_urls = [
-            p if p.startswith(("http://", "https://"))
-            else absolute_media_url(default_storage.url(p))
-            for p in job.source_images
-        ]
+        image_urls = [source_to_inline_uri(p) for p in job.source_images]
     elif job.source_image:
-        image_urls = [absolute_media_url(job.source_image.url)]
+        image_urls = [source_to_inline_uri(job.source_image)]
 
-    # 防 "纯文字兜底": provider 拿不到 source URL 时会静默走 text-to-image.
-    # image_urls 为空时跳过 — 那是 agent generate_image 的合法 text-to-image 路径.
+    # data URI 自包含,无需可达性检查;只对 http(s) 远程源做 fail-loud 预检
+    # (provider 拿不到 source URL 会静默退化成纯文生图)。data URI / 空 都跳过。
     for url in image_urls:
-        assert_source_url_reachable(url)
+        if url.startswith(("http://", "https://")):
+            assert_source_url_reachable(url)
 
     image_bytes_list = _generate_with_fallback(
         prompt=job.prompt,
@@ -430,11 +427,19 @@ def run_cutout_llm_step(job: ImageEditJob) -> None:
     if not job.source_image:
         raise RuntimeError("cutout job requires source_image")
 
-    source_url = absolute_media_url(job.source_image.url)
-    assert_source_url_reachable(source_url)
+    source_url = source_to_inline_uri(job.source_image)
+    if source_url.startswith(("http://", "https://")):
+        assert_source_url_reachable(source_url)
+
+    # 框选标注在 plan B 下不烧进源图, 而是变成 job.prompt 拼在 CUTOUT_LLM_PROMPT 后:
+    #   - cutout 按钮: job.prompt = 框选 marquee prompt(区域坐标 + 文字编辑, 自带表述)
+    #   - split cutout leg: job.prompt = subjectRegionClause(主体区域坐标, 自带表述)
+    # 两者都自带表述, 直接拼接即可; 无标注(空)就纯抠最显眼主体。
+    extra = (job.prompt or "").strip()
+    cutout_prompt = f"{CUTOUT_LLM_PROMPT}\n\n{extra}" if extra else CUTOUT_LLM_PROMPT
 
     image_bytes_list = _generate_with_fallback(
-        prompt=CUTOUT_LLM_PROMPT,
+        prompt=cutout_prompt,
         image_urls=[source_url],
         size=job.size or "1024x1024",
         n=1,  # cutout 永远 1 张, num_images 上层 serializer 已 enforce

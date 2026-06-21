@@ -13,7 +13,7 @@ from rest_framework.exceptions import ValidationError
 
 from ..models import VideoJob
 from . import save_canvas_source_image
-from .agent.tools.common import absolute_media_url, is_public_http_url
+from .agent.tools.common import absolute_media_url, is_public_http_url, our_media_relpath
 from .billing import reserve as reserve_canvas_credit
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,9 @@ def create_video_job(*, scene, validated, image_file=None):
         # storage at; without it provider gets a URL minus `/media/` and 404s.
         raw_urls.append(default_storage.url(save_canvas_source_image(image_file)))
     absolute_urls = [absolute_media_url(u) for u in raw_urls]
-    image_urls = [u for u in absolute_urls if is_public_http_url(u)]
+    # Keep our-own media (inlined from storage at submit, no public URL needed)
+    # plus genuinely-public external URLs; drop only non-public external (SSRF).
+    image_urls = [u for u in absolute_urls if our_media_relpath(u) is not None or is_public_http_url(u)]
     rejected = [u for u in absolute_urls if u not in image_urls]
     if rejected:
         logger.warning(

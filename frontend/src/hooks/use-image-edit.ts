@@ -4,7 +4,7 @@ import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import { canvasService } from "@/services/canvas.service";
 import type { CanvasSelection } from "@/hooks/use-canvas-selection";
 import {
-  selectionToSourceFile,
+  selectionToCleanSourceFile,
   selectionToSourceFiles,
   type CanvasEditPinning,
 } from "@/hooks/use-canvas-pinning";
@@ -23,7 +23,9 @@ import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
  *
  * Three selection kinds:
  *  - single-image → fetch source via URL / dataURL
- *  - image-with-shapes → `selectionToSourceFile` rasterizes shapes onto one PNG
+ *  - image-with-shapes → `selectionToCleanSourceFile` uploads the ORIGINAL image
+ *    unchanged; arrows/shapes are NOT baked in — they become spatial text in the
+ *    prompt (`buildSpatialPrompt`), keeping the edited result annotation-free.
  *  - multi-image → `selectionToSourceFiles` produces a File[] that the backend
  *    stores in `source_images` JSONField; provider sees `image: [url, url, ...]`.
  *    Per-image shape overlap: shapes whose bbox overlaps image[i] get burned
@@ -64,10 +66,11 @@ export const IMAGE_EDIT_SIZES: { value: ImageEditSize; label: string }[] = [
 ];
 export const IMAGE_EDIT_COUNTS: ImageEditCount[] = [1, 2, 4];
 
-/** apimart Seedream-4.5 画质档位. 2K=1:1 2048×2048 (默认), 4K=1:1 4096×4096
- *  (输出大 4 倍, 耗时更长). cutout/split 2K 已足够, 4K 给创作场景. */
-export type ImageEditResolution = "2K" | "4K";
-export const IMAGE_EDIT_RESOLUTIONS: ImageEditResolution[] = ["2K", "4K"];
+/** 画质档位(像素面积). 1K=1:1 1024×1024 (快/省), 2K=2048×2048 (默认), 4K=4096×4096
+ *  (大 4 倍, 慢). 1K 主要给 apimart 主通道; 火山 fallback 最低 ~2K, 会被 _volc_size 抬到 2K.
+ *  placeholder 预留框按档位像素算 (imageEditOutputSize). */
+export type ImageEditResolution = "1K" | "2K" | "4K";
+export const IMAGE_EDIT_RESOLUTIONS: ImageEditResolution[] = ["1K", "2K", "4K"];
 
 export interface SubmitImageEditParams {
   selection: CanvasSelection;
@@ -76,6 +79,21 @@ export interface SubmitImageEditParams {
   size?: ImageEditSize;
   resolution?: ImageEditResolution;
   n?: ImageEditCount;
+}
+
+/** Source dimensions for the pre-generation placeholder: the clean source image
+ *  (what plan B actually sends) — its element width/height — not the selection
+ *  union (image + arrows/box/text). Multi-image has no single base, so it keeps
+ *  the union bounds. Used by edit/cutout (for the tier ASPECT via
+ *  `imageEditOutputSize`) and by angle (DIRECTLY — fal keeps the input size, so
+ *  the reserved box is the image's own dims, no tier upscale). Shared with
+ *  use-split / use-angle-edit. */
+export function imageEditSizeSource(
+  selection: CanvasSelection,
+): { width: number; height: number } {
+  return selection.kind === "multi-image"
+    ? selection.bounds
+    : { width: selection.image.width, height: selection.image.height };
 }
 
 export function useImageEdit({
@@ -113,16 +131,23 @@ export function useImageEdit({
         sceneId, excalidrawApiRef, sceneAbortRef, pinning, inFlightRef,
         setError, setSubmitting: setIsSubmitting,
         anchor: selection.bounds,
-        // Non-cutout edits standardize to the resolution tier (2K/4K) → reserve a
-        // box the size of that result. Cutout keeps the source size (rembg), so
-        // omit it and let createPlaceholder fall back to the anchor (source) rect.
-        resultSize: cutout ? undefined : imageEditOutputSize(size, resolution, selection.bounds),
+        // Reserve a box the size of the GENERATED result, not the source. Both
+        // edit and cutout regenerate at the resolution tier (2K/4K): cutout is
+        // 2-stage (LLM regen at the tier → rembg, which preserves it) and the
+        // backend forces size=auto for it, so its box uses the source aspect.
+        //
+        // Aspect comes from the SOURCE IMAGE, not selection.bounds (the union of
+        // image + arrows/box/text): plan B sends only the clean image, so the
+        // result is image-aspect; the union would reserve a box shaped by
+        // annotations that never reach the provider. Matches Canvas (source
+        // aspect == result aspect).
+        resultSize: imageEditOutputSize(cutout ? "auto" : size, resolution, imageEditSizeSource(selection)),
         createJob: async () => {
           // submitCanvasJob guards api non-null before calling createJob
           const api = excalidrawApiRef.current!;
           const image: File | File[] = selection.kind === "multi-image"
             ? await selectionToSourceFiles(selection, api)
-            : await selectionToSourceFile(selection, api);
+            : await selectionToCleanSourceFile(selection, api);
           return canvasService.createImageEdit(sceneId!, {
             image, prompt, cutout, size, resolution, n,
           });

@@ -150,7 +150,9 @@ class ImageEditJob(models.Model):
         FAILED = "FAILED", "Failed"
 
     class Resolution(models.TextChoices):
-        # apimart Seedream 支持的两档. 2K 默认 (1:1=2048×2048), 4K ×2 (1:1=4096×4096).
+        # 画质档位(像素面积). 1K=1024×1024, 2K=2048×2048 (默认), 4K=4096×4096.
+        # 1K 主要给 apimart 主通道; 火山 fallback 最低 ~2K, _volc_size 会把 1K 抬到 2K.
+        ONE_K = "1K", "1K"
         TWO_K = "2K", "2K"
         FOUR_K = "4K", "4K"
 

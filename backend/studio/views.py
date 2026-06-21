@@ -421,8 +421,10 @@ class SceneSplitView(APIView):
             raise ValidationError({"image": ["The image field is required."]})
 
         scene, _ = get_scene_and_org(request.user, scene_id)
+        # Plan B: subject region (box → coordinates) for the split prompts; "" → fallback.
+        region_clause = (request.data.get("region") or "").strip()
         background, cutout = create_split_jobs(
-            scene=scene, image_file=image_file,
+            scene=scene, image_file=image_file, region_clause=region_clause,
         )
         # Lazy import: tasks.py → image_client 顶层可能有 settings 未就绪的副作用.
         # bg leg → canvas (gevent inpaint, 单 task). cutout leg → stage 1 (LLM 白底,

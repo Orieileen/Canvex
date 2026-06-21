@@ -43,6 +43,7 @@ import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
 import type { Mockup3dBinding } from "@/lib/canvas-mockup";
 import type { DepthStatus } from "@/hooks/use-mockup";
 import type { CanvasSelection } from "@/hooks/use-canvas-selection";
+import { buildSpatialPrompt } from "@/lib/canvas-spatial-prompt";
 import {
   IMAGE_EDIT_COUNTS,
   IMAGE_EDIT_RESOLUTIONS,
@@ -66,8 +67,9 @@ import {
  *
  * Selection-mode awareness (canvex-style marquee core):
  *   - **single-image**: 全部 4 tab 启用
- *   - **image-with-shapes**: Image + Split 启用 (走 exportToBlob rasterize 含 shape
- *     当编辑指令); Video + Angle 禁用 (需要 URL 不吃 blob)
+ *   - **image-with-shapes**: Image + Split 启用. Image 走 "plan B" —— 源图保持
+ *     干净原图 (不烧 shape), 箭头/文字经 `buildSpatialPrompt` 转成带坐标的区域
+ *     编辑指令, 结果图不含标注; Split 仍烧 shape; Video + Angle 禁用 (需要 URL).
  *   - **multi-image**: 只 Image tab 启用 —— 后端走 `source_images[]` 多部件上传,
  *     provider 收到 `image: [url1, url2, ...]` 数组. Shapes 按 per-image overlap
  *     烧进 PNG (跨图 shape 烧进每张被它覆盖的图; 不碰任一图的 orphan 被忽略).
@@ -195,7 +197,9 @@ function computeSupportMatrix(selection: CanvasSelection): SupportMatrix {
       // 也要展示 binding 状态; 多图/带 shape 都没有清晰的 base 语义.
       return { image: true, video: true, angle: true, split: true, merge: hasTexts, mockup: true };
     case "image-with-shapes":
-      // Video/Angle provider take a URL; rasterized blob can't be reached.
+      // Image uploads the clean original (arrows → spatial prompt, see
+      // composePrompt). Video/Angle provider take a URL and don't carry the
+      // spatial-prompt arrows, so stay disabled here for now.
       return { image: true, video: false, angle: false, split: true, merge: true, mockup: false };
     case "multi-image":
       // Provider's `image: [url, ...]` array covers Image only; Video/Angle/
@@ -209,6 +213,24 @@ function computeSupportMatrix(selection: CanvasSelection): SupportMatrix {
  *  only exists to make TS happy about the (unreachable) empty-matrix case. */
 function firstEnabledTab(support: SupportMatrix): TabKey {
   return TAB_ORDER.find((t) => support[t]) ?? "image";
+}
+
+/** The prompt actually sent for an image edit. image-with-shapes routes arrows
+ *  through `buildSpatialPrompt` (clean source + "edit region (x%, y%)" text);
+ *  single-image / multi-image keep the flat "canvas texts + user input" join
+ *  (no arrows to place — multi bakes its shapes per-image instead). `userText`
+ *  empty → the annotation-only preview shown in the toolbar's prompt tile. */
+function composePrompt(selection: CanvasSelection, userText: string): string {
+  if (selection.kind === "image-with-shapes") {
+    return buildSpatialPrompt(
+      { image: selection.image, shapes: selection.shapes, texts: selection.texts },
+      userText,
+    );
+  }
+  const fromTexts = selection.texts.map((tx) => tx.text.trim()).filter(Boolean).join("\n");
+  // Canvas text is the prefix the user's input extends — keep canvas-text-first
+  // to match the legacy Image order + VideoPanel/AnglePanel (and this docstring).
+  return [fromTexts, userText.trim()].filter(Boolean).join("\n");
 }
 
 interface ImageEditBarProps {
@@ -371,10 +393,21 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
   const activeDismiss = firstWithError?.onDismissError;
 
   // Canvas-drawn text becomes a prompt prefix the user can extend in the input.
+  // Drives Apply/Generate gating + placeholders (i.e. "are there any labels?").
   const promptFromTexts = selection.texts
     .map((tx) => tx.text.trim())
     .filter(Boolean)
     .join("\n");
+
+  // What the toolbar's prompt tile shows: the annotation-only prompt (no user
+  // input yet). For image-with-shapes this is the spatial region mapping; for
+  // single-image it's just the joined canvas texts. Memoized on content so it
+  // doesn't recompute the arrow geometry on every pan/zoom tick.
+  const promptPreview = useMemo(
+    () => composePrompt(selection, ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection.contentFp, selection.kind],
+  );
 
   return (
     <div
@@ -394,7 +427,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
       }}
       aria-hidden={placement.hidden || undefined}
     >
-      <SelectionPreview urls={preview.urls} promptFromTexts={promptFromTexts} />
+      <SelectionPreview urls={preview.urls} promptPreview={promptPreview} />
       <Tabs
         value={activeTab}
         onValueChange={(v) => setUserTab(v as TabKey)}
@@ -448,6 +481,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
         {support.image && (
           <TabsContent value="image">
             <ImagePanel
+              selection={selection}
               multiImageCount={selection.kind === "multi-image" ? selection.images.length : 0}
               promptFromTexts={promptFromTexts}
               isSubmitting={image.isSubmitting}
@@ -525,10 +559,10 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
  *  left-to-right row (multi-image selections see N tiles, one per source image
  *  the provider will receive). Clicking a thumb opens a Dialog with that blob
  *  at full resolution so the user can verify what the provider will see. */
-function SelectionPreview({ urls, promptFromTexts }: { urls: string[]; promptFromTexts: string }) {
+function SelectionPreview({ urls, promptPreview }: { urls: string[]; promptPreview: string }) {
   // self-end aligns the preview row to the bottom of the toolbar root so the
   // thumbs sit on the same line as the form's input row (TabsList sits above).
-  if (urls.length === 0 && !promptFromTexts) {
+  if (urls.length === 0 && !promptPreview) {
     return (
       <div className="size-10 self-end animate-pulse rounded-md border border-dashed border-border/60" />
     );
@@ -538,7 +572,7 @@ function SelectionPreview({ urls, promptFromTexts }: { urls: string[]; promptFro
       {urls.map((url, i) => (
         <PreviewThumb key={url} url={url} index={i} total={urls.length} />
       ))}
-      {promptFromTexts && <PromptTile prompt={promptFromTexts} />}
+      {promptPreview && <PromptTile prompt={promptPreview} />}
     </div>
   );
 }
@@ -608,11 +642,15 @@ function PreviewImage({ url, className }: { url: string; className?: string }) {
 // ─── Image panel ────────────────────────────────────────────────────────────
 
 interface ImagePanelProps {
+  /** Drives the final prompt: image-with-shapes routes arrows through
+   *  `buildSpatialPrompt`, other kinds use the flat canvas-text join. */
+  selection: CanvasSelection;
   /** >0 when selection is multi-image (used to hint the user and block cutout,
    *  which has no multi-image semantics —— rembg is single-image only). 0 for
    *  single-image / image-with-shapes selections. */
   multiImageCount: number;
-  /** Prepended to user input at submit. Apply enabled if EITHER source non-empty. */
+  /** Canvas text labels joined (gating + placeholder only). Apply enabled if
+   *  EITHER this or the user's input is non-empty. */
   promptFromTexts: string;
   isSubmitting: boolean;
   onSubmit: (params: {
@@ -624,7 +662,7 @@ interface ImagePanelProps {
   }) => void;
 }
 
-function ImagePanel({ multiImageCount, promptFromTexts, isSubmitting, onSubmit }: ImagePanelProps) {
+function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit }: ImagePanelProps) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
   const [resolution, setResolution] = useState<ImageEditResolution>("2K");
@@ -636,14 +674,18 @@ function ImagePanel({ multiImageCount, promptFromTexts, isSubmitting, onSubmit }
 
   function submitApply() {
     if (!canApply) return;
-    const finalPrompt = [promptFromTexts, trimmed].filter(Boolean).join("\n");
+    const finalPrompt = composePrompt(selection, trimmed);
     onSubmit({ prompt: finalPrompt, size, resolution, n });
     setPrompt("");
   }
 
   function submitCutout() {
     if (isSubmitting || isMulti) return;
-    onSubmit({ cutout: true, size, resolution, n });
+    // Carry the marquee prompt (box region / arrows / text + typed input) so the
+    // backend can fold it into CUTOUT_LLM_PROMPT. Empty when nothing's annotated
+    // → plain cutout. Same prompt Apply would build, so the input box is consistent.
+    const marqueePrompt = composePrompt(selection, trimmed);
+    onSubmit({ cutout: true, prompt: marqueePrompt, size, resolution, n });
   }
 
   function handleSubmit(e: FormEvent) {

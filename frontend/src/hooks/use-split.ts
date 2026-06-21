@@ -5,10 +5,13 @@ import { canvasService, waitForCanvasJob } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import {
   pinAssetResultRows,
-  selectionToSourceFile,
+  selectionToCleanSourceFile,
   type CanvasEditPinning,
 } from "@/hooks/use-canvas-pinning";
 import type { CanvasSelection } from "@/hooks/use-canvas-selection";
+import { imageEditSizeSource } from "@/hooks/use-image-edit";
+import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
+import { subjectRegionClause } from "@/lib/canvas-spatial-prompt";
 import type { CanvasImageEditJob } from "@/types/canvex";
 
 /**
@@ -73,8 +76,12 @@ export function useSplit({
       // background 先建 (占槽位), subject overlay 叠在它上面 —— 颠倒顺序的话
       // overlay 会把占槽位那个盖掉, 下一次生成从重叠位置起步。
       // Anchor 到源右侧: 和 image/video/angle 三 hook 同一个 UX 契约.
+      // 两条 leg (背景 inpaint + 主体 cutout) 都是 LLM 在 2K 档位重生成 (backend
+      // size=auto), 不是源图尺寸 → 预留框按生成尺寸算, 否则结果撑爆/缩在小框里。
+      // 主体 overlay 复用此 geometry (createPlaceholderOverlay)。
       const backgroundPh = pinning.createPlaceholder(
-        "image", "Splitting background…", narrowed.bounds,
+        "image", "Splitting background…", narrowed.bounds, undefined,
+        imageEditOutputSize("auto", undefined, imageEditSizeSource(narrowed)),
       );
       const subjectPh = backgroundPh
         ? pinning.createPlaceholderOverlay(backgroundPh, "Splitting subject…")
@@ -94,9 +101,15 @@ export function useSplit({
           setIsSubmitting(false);
           return;
         }
-        const file = await selectionToSourceFile(narrowed, api);
+        // Plan B: 干净源(不烧框)。框选出的主体区域转坐标文字 → 随 POST 带给
+        // backend, 拼进 SPLIT_INPAINT_PROMPT / CUTOUT_LLM_PROMPT 当主体定位; 无框→空。
+        const file = await selectionToCleanSourceFile(narrowed, api);
+        const region = subjectRegionClause({
+          image: narrowed.image,
+          shapes: narrowed.kind === "image-with-shapes" ? narrowed.shapes : [],
+        });
         // 一次 POST 起 atomic pair, backend 自动处理双 leg 的协调 + 任一失败时收口.
-        ({ data: enqueued } = await canvasService.createSplit(sceneId, file));
+        ({ data: enqueued } = await canvasService.createSplit(sceneId, file, region));
         // 立刻 tag 两个 placeholder 带各自的 job_id —— 关页+重进时 resume hook
         // 按 job_id 配对 (cutout rembg 秒级完成, 不 tag 的话会被当 tagless leftover
         // 标 "submission lost").
