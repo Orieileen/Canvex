@@ -110,6 +110,12 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "UNAUTHENTICATED_USER": None,
     "UNAUTHENTICATED_TOKEN": None,
+    # ChatUserRateThrottle(scope="canvas_chat") 是从 meired port 过来的, 但 rate 没带过来
+    # —— 缺这条会让每次 chat POST 在 check_throttles 阶段直接 500 (ImproperlyConfigured),
+    # 表现为"一发消息就 Chat failed"。单工作区无登录, UserRateThrottle 按 IP 限流。
+    "DEFAULT_THROTTLE_RATES": {
+        "canvas_chat": "60/min",
+    },
 }
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
