@@ -5,10 +5,13 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ────────────────────────────────────────────────────────────────────
-   主题 = meired 暖色设计系统(global 采用)。core shadcn token 用 meired 的
-   warm cream-and-clay 调;Canvex 自有的 chart / sidebar / mask token 保留
-   (组件可能在用)。Excalidraw 主题不在这里 —— styles/canvex-shadcn.css 已用
-   var(--primary)/var(--background)/color-mix 驱动,token 一换它自动跟着变暖。
+   主题 = 白底 + 中性暖灰文字(stone 系) + 橙点缀。背景/卡片纯白, 正文/图标/边框
+   走中性灰, 橙 #ff6825 只当强调:primary / ring / 画布主色(--ember 族)/ 选中 /
+   active / 用户气泡; destructive 暂沿用橙。Apple frost 玻璃(--frost, 白)
+   保留; Excalidraw 内层
+   微表面的半透黑(无色相, 当阴影)保留。Excalidraw 画布纸色在
+   canvex-workspace.tsx 强制成白。.dark 与 :root 同值(强制白底, 不反色)。
+   下方 .excalidraw 块用 var(--ember)/var(--frost) 驱动, token 一换自动跟随。
    ──────────────────────────────────────────────────────────────────── */
 
 @theme inline {
@@ -57,19 +60,13 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* meired brand extras — hero 装饰 / badge / 渐变 */
-  --color-cream: var(--cream);
-  --color-deep: var(--deep);
-  --color-moss: var(--moss);
-
-  /* meired dashboard warm palette */
+  /* Canvex 画布主色(橙) + dashboard tints(中性) */
   --color-ember: var(--ember);
   --color-sand: var(--sand);
   --color-linen: var(--linen);
   --color-dune: var(--dune);
   --color-terra: var(--terra);
   --color-sienna: var(--sienna);
-  --color-gold: var(--gold);
 
   /* Apple frost:canvas 浮层统一磨砂底 */
   --color-frost: var(--frost);
@@ -78,52 +75,49 @@
 :root {
   --radius: 0.75rem;
 
-  /* shadcn core,warm cream-and-clay。background/muted 跟暖色家族对齐 R>G>B。 */
-  --background: #f4f0e8;
-  --foreground: #1a1a1a;
+  /* 白底 + 中性暖灰文字 + 橙点缀。背景/卡片白, 文字/边框中性 stone, 橙=强调。 */
+  --background: #ffffff;
+  --foreground: #292524;
 
-  --card: #fff8f0;
-  --card-foreground: #1a1a1a;
+  --card: #ffffff;
+  --card-foreground: #292524;
 
-  --popover: #fff8f0;
-  --popover-foreground: #1a1a1a;
+  --popover: #ffffff;
+  --popover-foreground: #292524;
 
-  --primary: #e33529;
-  --primary-foreground: #fff9f0;
+  --primary: #ff6825;
+  --primary-foreground: #ffffff;
 
-  --secondary: #f3c3cb;
-  --secondary-foreground: #1a1a1a;
+  --secondary: #f5f5f4;
+  --secondary-foreground: #292524;
 
-  --muted: #ece5d8;
-  --muted-foreground: #6b6458;
+  --muted: #f5f5f4;
+  --muted-foreground: #78716c;
 
-  --accent: #afd8fb;
-  --accent-foreground: #2b6786;
+  /* accent = 中性浅灰(shadcn hover/wash),文字深灰 */
+  --accent: #f5f5f4;
+  --accent-foreground: #292524;
 
-  --destructive: #d62828;
-  --destructive-foreground: #fff9f0;
+  /* destructive 暂沿用橙(未引入红);white-on-orange */
+  --destructive: #ff6825;
+  --destructive-foreground: #ffffff;
 
-  --border: #dcd6c2;
-  --input: #dcd6c2;
-  --ring: #e33529;
+  --border: #e7e5e4;
+  --input: #e7e5e4;
+  --ring: #ff6825;
 
-  /* brand extras */
-  --cream: #f3f3e9;
-  --deep: #2b6786;
-  --moss: #6b8e4e;
-
-  /* dashboard warm palette + ember 阶梯(hover/强调/wash) */
+  /* 橙 画布主色 + ember 阶梯(hover/active 浅橙) + ember-tint 浅橙 wash(Excalidraw 选中工具/shimmer) */
   --ember: #ff6825;
-  --ember-darker: #e6541f;
-  --ember-darkest: #c44310;
-  --ember-tint: #fce4d8;
-  --ember-tint-strong: #f9d4c2;
-  --sand: #f6f1ed;
-  --linen: #f3ede3;
-  --dune: #f0e6dc;
-  --terra: #c47a5f;
-  --sienna: #df7454;
-  --gold: #eebb4e;
+  --ember-darker: #ff854a;
+  --ember-darkest: #ffa06e;
+  --ember-tint: #ffe1cf;
+  --ember-tint-strong: #ffd0b8;
+  /* dashboard tints + chat 面板底 = 中性浅灰; terra/sienna 收归中性文字 */
+  --sand: #ffffff;
+  --linen: #fafaf9;
+  --dune: #f5f5f4;
+  --terra: #78716c;
+  --sienna: #44403c;
 
   /* Apple frost 磨砂底 (= bg-white/65),固定白玻璃不随明暗翻面。 */
   --frost: rgba(255, 255, 255, 0.65);
@@ -144,66 +138,9 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
-  --background: #1a1815;
-  --foreground: #f3f3e9;
-
-  --card: #26221d;
-  --card-foreground: #f3f3e9;
-
-  --popover: #26221d;
-  --popover-foreground: #f3f3e9;
-
-  --primary: #ef5b50;
-  --primary-foreground: #1a1815;
-
-  --secondary: #3a2a2c;
-  --secondary-foreground: #f3f3e9;
-
-  --muted: #2a2621;
-  --muted-foreground: #a8a190;
-
-  --accent: #2b6786;
-  --accent-foreground: #afd8fb;
-
-  --destructive: #ef5b50;
-  --destructive-foreground: #1a1815;
-
-  --border: #3a352d;
-  --input: #3a352d;
-  --ring: #ef5b50;
-
-  --cream: #26221d;
-  --deep: #afd8fb;
-  --moss: #8aa868;
-
-  --ember: #ef5b50;
-  --ember-darker: #d44a40;
-  --ember-darkest: #b03830;
-  --ember-tint: #3a2520;
-  --ember-tint-strong: #4f2f29;
-  --sand: #1a1815;
-  --linen: #2a2621;
-  --dune: #26221d;
-  --terra: #a87a65;
-  --sienna: #c46a50;
-  --gold: #d4a840;
-
-  /* Canvex 自有 chart + sidebar dark(保留) */
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
+/* 无 .dark 覆盖块: 主题强制浅色 (白底 + 橙点缀), .dark 只会复制一份 :root 并把
+ * 已过时的暗色 sidebar/chart 值带回来。`@custom-variant dark` 仍在 (供 dark: 工具类),
+ * 但不再覆写 token —— 真要做暗色模式, 在这里加一个值真正反相的 .dark 块。 */
 
 @layer base {
   * {

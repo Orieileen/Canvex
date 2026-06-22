@@ -247,7 +247,7 @@ export function CanvasSidebar({
     <aside
       data-collapsed={collapsed ? "true" : "false"}
       className={cn(
-        "shrink-0 py-8 flex flex-col h-screen sticky top-0 bg-dune overflow-hidden overscroll-contain transition-[width] duration-200 ease-out",
+        "shrink-0 py-8 flex flex-col h-screen sticky top-0 bg-stone-50 overflow-hidden overscroll-contain transition-[width] duration-200 ease-out",
         collapsed ? "w-16 px-2" : "w-[230px] px-5",
       )}
     >
@@ -257,7 +257,7 @@ export function CanvasSidebar({
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="flex size-9 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember"
+            className="flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
             aria-label="Expand sidebar"
             title="Expand sidebar"
           >
@@ -266,7 +266,7 @@ export function CanvasSidebar({
           <button
             type="button"
             onClick={openCreate}
-            className="flex size-9 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-card/80"
+            className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:opacity-90"
             aria-label="New canvas"
             title="New canvas"
           >
@@ -276,9 +276,8 @@ export function CanvasSidebar({
       ) : (
         <div className="mb-2 flex items-center gap-2">
           <Button
-            variant="outline"
             size="sm"
-            className="flex-1 justify-center gap-2 border-border bg-card text-foreground hover:bg-card/80"
+            className="flex-1 justify-center gap-2"
             onClick={openCreate}
           >
             <Plus className="size-3.5" />
@@ -287,7 +286,7 @@ export function CanvasSidebar({
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="flex size-8 shrink-0 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember"
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
             aria-label="Collapse sidebar"
             title="Collapse sidebar"
           >
@@ -305,7 +304,7 @@ export function CanvasSidebar({
             type="button"
             disabled={!activeSceneId}
             onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="mx-auto flex size-9 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember disabled:pointer-events-none disabled:opacity-40"
+            className="mx-auto flex size-9 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-stone-200 hover:text-stone-900 disabled:pointer-events-none disabled:opacity-40"
             aria-label="Media library"
             title={activeSceneId ? "Media library" : "Select a canvas first"}
           >
@@ -316,7 +315,7 @@ export function CanvasSidebar({
             type="button"
             disabled={!activeSceneId}
             onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-sienna transition-colors hover:bg-card/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-200 disabled:pointer-events-none disabled:opacity-40"
             title={activeSceneId ? undefined : "Select a canvas first"}
           >
             <Images className="size-4 shrink-0" strokeWidth={2} />
@@ -328,7 +327,7 @@ export function CanvasSidebar({
       {/* SCENES 标题: 折叠态隐藏 (只剩图标条没有空间承载文字 label) */}
       {!collapsed && (
         <div className="mb-2">
-          <h3 className="text-[10px] font-bold tracking-[0.08em] text-sienna opacity-70">
+          <h3 className="text-[10px] font-bold tracking-[0.08em] text-stone-400">
             SCENES
           </h3>
         </div>
@@ -343,7 +342,7 @@ export function CanvasSidebar({
         {loading ? (
           <div
             className={cn(
-              "flex items-center gap-2 text-xs text-muted-foreground",
+              "flex items-center gap-2 text-xs text-stone-400",
               collapsed ? "justify-center py-2" : "px-2 py-2",
             )}
           >
@@ -352,7 +351,7 @@ export function CanvasSidebar({
           </div>
         ) : scenes.length === 0 ? (
           !collapsed && (
-            <p className="px-2 py-2 text-xs text-muted-foreground">
+            <p className="px-2 py-2 text-xs text-stone-400">
               No canvases yet. Start with "New canvas".
             </p>
           )
@@ -381,8 +380,8 @@ export function CanvasSidebar({
                       className={cn(
                         "flex size-9 items-center justify-center rounded-md transition-colors",
                         isActive
-                          ? "bg-card text-ember"
-                          : "text-sienna hover:bg-card/60 hover:text-foreground",
+                          ? "bg-primary/10 text-stone-900"
+                          : "text-stone-500 hover:bg-stone-200 hover:text-stone-700",
                       )}
                     >
                       <Frame className="size-4" strokeWidth={2} />
@@ -423,8 +422,8 @@ export function CanvasSidebar({
                       className={cn(
                         "flex flex-1 items-center truncate rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
                         isActive
-                          ? "bg-card text-ember"
-                          : "text-sienna hover:bg-card/60 hover:text-foreground",
+                          ? "bg-primary/10 text-stone-900"
+                          : "text-stone-700 hover:bg-stone-200",
                       )}
                       onClick={() => onSelectScene(scene.id)}
                     >
@@ -438,7 +437,7 @@ export function CanvasSidebar({
                       <DropdownMenuTrigger asChild>
                         <button
                           type="button"
-                          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-card hover:text-foreground group-hover:opacity-100 data-[state=open]:opacity-100"
+                          className="flex size-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100 data-[state=open]:opacity-100"
                           aria-label="Canvas actions"
                         >
                           <MoreVertical className="size-3.5" />
@@ -481,7 +480,7 @@ export function CanvasSidebar({
             rel="noopener noreferrer"
             aria-label={label}
             title={label}
-            className="flex size-8 items-center justify-center rounded-md text-sienna transition-colors hover:bg-card hover:text-ember"
+            className="flex size-8 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-200 hover:text-primary"
           >
             <Icon className="size-4" strokeWidth={2} />
           </a>

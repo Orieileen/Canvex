@@ -43,6 +43,7 @@ import {
 } from "@/lib/canvas-scene-files";
 import { skillSlugFromToolCall, toolArgAsNonNegInt, toolArgAsString } from "@/lib/canvas-skill-events";
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
+import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
   CanvasMediaImage,
@@ -77,15 +78,20 @@ const STATUS_FADE_MS = 2500;
 // NEWLY-created text — existing text elements keep their own fontSize.
 const FORCE_OBJECTS_SNAP = true;
 const DEFAULT_TEXT_FONT_SIZE = 64;
+// Canvas paper color = 页面 --background (纯白). Forced into appState below (wins
+// over any viewBackgroundColor older autosaves persisted; Excalidraw's native bg
+// picker is hidden, so this is the only knob).
+const CANVAS_BG_COLOR = "#ffffff";
 
 // `idle` = scene 刚加载没动作过, 不渲染 pill; 其他四态显示对应 label + 配色.
 type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
 
-// 所有状态共用同一磨砂胶囊底, 只靠文字色区分状态 (pending/saving 琥珀, saved 灰, error 红).
+// 所有状态共用同一磨砂胶囊底。注意: 当前 pending/saving/error 文字都是橙 (--destructive
+// 暂 = --primary), 只有 saved 是灰 —— 颜色不再区分各态, 区分靠下方 SAVE_STATUS_LABEL 文案。
 const SAVE_STATUS_CHROME = "border-border/60 bg-frost ring-1 ring-black/8";
 const SAVE_STATUS_TEXT: Record<Exclude<SaveState, "idle">, string> = {
-  pending: "text-amber-700",
-  saving: "text-amber-700",
+  pending: "text-primary",
+  saving: "text-primary",
   saved: "text-muted-foreground",
   error: "text-destructive",
 };
@@ -202,6 +208,7 @@ function buildInitialData(data: unknown): InitialData {
       // older autosaves persisted (see FORCE_OBJECTS_SNAP / DEFAULT_TEXT_FONT_SIZE).
       objectsSnapModeEnabled: FORCE_OBJECTS_SNAP,
       currentItemFontSize: DEFAULT_TEXT_FONT_SIZE,
+      viewBackgroundColor: CANVAS_BG_COLOR,
     },
     files: record.files,
   } as InitialData;
@@ -765,17 +772,26 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     async (selectionForSend: CanvasSelection, sourceUrl: string) => {
       if (selectionForSend.kind !== "single-image") return;
       try {
-        // http(s) URL = already public CDN (chat-pinned or agent-generated),
-        // attach directly. blob:/data: URL = locally-uploaded into Excalidraw,
-        // needs round-trip through backend to get a fetchable CDN URL because
-        // the agent + image provider can't fetch browser-local URLs.
+        // Root-relative `/media/...` (media-library inserts, job results) points
+        // at an already-persisted asset — absolutize to the same shape the upload
+        // round-trip returns so it takes the direct-attach branch. The backend
+        // maps any our-media URL (even an unreachable localhost one) back to
+        // storage and inlines it, so it's directly attachable; re-uploading via
+        // fetch("/media/...") would instead hit the Vite SPA fallback (no /media
+        // proxy) and upload index.html → backend PIL "cannot identify image".
+        const resolvedUrl = absoluteMediaUrl(sourceUrl);
+        // http(s) URL = already public CDN (chat-pinned or agent-generated) or an
+        // absolutized our-media asset — attach directly. blob:/data: URL =
+        // locally-uploaded into Excalidraw, needs round-trip through backend to
+        // get a fetchable CDN URL because the agent + image provider can't fetch
+        // browser-local URLs.
         let attachment: ChatAttachment;
-        if (sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://")) {
+        if (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://")) {
           const { width, height } = selectionForSend.image;
-          attachment = { url: sourceUrl, width, height };
+          attachment = { url: resolvedUrl, width, height };
         } else {
           // fetch() works for both blob: and data: URLs in the browser
-          const blob = await fetch(sourceUrl).then((r) => r.blob());
+          const blob = await fetch(resolvedUrl).then((r) => r.blob());
           const file = new File(
             [blob],
             `canvas-attachment-${Date.now()}.${blob.type.split("/")[1] || "png"}`,
@@ -880,7 +896,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               // Reserve a box the size of the image the agent will generate
               // (tier-sized, like the toolbar path). No source image here, so an
               // "auto"/omitted size falls back to 1:1 at the tier. Pack-mode rows
-              // ignore this (createPlaceholder keeps them fixed); video → undefined.
+              // also consume this (createPlaceholder sizes the box to the result so
+              // pack slots don't overlap); video → undefined.
               const resultSize =
                 kind === "image"
                   ? imageEditOutputSize(

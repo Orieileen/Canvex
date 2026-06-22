@@ -72,9 +72,9 @@ export function SkillSelector({
           <Sliders className="size-4" />
           {disabledSkills.length > 0 && (
             <span
-              // Red dot top-right indicating non-default state — same affordance
+              // Brick dot top-right indicating non-default state — same affordance
               // as Gmail's "unread" / Slack's "new" dots.
-              className="absolute right-1 top-1 size-1.5 rounded-full bg-red-500"
+              className="absolute right-1 top-1 size-1.5 rounded-full bg-primary"
               aria-hidden
             />
           )}

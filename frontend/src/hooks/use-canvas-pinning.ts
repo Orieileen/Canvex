@@ -18,7 +18,6 @@ import type {
 
 import type {
   CanvasAngleJob,
-  CanvasChatMessage,
   CanvasImageEditJob,
   CanvasVideoJob,
 } from "@/types/canvex";
@@ -38,10 +37,10 @@ import {
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
  *
- * Canvex-style UX: 聊天历史不在侧边栏里渲染, 而是作为画布上的元素堆叠。
- * 用户消息 → 蓝色文本, assistant → 深灰文本, 生成的图片 → image 节点,
- * 生成的视频 → 带 link 的 card。依次向下排 (world coord 从 ORIGIN_Y 起步),
- * 落位前扫一遍现有元素避开重叠。
+ * Canvex-style UX: 聊天对话渲染在画布上的 chat frame 面板里 (见 ChatFrameOverlay),
+ * 不再作为画布上的 note-text 元素堆叠。本 hook 只把生成的资产落到画布: 生成的图片
+ * → image 节点, 生成的视频 → 带 link 的 card。依次向下排 (world coord 从 ORIGIN_Y
+ * 起步), 落位前扫一遍现有元素避开重叠。
  *
  * - message / asset id 用 ref 去重, 防 React StrictMode 双调用 / 事件重放重复 pin
  * - 切 scene 时要调用 `reset()`, 否则下个 scene 的内容从旧的 y 位置继续堆
@@ -50,33 +49,21 @@ import {
 const PIN_ORIGIN_X = 80;
 const PIN_ORIGIN_Y = 80;
 const PIN_GAP = 16;
-const NOTE_WIDTH = 1140;
-// 列 x-band 上界 (结构常量, 非 note 文本宽度): 只有左沿落在
+// 列 x-band 上界 (结构常量, 非文本宽度): 只有左沿落在
 // [PIN_ORIGIN_X, PIN_ORIGIN_X+PIN_COLUMN_BAND) 的元素算列内容。列 pin
-// (note/image/placeholder/pack-slot-0) 永远在 x=PIN_ORIGIN_X 落位 (向下走的碰撞搜索
+// (image/placeholder/pack-slot-0) 永远在 x=PIN_ORIGIN_X 落位 (向下走的碰撞搜索
 // 不改 x), 故只要 band>0 就全收进来; band 的唯一作用是上界, 把选区右侧的远端锚点 pin
-// (x≈1000+) 挡在外。取固定值即可, 值非关键 —— 只需远小于远端锚点区。刻意不跟
-// NOTE_WIDTH 走 (note 加宽后, 跟随会把右侧锚点 pin 误并入列)。
+// (x≈1000+) 挡在外。取固定值即可, 值非关键 —— 只需远小于远端锚点区。刻意取固定值,
+// 不跟任何 pin 宽度走 (否则 pin 加宽后, 跟随会把右侧锚点 pin 误并入列)。
 const PIN_COLUMN_BAND = 320;
-// Chat / agent message notes render at 64px — matching the canvas's default text
-// size (a custom size above Excalidraw's largest preset, XL=36). Line height is
-// DERIVED (≈1.33×, a touch over Excalidraw's 1.25 render ratio so the collision
-// box never under-reserves vertical space → stacked notes can't overlap), so a
-// font-size change can't leave it stale. NOTE_WIDTH (below) still tracks the font
-// size by hand — keep it in sync if NOTE_FONT_SIZE changes.
-const NOTE_FONT_SIZE = 64;
-const NOTE_LINE_HEIGHT_PX = Math.round((NOTE_FONT_SIZE * 4) / 3);
-// Loading-placeholder status text stays small (16px) — its own line height keeps
-// the placeholder box estimate correct now that notes are larger.
+// Loading-placeholder status text stays small (16px); its own line height keeps
+// the placeholder box height estimate correct.
 const PLACEHOLDER_LINE_HEIGHT_PX = 24;
-const USER_COLOR = "#2b6786";
-const ASSISTANT_COLOR = "#111827";
 // "Visual units" budget per line — `wrapText` counts CJK chars as 2 units and
 // everything else as 1, so the cap mirrors approximate rendered width
-// regardless of script. 34 units ≈ 17 CJK chars (~1088px at NOTE_FONT_SIZE 64) or
-// 34 ASCII chars, inside NOTE_WIDTH=1140; also fits the 16px placeholder status
-// text (~272px) in its box. Bump down for narrower wrap; up if English-heavy
-// content wraps too eagerly.
+// regardless of script. Sized for the 16px placeholder status text: 34 units
+// (~272px) keeps a wrapped status / failure line inside the placeholder box.
+// Bump down for narrower wrap; up if English-heavy content wraps too eagerly.
 const MAX_LINE_UNITS = 34;
 
 const VIDEO_CARD_WIDTH = 300;
@@ -90,11 +77,13 @@ const PLACEHOLDER_IMAGE_DIM = 400;
 const PLACEHOLDER_VIDEO_WIDTH = 360;
 const PLACEHOLDER_VIDEO_HEIGHT = 200;
 
-// Pack-mode (slot_index 模式): 永久 label 浮在 rect 上方, 字号比内部 loading
-// text 小, 颜色稍深 (区分: label 是结构, loading 是状态)
-const PACK_LABEL_FONT_SIZE = 14;
-const PACK_LABEL_HEIGHT = 22;
-const PACK_LABEL_GAP = 6;
+// Pack-mode (slot_index 模式): 永久 label 浮在 rect 上方。字号 = 画布默认正文字号
+// (跟 canvex-workspace 的 DEFAULT_TEXT_FONT_SIZE 一致, 64px), 否则 2048² 的 slot 上
+// 顶一个 14px label 小得几乎看不见。HEIGHT 按一行 64px 文本 (≈fontSize×4/3) 预留,
+// 否则 labelPad 低估、label 压到上一行。颜色稍深 (区分: label 是结构, loading 是状态)。
+const PACK_LABEL_FONT_SIZE = 64;
+const PACK_LABEL_HEIGHT = Math.round((PACK_LABEL_FONT_SIZE * 4) / 3);
+const PACK_LABEL_GAP = 8;
 const PACK_LABEL_COLOR = "#334155";
 
 // Pack-mode row 找 y 时的"最坏整行宽度"假设. amazon-listing-pack-sop 标准 7 张,
@@ -393,12 +382,12 @@ function frameToContent(api: ExcalidrawImperativeAPI, target: readonly Excalidra
 
 /** Visual width of a single Unicode code point, in "half-width units":
  *  CJK ideographs + full-width punctuation + Hangul + Kana → 2 units (matches
- *  their square / near-square rendering at our NOTE_FONT_SIZE). Everything
- *  else → 1 unit (Latin, Cyrillic, half-width punctuation, etc.).
+ *  their square / near-square rendering at the placeholder status text's font
+ *  size). Everything else → 1 unit (Latin, Cyrillic, half-width punctuation, etc.).
  *
  *  Pure ASCII text is bit-for-bit identical to the old length-based wrap; the
  *  weighting only kicks in for CJK content that previously overflowed the
- *  NOTE_WIDTH because length-counting under-budgeted full-width glyphs. */
+ *  placeholder box because length-counting under-budgeted full-width glyphs. */
 function charWidthUnits(ch: string): number {
   const code = ch.codePointAt(0) ?? 0;
   if (
@@ -609,7 +598,6 @@ export interface PinAnchor {
 }
 
 export interface UseCanvasPinning {
-  pinMessage: (message: CanvasChatMessage) => void;
   /** Find or create the scene's chat frame (native Excalidraw frame the
    *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
   ensureChatFrame: () => string | null;
@@ -705,7 +693,7 @@ export type CanvasEditPinning = Pick<
 type ElementSkeleton = Parameters<typeof convertToExcalidrawElements>[0];
 
 /** Direction the overlap search walks when blocked.
- *  - `"down"`: chat-column stack (pinMessage + agent-tool image pins).
+ *  - `"down"`: chat-column stack (agent-tool image / video pins).
  *  - `"right"`: toolbar-anchored chain —— every submit / n>1 result grows
  *    horizontally to the right of the source selection, keeping a single row.
  */
@@ -713,8 +701,8 @@ type SearchDirection = "down" | "right";
 
 /** Find an empty (width × height) slot starting at (startX, startY), walking
  *  either down or right when blocked. `gap` pads collisions so pins never
- *  touch. Used by all three insertion paths (pinMessage / pinImage / pinVideo)
- *  plus createPlaceholder.
+ *  touch. Used by the insertion paths (pinImage / pinVideo) plus
+ *  createPlaceholder.
  *
  *  Exported for unit testing — also reused by `createPlaceholder` pack-mode
  *  path with a wide `width` (= worst-case full row width, PACK_ROW_SLOTS slots)
@@ -767,21 +755,29 @@ export function findNonOverlappingPinPosition(
   return { x, y };
 }
 
-/** 从场景推导聊天列的下一个起始 y: 取「列内 band 内、带 aiChatType 的托管 pin」的最大
- *  下沿 + PIN_GAP; 没有则 PIN_ORIGIN_Y. 重载/续聊用它把新内容接到列底, 保持聊天顺序、
+/** 从场景推导聊天列的下一个起始 y: 取「列 x-band 内、带 aiChatType 的托管 pin」的最大
+ *  下沿 + PIN_GAP; 没有则 `fallbackY`. 重载/续聊用它把新内容接到列底, 保持聊天顺序、
  *  不落进空洞 (取代旧的视口重锚定)。纯函数 → 单测覆盖, 与 findNonOverlappingPinPosition
- *  同一可测层。 */
-export function computeColumnStartY(elements: readonly ExcalidrawElement[]): number {
+ *  同一可测层。
+ *
+ *  `bandLeft` = 本列的左 x (默认 PIN_ORIGIN_X 兼容旧左列;聊天列现在锚到 chat frame
+ *  右侧, 传 frame 右沿)。band 同时设下界 (排除列左侧元素, 典型是 chat frame 自身——
+ *  它的左沿远在 startX 左边) 和上界 (排除远端锚点 pin)。 */
+export function computeColumnStartY(
+  elements: readonly ExcalidrawElement[],
+  bandLeft: number = PIN_ORIGIN_X,
+  fallbackY: number = PIN_ORIGIN_Y,
+): number {
   let maxBottom = -Infinity;
   for (const el of elements) {
     const b = getElementBounds(el);
     if (!b) continue;                                        // deleted / 非有限
     const cd = el.customData;
     if (typeof cd?.aiChatType !== "string") continue;        // 仅托管 pin
-    if (b.left >= PIN_ORIGIN_X + PIN_COLUMN_BAND) continue;  // 排除远端锚点 pin
+    if (b.left < bandLeft - PIN_GAP || b.left >= bandLeft + PIN_COLUMN_BAND) continue;
     if (b.bottom > maxBottom) maxBottom = b.bottom;
   }
-  return maxBottom === -Infinity ? PIN_ORIGIN_Y : maxBottom + PIN_GAP;
+  return maxBottom === -Infinity ? fallbackY : maxBottom + PIN_GAP;
 }
 
 /** Jobs whose success shape is `results[]` (Asset URL rows) — image-edit and
@@ -883,29 +879,34 @@ export function useCanvasPinning(
 ): UseCanvasPinning {
   const nextYRef = useRef<number>(PIN_ORIGIN_Y);
   // reset 后 false; 首次解析列锚点时翻 true, 门控一次性「从场景推导 nextYRef 起点」。
-  // 列 x 现在恒为常量 PIN_ORIGIN_X (不再追视口), 故不需要 x 游标 ref.
   const columnInitializedRef = useRef<boolean>(false);
-  // Pack-mode 横排 (slot_index 模式) 的当前 row y. slot_index=0 时设置 + 顺便
-  // 推进 nextYRef 一整行; slot_index>0 时复用同一 y, x 按序号偏移。
+  // Pack-mode 横排 (slot_index 模式) 当前 row 的锚点: 第一个到达的 slot 把整行的 y
+  // (packRowYRef) 和 x 起点 (packRowStartXRef) 一次性 claim, 后续 slots 复用 (x 按
+  // slot_index 偏移)。x 必须跟 y 一样只 claim 一次 —— startX 现在跟随 chat frame 位置,
+  // 若每个 slot 都重算, frame 在并行 slot 之间被拖动会让后到的 slot 整行错位。
   const packRowYRef = useRef<number | null>(null);
+  const packRowStartXRef = useRef<number | null>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
 
   const reset = useCallback(() => {
     nextYRef.current = PIN_ORIGIN_Y;
     columnInitializedRef.current = false;
     packRowYRef.current = null;
+    packRowStartXRef.current = null;
     seenIdsRef.current = new Set();
   }, []);
 
   const resetPackRow = useCallback(() => {
     packRowYRef.current = null;
+    packRowStartXRef.current = null;
   }, []);
 
   /** Resolve the chat column's start (x, y) for the next pin. The column is
-   *  scene-anchored, NOT viewport-anchored: startX is the fixed PIN_ORIGIN_X
-   *  and startY is the monotonic column cursor (nextYRef). This is the fix for
-   *  "pin 位置很乱" —— the old body re-anchored the column to wherever the user
-   *  had panned, fragmenting a conversation into columns at arbitrary coords.
+   *  scene-anchored, NOT viewport-anchored: startX tracks the chat frame's right
+   *  edge (frame.x + frame.width + PIN_GAP), or falls back to PIN_ORIGIN_X when no
+   *  chat frame exists yet; startY is the monotonic column cursor (nextYRef). This
+   *  is the fix for "pin 位置很乱" —— the old body re-anchored the column to wherever
+   *  the user had panned, fragmenting a conversation into columns at arbitrary coords.
    *
    *  Init is lazy (first-use), not at reset(): the per-scene `<Excalidraw key>`
    *  remount means apiRef isn't repointed at the new scene yet when reset()
@@ -916,16 +917,23 @@ export function useCanvasPinning(
    *  Shared by `pinElements` (messages / image pins) and `createPlaceholder`
    *  (reserved slots + pack-mode startX) so they never diverge on x. */
   const resolveChatColumnAnchor = useCallback((): { startX: number; startY: number } => {
-    if (!columnInitializedRef.current) {
-      const api = apiRef.current;
-      // 只在真读到 scene 后才标记已初始化。api 为空 (实际不可达 —— 所有调用方都先 guard
-      // apiRef) 时保持未初始化, 下次重试 seed, 不会把列游标永久钉死在 PIN_ORIGIN_Y。
-      if (api) {
-        nextYRef.current = computeColumnStartY(api.getSceneElements());
-        columnInitializedRef.current = true;
-      }
+    const elements = apiRef.current?.getSceneElements() ?? null;
+    // 聊天生成的图 (单图 + pack) 排在 chat frame 右侧的一列里, 按到达顺序依次往下
+    // 排 —— 不再压在 frame 左上的固定列上。startX 每次按 frame 当前位置实时算 (frame
+    // 被拖动后新图跟着走)。还没 chat frame (罕见: ensureChatFrame 之前就 pin) 时回落
+    // 到旧的左列 PIN_ORIGIN_X。
+    const frame = elements ? findChatFrame(elements) : null;
+    const startX = frame ? frame.x + frame.width + PIN_GAP : PIN_ORIGIN_X;
+    if (!columnInitializedRef.current && elements) {
+      // 列游标 seed: 接在本 band 已有 pin 的下面 (重载/续聊保序), 否则从 frame 顶
+      // (无 frame 则 PIN_ORIGIN_Y) 起。只在真读到 scene 后标记已初始化, api 为空时
+      // 下次重试 seed, 不会把游标永久钉死。
+      nextYRef.current = computeColumnStartY(
+        elements, startX, frame ? frame.y : PIN_ORIGIN_Y,
+      );
+      columnInitializedRef.current = true;
     }
-    return { startX: PIN_ORIGIN_X, startY: nextYRef.current };
+    return { startX, startY: nextYRef.current };
   }, [apiRef]);
 
   /** Shared append: find a non-overlapping slot from either the caller-supplied
@@ -976,39 +984,6 @@ export function useCanvasPinning(
       return true;
     },
     [apiRef, resolveChatColumnAnchor],
-  );
-
-  const pinMessage = useCallback(
-    (message: CanvasChatMessage) => {
-      if (seenIdsRef.current.has(message.id)) return;
-      if (!apiRef.current) return;
-      seenIdsRef.current.add(message.id);
-
-      const wrapped = wrapText(message.content, MAX_LINE_UNITS);
-      const height = estimateHeight(wrapped, NOTE_LINE_HEIGHT_PX);
-      pinElements(NOTE_WIDTH, height, ({ x, y }) => [
-        {
-          type: "text",
-          x,
-          y,
-          text: wrapped,
-          fontSize: NOTE_FONT_SIZE,
-          width: NOTE_WIDTH,
-          height,
-          strokeColor: message.role === "user" ? USER_COLOR : ASSISTANT_COLOR,
-          backgroundColor: "transparent",
-          textAlign: "left",
-          verticalAlign: "top",
-          customData: {
-            aiChatType: "note-text",
-            aiChatRole: message.role,
-            aiChatMessageId: message.id,
-            aiChatCreatedAt: message.created_at,
-          },
-        },
-      ]);
-    },
-    [apiRef, pinElements],
   );
 
   /** Find (or create) the scene's chat frame — a native Excalidraw frame the
@@ -1278,18 +1253,22 @@ export function useCanvasPinning(
       // 全部归一); 这里作 defense-in-depth, 防其他未来调用方绕过 page 直接
       // createPlaceholder 时仍能拦住坏 slot_index。label-only / slot-only 两种
       // partial 情形都允许走 pack 排版 — 但只在 permanentLabel 真的存在时才在
-      // rect 上方预留 28px label 余量, 否则出现 "phantom band"。
+      // rect 上方预留 labelPad (= PACK_LABEL_HEIGHT + GAP) 的 label 余量, 否则出现 "phantom band"。
       const slotIdx = toolArgAsNonNegInt(layout?.slotIndex);
 
-      // Loading-box 尺寸 (image 占位, 非 video / 非 pack-mode row): 让虚线框和最终
-      // 结果一样大 —— 结果按 native 尺寸落在框中心 (见 replacePlaceholderWithImage)。
-      // 优先级: resultSize (预期生成图尺寸, 如 image-edit 升到 2K/4K) > anchor 源图
-      // rect (cutout/angle/split 等保持源尺寸) > 固定方块 (agent 无源图)。
+      // Loading-box 尺寸 (image 占位, 非 video): 让虚线框和最终结果一样大 —— 结果按
+      // native 尺寸落在框中心 (见 replacePlaceholderWithImage)。优先级: resultSize
+      // (预期生成图尺寸, 如 image-edit / pack 升到 2K/4K) > anchor 源图 rect
+      // (cutout/angle/split 等保持源尺寸) > 固定方块 (agent 无源图)。
+      // Pack-mode (slot_index 横排) 也必须走 resultSize: slot 之间按 `width` 间隔,
+      // 若框定死成 400² 而结果是 2048², 每张结果按 native 尺寸落在 416px 间距的
+      // slot 中心 → 7 张全叠在一起 (用户报的"叠加")。框=结果尺寸后, slot 间隔
+      // = 2048+gap, 结果落在同尺寸框正中, 互不重叠。
       const hasPositiveSize = (
         b: { width: number; height: number } | undefined,
       ): b is { width: number; height: number } => !!b && b.width > 0 && b.height > 0;
       const imageBox =
-        kind === "video" || slotIdx !== undefined
+        kind === "video"
           ? null
           : hasPositiveSize(resultSize)
             ? resultSize
@@ -1303,18 +1282,20 @@ export function useCanvasPinning(
 
       let x: number;
       let y: number;
+      // Pack-mode 整行 x 起点 (claim 后由 post-build 写进 packRowStartXRef)。
+      let packRowStartX: number | null = null;
       const labelPad = layout?.permanentLabel
         ? PACK_LABEL_HEIGHT + PACK_LABEL_GAP
         : 0;
       let claimNewPackRow = false;
       if (slotIdx !== undefined) {
-        // 横排锚点: slot_index 决定 x 偏移, 同一 row 共享 y (packRowYRef).
-        // 第一个到达的 slot (不论 slot_index 值) 在 row 还没 claim 时 claim;
-        // 后续 slots 复用. 不再依赖 "slot_index === 0 先到" 的 fragile 假设
-        // —— LLM 并行 tool_calls 数组顺序无保证。
-        const { startX } = resolveChatColumnAnchor();
-        x = startX + slotIdx * (width + PIN_GAP);
-        if (packRowYRef.current === null) {
+        // 横排锚点: 整行的 x 起点 (packRowStartXRef) 和 y (packRowYRef) 都在第一个
+        // 到达的 slot 处一次性 claim, 后续 slots 复用 —— slot_index 决定 x 偏移。不依赖
+        // "slot_index === 0 先到" (LLM 并行 tool_calls 顺序无保证); x 也不每个 slot
+        // 重算 (否则 chat frame 在并行 slot 之间被拖动 → 后到的 slot 整行错位)。
+        let rowStartX: number;
+        if (packRowYRef.current === null || packRowStartXRef.current === null) {
+          rowStartX = resolveChatColumnAnchor().startX;
           // Claim row: 不直接用 nextYRef.current, 而是用整行宽度 (PACK_ROW_SLOTS
           // 个 slot 的 worst-case footprint) 做 collision check, 否则同 scene 内
           // 第二次生 pack 时整行会糊到上一次的图上 (slot 0 偏巧避开了, slot
@@ -1322,21 +1303,24 @@ export function useCanvasPinning(
           const rowWidth = PACK_ROW_SLOTS * width + (PACK_ROW_SLOTS - 1) * PIN_GAP;
           const baseY = nextYRef.current + labelPad;
           ({ y } = findNonOverlappingPinPosition(
-            existing, startX, baseY, rowWidth, height, PIN_GAP, "down",
+            existing, rowStartX, baseY, rowWidth, height, PIN_GAP, "down",
           ));
           claimNewPackRow = true;
         } else {
+          rowStartX = packRowStartXRef.current;
           y = packRowYRef.current;
         }
+        x = rowStartX + slotIdx * (width + PIN_GAP);
+        packRowStartX = rowStartX;
       } else {
         // 默认: anchored → 选区右侧同 y; 非 anchored → chat 列 + 垂直堆叠
         const { startX, startY } = anchor
           ? { startX: anchor.x + anchor.width + PIN_GAP, startY: anchor.y }
           : resolveChatColumnAnchor();
         // 有 permanentLabel 时 (非 pack mode, agent 单图带标签的少见场景): label
-        // 画在 rect 上方 28px。startY 不补这段, findNonOverlappingPinPosition
-        // 只按 rect height 找位置, label 区域会压到上一个 pin (28-PIN_GAP=12px
-        // 重叠)。把搜索起点下移 labelPad 还原 PIN_GAP 边界。
+        // 画在 rect 上方 labelPad (= PACK_LABEL_HEIGHT + GAP)。startY 不补这段,
+        // findNonOverlappingPinPosition 只按 rect height 找位置, label 区域会压到
+        // 上一个 pin (labelPad - PIN_GAP 的重叠)。把搜索起点下移 labelPad 还原 PIN_GAP 边界。
         const adjustedStartY = startY + labelPad;
         const direction = anchor ? "right" : "down";
         ({ x, y } = findNonOverlappingPinPosition(
@@ -1353,6 +1337,7 @@ export function useCanvasPinning(
       // 现在 build 成功了, 可以安全推进 refs。
       if (slotIdx !== undefined && claimNewPackRow) {
         packRowYRef.current = y;
+        packRowStartXRef.current = packRowStartX;
         nextYRef.current = y + height + PIN_GAP;
       } else if (!anchor && slotIdx === undefined) {
         // 默认 chat column: 只有非 anchor 且非 pack mode 才推进
@@ -1513,10 +1498,20 @@ export function useCanvasPinning(
       if (!claimForReplace(placeholder, dedupKey)) return;
 
       const { dataURL, mimeType } = await fetchAsDataURL(url);
-      // Place at native pixel size so on-canvas size reflects real resolution,
-      // centered on the placeholder's center so it grows symmetrically out of
-      // the reserved box. Oversized results get framed after the replace.
-      const { width, height } = await imageDimensionsFromDataURL(dataURL);
+      // Size the result to FIT its reserved box (preserve aspect), centered on the
+      // box center. The box was reserved at the PREDICTED result size, but img2img
+      // can echo a source larger than the tier prediction (e.g. a 2968² product
+      // photo for a "1:1" 2K request). A larger-than-box result placed at native
+      // size, centered, overflows into the adjacent pack slot / column item →
+      // overlap (用户报的"重叠")。Capping keeps every result strictly inside its
+      // non-overlapping reserved box; result ≤ box → scale 1 (native size, no change).
+      const { width: nativeW, height: nativeH } = await imageDimensionsFromDataURL(dataURL);
+      const fit =
+        nativeW > 0 && nativeH > 0
+          ? Math.min(1, placeholder.width / nativeW, placeholder.height / nativeH)
+          : 1;
+      const width = Math.round(nativeW * fit);
+      const height = Math.round(nativeH * fit);
       const x = placeholder.x + placeholder.width / 2 - width / 2;
       const y = placeholder.y + placeholder.height / 2 - height / 2;
 
@@ -1595,7 +1590,6 @@ export function useCanvasPinning(
   );
 
   return {
-    pinMessage,
     ensureChatFrame,
     pinImage,
     pinVideo,

@@ -106,9 +106,8 @@ export function ChatOverlay({
               "mb-2 flex items-center gap-1.5 text-xs transition-all duration-300",
               isStreaming && "text-muted-foreground",
               status?.variant === "loading" && "text-muted-foreground",
-              status?.variant === "success" &&
-                "text-green-600 dark:text-green-400",
-              status?.variant === "error" && "text-red-500 dark:text-red-400",
+              status?.variant === "success" && "text-primary",
+              status?.variant === "error" && "text-destructive",
             )}
           >
             {isStreaming || status?.variant === "loading" ? (
