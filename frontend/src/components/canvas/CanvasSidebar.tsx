@@ -3,12 +3,15 @@ import { toast } from "sonner";
 import {
   Frame,
   Github,
+  HelpCircle,
   Images,
   Loader2,
   MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Trash2,
   Twitter,
@@ -44,6 +47,8 @@ import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
 import type { CanvasSceneListItem } from "@/types/canvex";
+import { HelpDialog } from "./HelpDialog";
+import { RingIcon } from "@/components/ui/icons/svg-spinners-270-ring";
 
 /** 全局事件: Workspace 重命名当前 scene 后 dispatch, 让侧栏同步列表文案。 */
 export const CANVAS_SCENE_RENAMED_EVENT = "canvas:scene-renamed";
@@ -73,6 +78,23 @@ function loadCollapsed(): boolean {
   } catch {
     // localStorage 在隐私模式下可能抛 SecurityError, 退回默认展开。
     return false;
+  }
+}
+
+// 置顶场景 id 列表持久化 (按浏览器存, 不跨设备)。
+const SIDEBAR_PINNED_KEY = "canvex:canvas-pinned-scenes";
+
+// 侧栏分组标题 (PINNED / SCENES) 共用样式。
+const SIDEBAR_SECTION_LABEL =
+  "mb-1.5 px-1 text-[10px] font-bold tracking-[0.08em] text-stone-400";
+
+function loadPinned(): string[] {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_PINNED_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -109,6 +131,8 @@ export function CanvasSidebar({
 
   const [deleteTarget, setDeleteTarget] = useState<CanvasSceneListItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState<string[]>(loadPinned);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed);
   const toggleCollapsed = useCallback(() => {
@@ -118,6 +142,20 @@ export function CanvasSidebar({
         window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
       } catch {
         // 隐私模式下 setItem 失败 —— UI 仍切换, 只是不持久化。
+      }
+      return next;
+    });
+  }, []);
+
+  const togglePin = useCallback((id: string) => {
+    setPinnedIds((prev) => {
+      const next = prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id];
+      try {
+        window.localStorage.setItem(SIDEBAR_PINNED_KEY, JSON.stringify(next));
+      } catch {
+        // 隐私模式下持久化失败 —— UI 仍切换。
       }
       return next;
     });
@@ -144,9 +182,11 @@ export function CanvasSidebar({
   // onSceneDeleted→setActiveSceneId(null):删当前 scene 后这里顺势挑下一个。
   useEffect(() => {
     if (!activeSceneId && scenes.length > 0) {
-      onSelectScene(scenes[0].id);
+      // 选"视觉最上面"那个 (置顶组排最前), 跟 UI 顺序一致, 而非 raw scenes[0]。
+      const first = scenes.find((s) => pinnedIds.includes(s.id)) ?? scenes[0];
+      onSelectScene(first.id);
     }
-  }, [activeSceneId, scenes, onSelectScene]);
+  }, [activeSceneId, scenes, pinnedIds, onSelectScene]);
 
   useEffect(() => {
     function handler(e: Event) {
@@ -229,6 +269,10 @@ export function CanvasSidebar({
     try {
       await canvasService.removeScene(deleteTarget.id);
       setScenes((prev) => prev.filter((s) => s.id !== deleteTarget.id));
+      // 同步把被删 scene 从置顶集剔除, 否则其 id 永久残留在 localStorage。
+      if (pinnedIds.includes(deleteTarget.id)) {
+        togglePin(deleteTarget.id);
+      }
       if (deleteTarget.id === activeSceneId) {
         onSceneDeleted?.(deleteTarget.id);
       }
@@ -243,6 +287,142 @@ export function CanvasSidebar({
 
   const deleteSceneTitle = deleteTarget?.title || "Untitled canvas";
 
+  // 置顶分组 (localStorage 持久化): 置顶场景排在最上方独立模块, 其余在 SCENES 下。
+  // 用 Set 做 O(1) 成员判断, 单次遍历切两组 (都保留 scenes 原序)。
+  const pinnedSet = new Set(pinnedIds);
+  const pinnedScenes: CanvasSceneListItem[] = [];
+  const unpinnedScenes: CanvasSceneListItem[] = [];
+  for (const s of scenes) {
+    (pinnedSet.has(s.id) ? pinnedScenes : unpinnedScenes).push(s);
+  }
+
+  // 单条 scene 行 (折叠 = 图标; 展开 = 名称 + ⋮ 菜单)。抽成函数以便置顶组 / 普通
+  // 组复用同一渲染, 不重复 JSX。
+  const renderSceneRow = (scene: CanvasSceneListItem) => {
+    const isActive = scene.id === activeSceneId;
+    const isEditing = editingId === scene.id;
+    const isPinned = pinnedSet.has(scene.id);
+
+    if (collapsed) {
+      return (
+        <li key={scene.id}>
+          <button
+            type="button"
+            onClick={() => onSelectScene(scene.id)}
+            title={scene.title || "Untitled canvas"}
+            aria-label={scene.title || "Untitled canvas"}
+            aria-current={isActive ? "page" : undefined}
+            className={cn(
+              "flex size-9 items-center justify-center rounded-md transition-colors",
+              isActive
+                ? "bg-primary/10 text-stone-900"
+                : "text-stone-500 hover:bg-stone-200 hover:text-stone-700",
+            )}
+          >
+            <Frame className="size-4" strokeWidth={2} />
+          </button>
+        </li>
+      );
+    }
+
+    return (
+      <li key={scene.id} className="group flex items-center gap-0.5">
+        {isEditing ? (
+          <Input
+            ref={editInputRef}
+            value={editingValue}
+            onChange={(e) => setEditingValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelRenameRef.current = true;
+                setEditingId(null);
+              }
+            }}
+            onBlur={() => {
+              if (cancelRenameRef.current) {
+                cancelRenameRef.current = false;
+                return;
+              }
+              void commitRename(scene, editingValue);
+            }}
+            className="mx-1 h-8 flex-1 px-2 text-sm"
+          />
+        ) : (
+          <button
+            type="button"
+            aria-current={isActive ? "page" : undefined}
+            className={cn(
+              "flex flex-1 items-center truncate rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
+              isActive
+                ? "bg-primary/10 text-stone-900"
+                : "text-stone-700 hover:bg-stone-200",
+            )}
+            onClick={() => onSelectScene(scene.id)}
+          >
+            <span className="truncate">
+              {scene.title || "Untitled canvas"}
+            </span>
+          </button>
+        )}
+        {!isEditing && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100 data-[state=open]:opacity-100"
+                aria-label="Canvas actions"
+              >
+                <MoreVertical className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-36">
+              <DropdownMenuItem onClick={() => togglePin(scene.id)}>
+                {isPinned ? (
+                  <>
+                    <PinOff className="mr-2 size-3.5" />
+                    Unpin
+                  </>
+                ) : (
+                  <>
+                    <Pin className="mr-2 size-3.5" />
+                    Pin to top
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => startRename(scene)}>
+                <Pencil className="mr-2 size-3.5" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => setDeleteTarget(scene)}
+              >
+                <Trash2 className="mr-2 size-3.5" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </li>
+    );
+  };
+
+  // 一个带 label 的 scene 分组 (PINNED / SCENES 共用); 折叠态隐藏 label。
+  const renderSceneSection = (label: string, items: CanvasSceneListItem[]) => (
+    <div className={collapsed ? "mb-2" : "mb-3"}>
+      {!collapsed && <h3 className={SIDEBAR_SECTION_LABEL}>{label}</h3>}
+      <ul
+        className={cn("flex flex-col", collapsed ? "items-center gap-1" : "gap-0.5")}
+      >
+        {items.map(renderSceneRow)}
+      </ul>
+    </div>
+  );
+
   return (
     <aside
       data-collapsed={collapsed ? "true" : "false"}
@@ -251,6 +431,13 @@ export function CanvasSidebar({
         collapsed ? "w-16 px-2" : "w-[230px] px-5",
       )}
     >
+      {/* 品牌标: 展开 = ring mark + "Canvex"; 折叠 = 仅 ring mark 居中 */}
+      <div className={cn("mb-4 flex items-center", collapsed ? "justify-center" : "gap-2 px-1")}>
+        <RingIcon className="shrink-0 text-primary" aria-hidden />
+        {!collapsed && (
+          <span className="text-[17px] font-semibold tracking-tight text-stone-900">Canvex</span>
+        )}
+      </div>
       {/* 顶部: 展开时 [新建 / 收起] 同排; 折叠时纵向堆叠 [展开 / 新建] */}
       {collapsed ? (
         <div className="mb-1.5 flex flex-col items-center gap-1.5">
@@ -324,15 +511,6 @@ export function CanvasSidebar({
         )}
       </div>
 
-      {/* SCENES 标题: 折叠态隐藏 (只剩图标条没有空间承载文字 label) */}
-      {!collapsed && (
-        <div className="mb-2">
-          <h3 className="text-[10px] font-bold tracking-[0.08em] text-stone-400">
-            SCENES
-          </h3>
-        </div>
-      )}
-
       <nav
         className={cn(
           "flex-1 overflow-y-auto overscroll-contain",
@@ -356,114 +534,46 @@ export function CanvasSidebar({
             </p>
           )
         ) : (
-          <ul
-            className={cn(
-              "flex flex-col",
-              collapsed ? "items-center gap-1" : "gap-0.5",
+          <>
+            {pinnedScenes.length > 0 && renderSceneSection("PINNED", pinnedScenes)}
+
+            {/* 折叠态: 置顶组与普通组之间一条短分隔线 (无文字 label 可区分两组) */}
+            {collapsed && pinnedScenes.length > 0 && unpinnedScenes.length > 0 && (
+              <div className="mx-auto my-1 h-px w-5 bg-stone-200" aria-hidden />
             )}
-          >
-            {scenes.map((scene) => {
-              const isActive = scene.id === activeSceneId;
-              const isEditing = editingId === scene.id;
 
-              // 折叠态: 每条 scene 退化成 Frame 图标按钮 + title tooltip。
-              // 重命名/删除 等需要文字承载的操作不在此态暴露 (展开后可用)。
-              if (collapsed) {
-                return (
-                  <li key={scene.id}>
-                    <button
-                      type="button"
-                      onClick={() => onSelectScene(scene.id)}
-                      title={scene.title || "Untitled canvas"}
-                      aria-label={scene.title || "Untitled canvas"}
-                      aria-current={isActive ? "page" : undefined}
-                      className={cn(
-                        "flex size-9 items-center justify-center rounded-md transition-colors",
-                        isActive
-                          ? "bg-primary/10 text-stone-900"
-                          : "text-stone-500 hover:bg-stone-200 hover:text-stone-700",
-                      )}
-                    >
-                      <Frame className="size-4" strokeWidth={2} />
-                    </button>
-                  </li>
-                );
-              }
-
-              return (
-                <li key={scene.id} className="group flex items-center gap-0.5">
-                  {isEditing ? (
-                    <Input
-                      ref={editInputRef}
-                      value={editingValue}
-                      onChange={(e) => setEditingValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          e.currentTarget.blur();
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          cancelRenameRef.current = true;
-                          setEditingId(null);
-                        }
-                      }}
-                      onBlur={() => {
-                        if (cancelRenameRef.current) {
-                          cancelRenameRef.current = false;
-                          return;
-                        }
-                        void commitRename(scene, editingValue);
-                      }}
-                      className="mx-1 h-8 flex-1 px-2 text-sm"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className={cn(
-                        "flex flex-1 items-center truncate rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
-                        isActive
-                          ? "bg-primary/10 text-stone-900"
-                          : "text-stone-700 hover:bg-stone-200",
-                      )}
-                      onClick={() => onSelectScene(scene.id)}
-                    >
-                      <span className="truncate">
-                        {scene.title || "Untitled canvas"}
-                      </span>
-                    </button>
-                  )}
-                  {!isEditing && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="flex size-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100 data-[state=open]:opacity-100"
-                          aria-label="Canvas actions"
-                        >
-                          <MoreVertical className="size-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-36">
-                        <DropdownMenuItem onClick={() => startRename(scene)}>
-                          <Pencil className="mr-2 size-3.5" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setDeleteTarget(scene)}
-                        >
-                          <Trash2 className="mr-2 size-3.5" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+            {unpinnedScenes.length > 0
+              ? renderSceneSection("SCENES", unpinnedScenes)
+              : !collapsed && (
+                  <p className="px-2 py-1 text-xs text-stone-400">
+                    All canvases are pinned.
+                  </p>
+                )}
+          </>
         )}
       </nav>
+
+      {/* 帮助入口: 展开 = 行; 折叠 = 图标。打开教程弹层。 */}
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setHelpOpen(true)}
+          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
+          aria-label="Help & tips"
+          title="Help & tips"
+        >
+          <HelpCircle className="size-4" strokeWidth={2} />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setHelpOpen(true)}
+          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-200"
+        >
+          <HelpCircle className="size-4 shrink-0" strokeWidth={2} />
+          Help &amp; tips
+        </button>
+      )}
 
       {/* 作者社交链接: 展开=一排图标, 折叠=纵向堆叠。外链新标签页打开。 */}
       <div
@@ -486,6 +596,8 @@ export function CanvasSidebar({
           </a>
         ))}
       </div>
+
+      <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
 
       <Dialog
         open={createOpen}
