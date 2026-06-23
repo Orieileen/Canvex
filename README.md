@@ -16,18 +16,18 @@ Language: [中文](./README.zh-CN.md)
 
 - **Chat to create** — type a prompt in the canvas chat box; the agent generates one or more images (or a video) and pins them onto the board.
 - **AI toolbar on any image** — select an image to get a floating toolbar:
-  - **Edit** — restyle / change anything by prompt (text-to-image and image-to-image).
-  - **Cutout** — one-click background removal to a transparent subject (rembg).
-  - **Split** — two stacked results from one image: a transparent subject + a clean subject-removed background (atomic — both or neither).
+  - **Edit** — restyle / change anything by prompt.
+  - **Cutout** — one-click background removal to a transparent subject.
+  - **Split** — two stacked results from one image: a transparent subject + a clean subject-removed background.
   - **Angle** — drag a 3D cube to re-render the shot from a new camera viewpoint (fal.ai LoRA).
   - **Video** — animate a still into a clip.
-  - **Mockup** — wrap a design onto another image using depth, with Depth / Mask / Opacity controls.
-  - **Merge / Adjust / Download / Send to chat** — flatten a selection locally, a Lightroom-style color panel, export the canvas, or attach an image as a chat reference.
-- **Box & arrow annotations** — draw a box, arrow, or text label over an image to point the AI at a region. Marks become spatial coordinates in the prompt, so the source image stays clean and the annotations never appear in the result.
-- **Skills** — built-in playbooks the agent follows (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). Toggle any skill off per message from the chat box.
+  - **Mockup** — wrap a design image onto another image using depth, with Depth / Mask / Opacity controls.
+  - **Merge / Adjust / Download / Send to chat** — flatten a selection locally, a Lightroom-style color panel, export the canvas, or attach an image as a reference for the LLM agent.
+- **Box & arrow annotations** — fine-grained image editing: draw a box, arrow, or text label over an image to point the AI at a region.
+- **Skills** — built-in playbooks the agent follows (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). Toggle any skill off per message from the chat box. You can add or remove skills yourself.
 - **Scenes** — multiple independent canvases in the sidebar: create, rename, delete, **pin to top**, quick switching; edits autosave.
-- **Media library** — every generated image / video, grouped per canvas; click a thumbnail to drop it back onto the current board.
-- **Resolution tiers** — 1K / 2K / 4K for image generation and editing.
+- **Media library** — saves every image / video you generate, grouped per canvas; click a thumbnail to drop it back onto the current board.
+- **Resolution tiers** — 1K / 2K / 4K for image generation and editing (subject to provider and model support).
 
 ## Architecture at a glance
 
@@ -74,6 +74,9 @@ Set at least the chat and image-provider keys (see the table below). `.env.examp
 ### 3) Run (Docker)
 
 Prerequisites: Docker + Docker Compose.
+
+- Docker Desktop: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
+- Docker Compose install docs: [https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
 
 ```bash
 docker compose up -d --build
