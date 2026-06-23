@@ -106,6 +106,7 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 
 Notes:
 
+- The **Angle** (multi-viewpoint) feature runs on [fal.ai](https://fal.ai): sign up for a fal.ai account, create an API key, and set it as `CANVAS_ANGLE_FAL_API_KEY`. No fal.ai account is needed for the other features.
 - The image channel also accepts a fallback provider (`CANVAS_IMAGE_FALLBACK_*`) plus per-provider field-mapping / async-polling knobs (`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`, `_RESPONSE_FORMAT`, `_POLL_ENABLED`, `_POLL_MAX_ATTEMPTS`, `_POLL_INTERVAL`, …) so it works with non-OpenAI gateways. See [.env.example](./.env.example).
 - Chat and image/video can share one provider (set the matching `*_BASE_URL` and keys).
 - The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).

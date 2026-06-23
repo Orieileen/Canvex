@@ -106,6 +106,7 @@ docker compose up -d --build
 
 说明：
 
+- **换视角**（多视角）功能跑在 [fal.ai](https://fal.ai) 上：需要去 fal.ai 注册一个账号、创建一个 API key，填到 `CANVAS_ANGLE_FAL_API_KEY`。其它功能不需要 fal.ai 账号。
 - 图像通道还支持备用供应商（`CANVAS_IMAGE_FALLBACK_*`）及按供应商的字段映射 / 异步轮询旋钮（`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`、`_RESPONSE_FORMAT`、`_POLL_ENABLED`、`_POLL_MAX_ATTEMPTS`、`_POLL_INTERVAL` …），以适配非 OpenAI 网关。详见 [.env.example](./.env.example)。
 - 聊天与图像/视频可共用一个供应商（设置对应的 `*_BASE_URL` 和 key）。
 - 产品免费、单工作区：没有鉴权，计费是空操作桩（`CANVAS_CREDIT_COST_*` 不起作用）。
