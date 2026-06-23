@@ -1,317 +1,178 @@
 <div align="center">
   <h1>Canvex</h1>
-  <p>Canvex is an infinite canvas LLM agent with scene creation capabilities</p>
+  <p>Canvex is an infinite-canvas LLM agent that can chat, use skills, generate, and edit images and videos. With scene management, you can organize multiple canvases for different projects.</p>
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
     <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
+    <a href="https://github.com/langchain-ai/deepagents"><img src="https://img.shields.io/badge/Agent-deepagents-1C3C3C" alt="Agent"></a>
   </p>
 </div>
 
 Language: [中文](./README.zh-CN.md)
 
-## Core Features
+## Features
 
-- Canvas scene management: create, save, and load scene data.
-- Flowcharts: quickly build process flows and structural relationships on canvas.
-- Free drawing: create hand-drawn content with the brush tool.
-- Import and export: import and export canvas content.
-- AI Agent: drive editing workflows with natural language.
-- Image generation and editing: supports text-to-image, image-to-image, and cutout workflows.
-- Video generation: generate videos from prompts or reference images with job polling support.
-- Text editing: add text anywhere on the canvas.
-- Media job management: unified status and result retrieval for image/video jobs.
+- **Chat to create** — type a prompt in the canvas chat box; the agent generates one or more images (or a video) and pins them onto the board.
+- **AI toolbar on any image** — select an image to get a floating toolbar:
+  - **Edit** — restyle / change anything by prompt (text-to-image and image-to-image).
+  - **Cutout** — one-click background removal to a transparent subject (rembg).
+  - **Split** — two stacked results from one image: a transparent subject + a clean subject-removed background (atomic — both or neither).
+  - **Angle** — drag a 3D cube to re-render the shot from a new camera viewpoint (fal.ai LoRA).
+  - **Video** — animate a still into a clip.
+  - **Mockup** — wrap a design onto another image using depth, with Depth / Mask / Opacity controls.
+  - **Merge / Adjust / Download / Send to chat** — flatten a selection locally, a Lightroom-style color panel, export the canvas, or attach an image as a chat reference.
+- **Box & arrow annotations** — draw a box, arrow, or text label over an image to point the AI at a region. Marks become spatial coordinates in the prompt, so the source image stays clean and the annotations never appear in the result.
+- **Skills** — built-in playbooks the agent follows (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). Toggle any skill off per message from the chat box.
+- **Scenes** — multiple independent canvases in the sidebar: create, rename, delete, **pin to top**, quick switching; edits autosave.
+- **Media library** — every generated image / video, grouped per canvas; click a thumbnail to drop it back onto the current board.
+- **Resolution tiers** — 1K / 2K / 4K for image generation and editing.
 
-## AI Agent Graph Architecture
+## Architecture at a glance
 
 ```mermaid
-flowchart TD
-  A["chat msg"] --> B["load_memory"]
-  B --> C["call_llm"]
-  C --> D{"action router"}
-  D -->|chat| E["stream assistant"]
-  D -->|generate_image| F["imagetool"]
-  D -->|generate_video| G["videotool job queue"]
-  D -->|generate_flowchart| H["mermaid flowchart"]
-  D -->|clarify| I["clarify question"]
-  F --> E
-  G --> E
-  H --> E
-  I --> E
-  E --> J["update_memory"]
-  J --> K["rolling summary"]
-  K --> L["summary_history"]
-  L --> M{"stable entries"}
-  M -->|yes| N["memory_state"]
-  M -->|no| O["skip memory update"]
-  N --> P["redis persist"]
-  O --> P
+flowchart LR
+  subgraph FE["Frontend — React + Excalidraw"]
+    Chat["Chat box"]
+    Bar["AI toolbar"]
+  end
+  subgraph BE["Backend — Django + DRF"]
+    Agent["deepagents agent<br/>(skills + tools)"]
+    API["job endpoints"]
+  end
+  Q[["Celery queues<br/>canvas · canvas_cpu"]]
+  Prov["image / video / fal.ai providers"]
+
+  Chat -->|"POST /chat/ (NDJSON)"| Agent
+  Agent -->|"generate_image · generate_video"| Q
+  Bar -->|"edit · cutout · split · angle · video"| API --> Q
+  Q --> Prov --> Q
+  Q -->|"poll job → pin result"| FE
 ```
 
-- The fixed main path is: `load_memory -> call_llm -> update_memory`.
-- Inside `call_llm`, an action router decides whether to continue normal chat or trigger image/video/flowchart tools.
-- `rolling summary` updates `summary_state` each turn and appends snapshots to `summary_history` (sliding window).
-- Entries are promoted to long-term `memory_state` only after reaching the stability threshold within the window, which avoids one-off chat noise.
+- The chat agent is **deepagents** (`create_deep_agent`) with two tools (`generate_image`, `generate_video`), a per-scene memory file, and progressively-disclosed **SKILL.md** skills. Chat history is replayed from the database each turn (no separate memory store required).
+- Every generation is an async **job**: the API creates a `QUEUED` row and enqueues a Celery task on commit; the frontend polls the job until the result is ready, then pins it. Cutout runs as a 2-stage chain (LLM white-out → CPU rembg alpha).
 
-## 1-Minute Setup
-### 1) Clone the Repository
+## Setup
+
+### 1) Clone
 
 ```bash
 git clone https://github.com/Orieileen/Canvex.git
 cd Canvex
 ```
 
-### 2) Docker Deployment
-Prerequisites: `Docker`, `Docker Compose`
-
-- Docker Desktop: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
-- Docker Compose install docs: [https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
+### 2) Configure
 
 ```bash
 cp .env.example .env
+```
+
+Set at least the chat and image-provider keys (see the table below). `.env.example` is the full, commented reference — including the optional fallback provider, async-polling, and field-mapping knobs.
+
+### 3) Run (Docker)
+
+Prerequisites: Docker + Docker Compose.
+
+```bash
 docker compose up -d --build
 ```
-### Required Environment Variables
 
-At minimum, configure these variables in `.env` to get started:
+This starts Postgres, Redis, the backend (which runs migrations on startup), three Celery workers, and the frontend dev server.
 
-| Variable | Notes | Example |
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:28000
+
+## Environment variables
+
+Minimum to get started (full list and tuning knobs in [.env.example](./.env.example)):
+
+| Variable | Required | Notes |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | API key for the chat LLM | `sk-xxxx` |
-| `OPENAI_BASE_URL` | Chat LLM endpoint (OpenAI or compatible gateway) | `https://api.openai.com/v1` |
-| `CHAT_MODEL` | Chat model name | `gpt-4o-mini` |
-| `MEDIA_API_KEY` | API key for image/video tasks (can be same as `OPENAI_API_KEY`) | `sk-xxxx` |
-| `MEDIA_BASE_URL` | Endpoint for image/video tasks | `https://api.openai.com/v1` |
-| `MEDIA_IMAGE_MODEL` | Image generation model | `gpt-image-1.5` |
-| `MEDIA_IMAGE_EDIT_MODEL` | Image editing model | `gpt-image-1.5` |
-| `MEDIA_VIDEO_MODEL` | Video generation model | `sora-2` |
-
-### Third-Party Provider Compatibility
-
-Both image and video support two execution paths: **OpenAI SDK** (default) and **Compat endpoint** (enabled by setting `*_COMPAT_ENDPOINT`). Compat endpoints allow free combination of field names and request formats via environment variables to work with any third-party provider.
-
-#### Image — Generation & Editing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `MEDIA_IMAGE_COMPAT_ENDPOINT` | Generation compat endpoint path (appended to `MEDIA_BASE_URL`) | unset = OpenAI SDK |
-| `MEDIA_IMAGE_COMPAT_SIZE_FIELD` | Size field name for generation | `size` |
-| `MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT` | Image editing compat endpoint path | unset = OpenAI SDK |
-| `MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD` | Source image field name (wrapped as array if contains `urls`) | `image_urls` |
-| `MEDIA_IMAGE_EDIT_COMPAT_SIZE_FIELD` | Size field name for editing | `size` |
-| `MEDIA_IMAGE_COMPAT_POLL_ENDPOINT` | Async provider poll path | same as creation endpoint |
-| `MEDIA_IMAGE_POLL_INTERVAL` | Poll interval (seconds) | `3` |
-| `MEDIA_IMAGE_POLL_MAX_ATTEMPTS` | Max poll attempts | `200` |
-
-#### Video
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `MEDIA_VIDEO_COMPAT_ENDPOINT` | Compat endpoint path | unset = OpenAI SDK |
-| `MEDIA_VIDEO_COMPAT_CONTENT_TYPE` | Request format: `json` or `multipart` | `json` |
-| `MEDIA_VIDEO_COMPAT_DURATION_FIELD` | Duration field name | `duration` |
-| `MEDIA_VIDEO_COMPAT_SIZE_FIELD` | Size field name (`aspect_ratio` sends `"16:9"`, `size` sends `"1280x720"`) | `aspect_ratio` |
-| `MEDIA_VIDEO_COMPAT_IMAGE_FIELD` | Image reference field name | `image` |
-| `MEDIA_VIDEO_POLL_INTERVAL` | Poll interval (seconds) | `5` |
-| `MEDIA_VIDEO_POLL_MAX_ATTEMPTS` | Max poll attempts | `360` |
-
-#### Configuration Examples
-
-<details>
-<summary>OpenAI Direct (default, no extra config needed)</summary>
-
-```env
-MEDIA_BASE_URL=https://api.openai.com/v1
-MEDIA_IMAGE_MODEL=gpt-image-1.5
-MEDIA_VIDEO_MODEL=sora-2
-```
-
-</details>
-
-<details>
-<summary>Provider A — JSON async</summary>
-
-```env
-MEDIA_BASE_URL=https://your-provider-a.com/v1
-
-# Image generation
-MEDIA_IMAGE_MODEL=your-image-model
-MEDIA_IMAGE_COMPAT_ENDPOINT=/images/generations
-MEDIA_IMAGE_COMPAT_POLL_ENDPOINT=/tasks
-
-# Image editing (same endpoint + image_urls for source image)
-MEDIA_IMAGE_EDIT_MODEL=your-image-model
-MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT=/images/generations
-MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD=image_urls
-
-# Video
-MEDIA_VIDEO_MODEL=sora-2
-MEDIA_VIDEO_COMPAT_ENDPOINT=/videos/generations
-MEDIA_VIDEO_COMPAT_CONTENT_TYPE=json
-MEDIA_VIDEO_COMPAT_DURATION_FIELD=duration
-MEDIA_VIDEO_COMPAT_SIZE_FIELD=aspect_ratio
-```
-
-</details>
-
-<details>
-<summary>Provider B — multipart</summary>
-
-```env
-MEDIA_BASE_URL=https://your-provider-b.com/v1
-
-# Video
-MEDIA_VIDEO_MODEL=sora-2
-MEDIA_VIDEO_COMPAT_ENDPOINT=/videos
-MEDIA_VIDEO_COMPAT_CONTENT_TYPE=multipart
-MEDIA_VIDEO_COMPAT_DURATION_FIELD=seconds
-MEDIA_VIDEO_COMPAT_SIZE_FIELD=size
-MEDIA_VIDEO_COMPAT_IMAGE_FIELD=input_reference
-```
-
-</details>
-
-### Database
-
-Docker Compose database defaults:
-
-| Variable | Notes | Example |
-| --- | --- | --- |
-| `POSTGRES_DB` | App database name | `canvex` |
-| `POSTGRES_USER` | App database user | `canvex` |
-| `POSTGRES_PASSWORD` | App database password | `canvex` |
-| `POSTGRES_HOST` | Postgres host (keep as `postgres` for Docker Compose) | `postgres` |
-| `POSTGRES_PORT` | Postgres port | `5432` |
+| `CANVAS_CHAT_API_KEY` | ✅ chat | LLM key for the agent. Must support OpenAI-style tool calling. Does **not** fall back to `OPENAI_*`. |
+| `CANVAS_CHAT_BASE_URL` | – | Chat endpoint; empty = OpenAI default. |
+| `CANVAS_CHAT_MODEL` | – | Default `gpt-4o-mini`. |
+| `CANVAS_IMAGE_PRIMARY_API_KEY` | ✅ images | Key for image generation / editing. Falls back to `OPENAI_API_KEY` if unset. |
+| `CANVAS_IMAGE_PRIMARY_BASE_URL` | – | Image endpoint (OpenAI-compatible `/images/generations`). Falls back to `OPENAI_BASE_URL`. |
+| `CANVAS_IMAGE_PRIMARY_MODEL` | ✅ images | Image model name. |
+| `CANVAS_VIDEO_API_KEY` / `_BASE_URL` / `_MODEL` | ✅ video | Required to use the Video feature (OpenAI-compatible `POST {base}/videos/generations` + poll). |
+| `CANVAS_ANGLE_FAL_API_KEY` | ✅ angle | [fal.ai](https://fal.ai) key; required for the Angle (camera-viewpoint) feature. |
+| `PUBLIC_MEDIA_BASE` | ⚠️ | Public URL of this backend (default `http://localhost:28000`). Must be reachable by the providers for image-to-image / video / angle (they fetch the source image) — use a tunnel/CDN in prod. Pure text-to-image doesn't need it. |
+| `CANVAS_AGENT_STORE_BACKEND` | – | `memory` (default, in-process) or `postgres` (persistent agent memory). |
+| `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | Default all `canvex`. |
+| `BACKEND_PORT` / `FRONTEND_PORT` | – | Host ports, default `28000` / `5173`. |
+| `VITE_API_URL` | – | Backend URL the frontend calls; default `http://localhost:28000`. |
 
 Notes:
 
-- When using a third-party compatible gateway, set `*_BASE_URL` and model names per that gateway's documentation.
-- If chat and media use the same provider, `OPENAI_*` and `MEDIA_*` can share the same configuration.
-- `docker compose up -d --build` starts Postgres automatically and runs migrations on backend startup.
-- See [.env.example](./.env.example) for a full environment variable reference.
+- The image channel also accepts a fallback provider (`CANVAS_IMAGE_FALLBACK_*`) plus per-provider field-mapping / async-polling knobs (`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`, `_RESPONSE_FORMAT`, `_POLL_ENABLED`, `_POLL_MAX_ATTEMPTS`, `_POLL_INTERVAL`, …) so it works with non-OpenAI gateways. See [.env.example](./.env.example).
+- Chat and image/video can share one provider (set the matching `*_BASE_URL` and keys).
+- The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).
 
-After startup, open:
+## API
 
-- Frontend: [http://localhost:5173](http://localhost:5173)
-- Backend API: [http://localhost:28000](http://localhost:28000)
+All routes are under `/api/v1/canvas/`.
 
+| Purpose | Endpoint |
+| --- | --- |
+| Scenes (CRUD) | `GET/POST /scenes/`, `GET/PATCH/DELETE /scenes/{id}/` |
+| Chat (NDJSON stream) | `POST /scenes/{id}/chat/` |
+| Image edit / generate | `POST /scenes/{id}/image-edit/` → `GET /image-edit-jobs/{job_id}/` |
+| Split (subject + background) | `POST /scenes/{id}/split/` |
+| Video | `POST /scenes/{id}/video/` → `GET /video-jobs/{job_id}/` |
+| Angle (fal.ai) | `POST /scenes/{id}/angle/` → `GET /angle-jobs/{job_id}/` |
+| Active jobs (resume polling) | `GET /scenes/{id}/active-jobs/` |
+| Send-to-chat upload | `POST /scenes/{id}/upload-attachment/` |
+| Media library | `GET /media-library/folders/`, `GET /media-library/folders/{scene_id}/items/` |
+| Skills | `GET /skills/` |
 
-## Common APIs
+The chat endpoint streams **NDJSON** (one JSON object per line; event types: `user_created`, `tool_call`, `tool_result`, `assistant_final`, `assistant`, `error`, `done`), not SSE.
 
-- Scene: `/api/v1/excalidraw/scenes/`
-- Chat: `/api/v1/excalidraw/scenes/{id}/chat/`
-- Image edit: `/api/v1/excalidraw/scenes/{id}/image-edit/`
-- Video generation: `/api/v1/excalidraw/scenes/{id}/video/`
-- Job status: `/api/v1/excalidraw/image-edit-jobs/{job_id}/`, `/api/v1/excalidraw/video-jobs/{job_id}/`
+## Backend
 
-
-## Backend Architecture
-
-Tech stack: Django + DRF + Celery + Redis + PostgreSQL + LangGraph.
-
-### Directory Structure
+Tech stack: **Django + DRF + Celery + Redis + PostgreSQL + deepagents** (LangChain / LangGraph under the hood).
 
 ```
 backend/
-├── config/                # Django configuration
-│   ├── settings.py        # Global settings, database, CORS, Celery
-│   ├── celery.py          # Celery app initialization
-│   └── urls.py            # Root URL routing
-└── studio/                # Main app
-    ├── models.py           # Data models (Scene, Job, Asset, Folder)
-    ├── views.py            # API endpoints (Chat, ImageEdit, Video)
-    ├── serializers.py      # DRF serializers
-    ├── urls.py             # App routing
-    ├── graphs.py           # AI Agent Graph (LangGraph orchestration)
-    ├── memory.py           # Redis memory system (summary + memory)
-    ├── tasks.py            # Celery async tasks (image editing, video generation)
-    ├── video_script.py     # Video shooting script analysis
-    └── tools/              # Media generation utilities
-        ├── image.py        # Image generation & editing (OpenAI SDK / Compat)
-        ├── video.py        # Video generation (OpenAI SDK / Compat)
-        ├── assets.py       # Asset storage & folder management
-        └── common.py       # Shared utilities (URL resolution, image download, OpenAI client)
+├── config/                      # Django project (settings, celery, urls, wsgi/asgi)
+└── studio/                      # Main app, mounted at /api/v1/canvas/
+    ├── models.py                # Scene, ChatMessage, ImageEditJob/Result,
+    │                            #   VideoJob, AngleJob/Result, DataFolder/DataAsset
+    ├── views.py  serializers.py  urls.py
+    ├── tasks.py                 # Celery: canvas.image_edit_job / image_edit_cutout_job
+    │                            #   / video_job / angle_job / cutout_llm_step
+    └── services/
+        ├── image.py video.py angle.py        # job creation + provider calls
+        ├── image_client.py                   # OpenAI-compatible image client (prefix-configurable)
+        ├── attachments.py scenes.py billing.py (no-op) http_retry.py listings_utils.py
+        └── agent/
+            ├── builder.py        # create_deep_agent (model, tools, skills, memory, store)
+            ├── skills.py  context.py
+            ├── tools/            # common.py, image.py (generate_image), video.py (generate_video)
+            └── skills/           # image-prompt-sop/SKILL.md, amazon-listing-pack-sop/SKILL.md
 ```
 
-### Dual-Path Media Generation
+### Async job pipeline
 
-Both image and video support two execution paths, switched by `*_COMPAT_ENDPOINT` environment variables:
+A generation request creates a `QUEUED` job in a transaction and enqueues a Celery task on commit (returns `202` with `{job_id, status}`). Tasks run on dedicated queues:
 
-| Feature | OpenAI SDK (default) | Compat endpoint |
-|---|---|---|
-| Image generation | Responses API + `image_generation` | POST JSON → sync extraction or async polling |
-| Image editing | Responses API + `image_generation(edit)` | POST JSON (with source image data URL) → sync/async |
-| Video | `client.videos.create` → poll → download | POST JSON or multipart → poll → download |
+| Queue (worker) | Pool | Tasks |
+| --- | --- | --- |
+| `canvas` (`worker_canvas`) | gevent | `image_edit_job`, `video_job`, `angle_job`, `cutout_llm_step` |
+| `canvas_cpu` (`worker_canvas_cpu`) | prefork | `image_edit_cutout_job` (rembg alpha, CPU-bound) |
+| `excalidraw` (`worker`) | prefork | default queue |
 
-Compat path field names (size, duration, image reference) and request format (JSON/multipart) are all configurable via environment variables. See [.env.example](./.env.example).
-
-### Image Generation & Editing Flow
-
-```
-POST /api/v1/excalidraw/scenes/{id}/image-edit/
-  → Create ExcalidrawImageEditJob (status=QUEUED)
-  → Celery: run_excalidraw_image_edit_job
-    → _edit_image_media(source_bytes, prompt, size)
-      ├─ COMPAT_ENDPOINT set → _post_compat_image_request()
-      │   ├─ Response has image data → sync extraction
-      │   └─ Response has task_id   → async polling → download
-      └─ Not set → Responses API (image_generation action=edit)
-    → [is_cutout? → rembg background removal]
-    → _save_asset() → ExcalidrawImageEditResult
-```
-
-Image generation via AI chat goes through `graphs.py → imagetool → _generate_image_media()`, a similar flow without the Job queue.
-
-### Video Generation Flow
-
-```
-POST /api/v1/excalidraw/scenes/{id}/video/
-  → Create ExcalidrawVideoJob (status=QUEUED)
-  → Celery: run_excalidraw_video_job
-    → _generate_video_media(payload)
-      ├─ COMPAT_ENDPOINT set → JSON or multipart → poll → download
-      └─ Not set → OpenAI Videos API → poll → download
-    → Save thumbnail → update job (status, result_url, thumbnail_url)
-    → On failure: exponential backoff retry (up to 6 times, 20s ~ 180s)
-```
-
-The frontend polls `/api/v1/excalidraw/video-jobs/{job_id}/` for task status and result URLs.
-
-### SSE Streaming Response
-
-The chat endpoint with `?stream=1` returns an SSE event stream:
-
-```
-data: {"intent": "image"}                        ← notify frontend of image/video generation
-data: {"tool": "imagetool", "result": {...}}      ← tool execution result
-data: {"delta": "text chunk"}                     ← streaming text
-data: {"done": true, "message": {...}}            ← completion
-```
-
-### Memory System
-
-Redis stores two layers of state (per workspace + scene):
-
-- **summary_state** — current conversation summary (goal, constraints, decisions, open_questions, next_actions)
-- **memory_state** — long-term memory (preferences, policies, constraints)
-
-Summary is updated after each turn. Entries are promoted to long-term memory only after appearing ≥ `MEMORY_STABILITY_MIN_COUNT` times within the sliding window, preventing noise from being persisted.
-
-### Celery Tasks
-
-| Task | Trigger | Retry |
-|---|---|---|
-| `run_excalidraw_image_edit_job` | Image edit POST | No retry |
-| `run_excalidraw_video_job` | Video POST / AI chat | Exponential backoff, up to 6 times |
+Cutout / Split is a 2-stage chain: stage 1 (LLM, on `canvas`) produces a white-background image, stage 2 (rembg, on `canvas_cpu`) turns white → transparent alpha. The frontend polls the job endpoints (or `/active-jobs/`) and pins results when ready. Image/video tools invoked by the chat agent create the same jobs — the agent returns a "queued" confirmation and does not block on the render.
 
 ## FAQ
 
-- Media task failed: check logs
+- **Check logs** for a failed job — include all three workers:
 
-```bash
-docker compose logs -f backend worker frontend
-```
+  ```bash
+  docker compose logs -f backend worker worker_canvas worker_canvas_cpu
+  ```
 
-- If image/video results are not as expected, check model configuration, endpoint URLs, and `MEDIA_*` variables first.
-- If frontend requests fail due to CORS, check backend CORS configuration.
+- **Image / video looks wrong or errors** — verify the provider model name, base URL, and the `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_VIDEO_*` keys.
+- **Image-to-image / video / angle never returns** — the provider must be able to fetch your source image; set `PUBLIC_MEDIA_BASE` to a publicly reachable URL.
+- **Frontend requests blocked by CORS** — keep `CORS_ALLOW_ALL_ORIGINS=true` (default) or list your origin in `CORS_ALLOWED_ORIGINS`.

@@ -1,378 +1,178 @@
 <div align="center">
   <h1>Canvex</h1>
-  <p>Canvex是具有场景创作功能的无限画布llm agent</p>
+  <p>Canvex 是一个具有对话、skills、生成和编辑图像和视频能力的无限画布 LLM Agent。通过场景管理，可以将多个画布用于不同的项目。</p>
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
     <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1" alt="Database"></a>
     <a href="https://redis.io/"><img src="https://img.shields.io/badge/Queue-Celery%20%2B%20Redis-DC382D" alt="Queue"></a>
+    <a href="https://github.com/langchain-ai/deepagents"><img src="https://img.shields.io/badge/Agent-deepagents-1C3C3C" alt="Agent"></a>
   </p>
 </div>
 
-主 README: [README.md](./README.md)
+Main README: [English](./README.md)
 
-## 基本功能
+## 功能
 
-- 画布场景管理：创建、保存、读取场景数据。
-- 流程图：支持在画布中快速搭建流程图与结构关系。
-- 自由绘画：使用画笔工具进行手绘创作。
-- 导入导出功能：支持画布内容导入与导出。
-- AI Agent：在场景中通过自然语言驱动编辑流程。
-- 图片生成与编辑：支持文生图、图生图、抠图等图片处理能力。
-- 视频生成：基于提示词或参考图生成视频并支持任务轮询。
-- 文本编辑: 在任意位置添加文本
-- 媒体任务管理：统一查询图片/视频任务状态与结果地址。
+- **聊天即创作** —— 在画布底部聊天框输入提示词，agent 生成一张或多张图片（或一段视频）并落到画布上。
+- **任意图片上的 AI 工具栏** —— 选中图片即弹出浮动工具栏：
+  - **编辑** —— 用提示词改风格/改内容（文生图 + 图生图）。
+  - **抠图** —— 一键去背景成透明主体（rembg）。
+  - **拆分** —— 从一张图产出上下两张：透明主体 + 去掉主体的干净背景（原子操作，要么都成、要么都不出）。
+  - **换视角** —— 拖一个 3D 立方体，从新机位重渲染（fal.ai LoRA）。
+  - **视频** —— 把静图变成一段动画。
+  - **样机** —— 借深度把一张设计贴到另一张图上，带 深度 / 蒙版 / 不透明度 控制。
+  - **合并 / 调整 / 下载 / 发到聊天** —— 本地拍平选区、Lightroom 风格调色面板、导出画布、或把图作为聊天参考附件。
+- **框 & 箭头标注** —— 在图上画框/箭头/文字来指向要改的区域。标注会转成提示词里的空间坐标，源图保持干净、标注绝不出现在结果里。
+- **Skills（技能）** —— agent 遵循的内置 playbook（如 `image-prompt-sop` 把模糊需求改写成高质量单图提示词、`amazon-listing-pack-sop` 一键生成协调的 7 张亚马逊套图）。可在聊天框按单条消息临时关掉某个技能。
+- **场景** —— 侧栏里多个独立画布：新建、重命名、删除、**置顶**、快速切换；编辑自动保存。
+- **素材库** —— 你生成过的所有图片/视频，按画布分组；点缩略图即可重新插回当前画布。
+- **分辨率档位** —— 图像生成/编辑支持 1K / 2K / 4K。
 
-## AI Agent Graph 架构
+## 架构概览
 
 ```mermaid
-flowchart TD
-  A["chat msg"] --> B["load_memory"]
-  B --> C["call_llm"]
-  C --> D{"action router"}
-  D -->|chat| E["stream assistant"]
-  D -->|generate_image| F["imagetool"]
-  D -->|generate_video| G["videotool job queue"]
-  D -->|generate_flowchart| H["mermaid flowchart"]
-  D -->|clarify| I["clarify question"]
-  F --> E
-  G --> E
-  H --> E
-  I --> E
-  E --> J["update_memory"]
-  J --> K["rolling summary"]
-  K --> L["summary_history"]
-  L --> M{"stable entries"}
-  M -->|yes| N["memory_state"]
-  M -->|no| O["skip memory update"]
-  N --> P["redis persist"]
-  O --> P
+flowchart LR
+  subgraph FE["前端 — React + Excalidraw"]
+    Chat["聊天框"]
+    Bar["AI 工具栏"]
+  end
+  subgraph BE["后端 — Django + DRF"]
+    Agent["deepagents agent<br/>(skills + tools)"]
+    API["job 端点"]
+  end
+  Q[["Celery 队列<br/>canvas · canvas_cpu"]]
+  Prov["图像 / 视频 / fal.ai 供应商"]
+
+  Chat -->|"POST /chat/ (NDJSON)"| Agent
+  Agent -->|"generate_image · generate_video"| Q
+  Bar -->|"编辑 · 抠图 · 拆分 · 换视角 · 视频"| API --> Q
+  Q --> Prov --> Q
+  Q -->|"轮询 job → 落到画布"| FE
 ```
 
-- 主干节点固定为：`load_memory -> call_llm -> update_memory`。
-- `call_llm` 内先做 action 路由，再决定是普通对话还是触发图片/视频/流程图工具。
-- `rolling summary` 每轮更新 `summary_state`，并写入 `summary_history`（滑动窗口）。
-- 只有当条目在窗口内达到稳定阈值时，才会提升为长期 `memory_state`，避免把一次性聊天噪声写入记忆。
+- 聊天 agent 是 **deepagents**（`create_deep_agent`），带两个工具（`generate_image`、`generate_video`）、一份按场景隔离的 memory 文件、以及按需展开的 **SKILL.md** 技能。每轮对话历史从数据库回放（不需要独立的记忆存储）。
+- 每次生成都是异步 **job**：API 建一条 `QUEUED` 记录、提交后入 Celery 队列；前端轮询 job 直到结果就绪再落到画布。抠图是两段链（LLM 出白底 → CPU rembg 出 alpha）。
 
-## 1 分钟启动
-### 1) 克隆仓库
+## 部署
+
+### 1）克隆
 
 ```bash
 git clone https://github.com/Orieileen/Canvex.git
 cd Canvex
 ```
 
-### 2) 使用 Docker 部署
-前置要求：`Docker`、`Docker Compose`
-
-- Docker Desktop 下载：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
-- Docker Compose 安装说明：[https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
+### 2）配置
 
 ```bash
 cp .env.example .env
+```
+
+至少配好聊天和图像供应商的 key（见下表）。[.env.example](./.env.example) 是完整带注释的参考 —— 含可选的备用供应商、异步轮询、字段映射等旋钮。
+
+### 3）启动（Docker）
+
+前置：Docker + Docker Compose。
+
+```bash
 docker compose up -d --build
 ```
-### 使用前必配环境变量
 
-在 `.env` 中，最少只需配置以下变量即可启动：
+会启动 Postgres、Redis、后端（启动时自动跑迁移）、三个 Celery worker、以及前端 dev server。
 
-| 变量 | 备注 | 示例 |
+- 前端：http://localhost:5173
+- 后端 API：http://localhost:28000
+
+## 环境变量
+
+最少需要这些就能跑起来（完整列表 + 调优旋钮见 [.env.example](./.env.example)）：
+
+| 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 聊天 LLM 的 API Key | `sk-xxxx` |
-| `OPENAI_BASE_URL` | 聊天 LLM 接口地址（OpenAI 或兼容网关） | `https://api.openai.com/v1` |
-| `CHAT_MODEL` | 聊天模型名 | `gpt-4o-mini` |
-| `MEDIA_API_KEY` | 图片/视频任务 API Key（可与 `OPENAI_API_KEY` 相同） | `sk-xxxx` |
-| `MEDIA_BASE_URL` | 图片/视频任务接口地址 | `https://api.openai.com/v1` |
-| `MEDIA_IMAGE_MODEL` | 生图模型 | `gpt-image-1.5` |
-| `MEDIA_IMAGE_EDIT_MODEL` | 图片编辑模型 | `gpt-image-1.5` |
-| `MEDIA_VIDEO_MODEL` | 视频生成模型 | `sora-2` |
-
-### 第三方供应商兼容配置
-
-图片和视频均支持两条调用路径：**OpenAI SDK**（默认）和 **Compat 兼容端点**（配置 `*_COMPAT_ENDPOINT` 后启用）。兼容端点通过环境变量自由搭配字段名和请求格式，适配任意第三方供应商。
-
-#### 图片 — 生图 & 编辑
-
-| 变量 | 说明 | 默认值 |
-| --- | --- | --- |
-| `MEDIA_IMAGE_COMPAT_ENDPOINT` | 生图兼容端点路径（拼接到 `MEDIA_BASE_URL` 后） | 不设 = 走 OpenAI SDK |
-| `MEDIA_IMAGE_COMPAT_SIZE_FIELD` | 生图尺寸字段名 | `size` |
-| `MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT` | 图片编辑兼容端点路径 | 不设 = 走 OpenAI SDK |
-| `MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD` | 编辑时原图字段名（含 `urls` 则包装为数组） | `image_urls` |
-| `MEDIA_IMAGE_EDIT_COMPAT_SIZE_FIELD` | 编辑时尺寸字段名 | `size` |
-| `MEDIA_IMAGE_COMPAT_POLL_ENDPOINT` | 异步供应商轮询路径 | 与创建端点相同 |
-| `MEDIA_IMAGE_POLL_INTERVAL` | 轮询间隔（秒） | `3` |
-| `MEDIA_IMAGE_POLL_MAX_ATTEMPTS` | 最大轮询次数 | `200` |
-
-#### 视频
-
-| 变量 | 说明 | 默认值 |
-| --- | --- | --- |
-| `MEDIA_VIDEO_COMPAT_ENDPOINT` | 兼容端点路径 | 不设 = 走 OpenAI SDK |
-| `MEDIA_VIDEO_COMPAT_CONTENT_TYPE` | 请求格式：`json` 或 `multipart` | `json` |
-| `MEDIA_VIDEO_COMPAT_DURATION_FIELD` | 时长字段名 | `duration` |
-| `MEDIA_VIDEO_COMPAT_SIZE_FIELD` | 尺寸字段名（`aspect_ratio` 发 `"16:9"`，`size` 发 `"1280x720"`） | `aspect_ratio` |
-| `MEDIA_VIDEO_COMPAT_IMAGE_FIELD` | 图片引用字段名 | `image` |
-| `MEDIA_VIDEO_POLL_INTERVAL` | 轮询间隔（秒） | `5` |
-| `MEDIA_VIDEO_POLL_MAX_ATTEMPTS` | 最大轮询次数 | `360` |
-
-#### 配置示例
-
-<details>
-<summary>OpenAI 直连（默认，不需要额外配置）</summary>
-
-```env
-MEDIA_BASE_URL=https://api.openai.com/v1
-MEDIA_IMAGE_MODEL=gpt-image-1.5
-MEDIA_VIDEO_MODEL=sora-2
-```
-
-</details>
-
-<details>
-<summary>第三方供应商 A — JSON 异步</summary>
-
-```env
-MEDIA_BASE_URL=https://your-provider-a.com/v1
-
-# 生图
-MEDIA_IMAGE_MODEL=your-image-model
-MEDIA_IMAGE_COMPAT_ENDPOINT=/images/generations
-MEDIA_IMAGE_COMPAT_POLL_ENDPOINT=/tasks
-
-# 图片编辑（使用同一端点 + image_urls 传原图）
-MEDIA_IMAGE_EDIT_MODEL=your-image-model
-MEDIA_IMAGE_EDIT_COMPAT_ENDPOINT=/images/generations
-MEDIA_IMAGE_EDIT_COMPAT_IMAGE_FIELD=image_urls
-
-# 视频
-MEDIA_VIDEO_MODEL=sora-2
-MEDIA_VIDEO_COMPAT_ENDPOINT=/videos/generations
-MEDIA_VIDEO_COMPAT_CONTENT_TYPE=json
-MEDIA_VIDEO_COMPAT_DURATION_FIELD=duration
-MEDIA_VIDEO_COMPAT_SIZE_FIELD=aspect_ratio
-```
-
-</details>
-
-<details>
-<summary>第三方供应商 B — multipart</summary>
-
-```env
-MEDIA_BASE_URL=https://your-provider-b.com/v1
-
-# 视频
-MEDIA_VIDEO_MODEL=sora-2
-MEDIA_VIDEO_COMPAT_ENDPOINT=/videos
-MEDIA_VIDEO_COMPAT_CONTENT_TYPE=multipart
-MEDIA_VIDEO_COMPAT_DURATION_FIELD=seconds
-MEDIA_VIDEO_COMPAT_SIZE_FIELD=size
-MEDIA_VIDEO_COMPAT_IMAGE_FIELD=input_reference
-```
-
-</details>
-
-### 数据库
-
-Docker Compose 默认的数据库变量：
-
-| 变量 | 备注 | 示例 |
-| --- | --- | --- |
-| `POSTGRES_DB` | 业务库名 | `canvex` |
-| `POSTGRES_USER` | 业务库用户 | `canvex` |
-| `POSTGRES_PASSWORD` | 业务库密码 | `canvex` |
-| `POSTGRES_HOST` | Postgres 主机名（Docker Compose 场景保持为 `postgres`） | `postgres` |
-| `POSTGRES_PORT` | Postgres 端口 | `5432` |
+| `CANVAS_CHAT_API_KEY` | ✅ 聊天 | agent 用的 LLM key，需支持 OpenAI 风格的 tool calling。**不会**回退到 `OPENAI_*`。 |
+| `CANVAS_CHAT_BASE_URL` | – | 聊天端点；留空 = OpenAI 默认。 |
+| `CANVAS_CHAT_MODEL` | – | 默认 `gpt-4o-mini`。 |
+| `CANVAS_IMAGE_PRIMARY_API_KEY` | ✅ 图像 | 图像生成/编辑的 key；未设时回退 `OPENAI_API_KEY`。 |
+| `CANVAS_IMAGE_PRIMARY_BASE_URL` | – | 图像端点（OpenAI 兼容 `/images/generations`）；回退 `OPENAI_BASE_URL`。 |
+| `CANVAS_IMAGE_PRIMARY_MODEL` | ✅ 图像 | 图像模型名。 |
+| `CANVAS_VIDEO_API_KEY` / `_BASE_URL` / `_MODEL` | ✅ 视频 | 用视频功能必填（OpenAI 兼容 `POST {base}/videos/generations` + 轮询）。 |
+| `CANVAS_ANGLE_FAL_API_KEY` | ✅ 换视角 | [fal.ai](https://fal.ai) key；换视角（机位）功能必填。 |
+| `PUBLIC_MEDIA_BASE` | ⚠️ | 本后端的公网地址（默认 `http://localhost:28000`）。图生图/视频/换视角时供应商要来拉源图，必须可公网访问 —— 生产用隧道/CDN。纯文生图不需要。 |
+| `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆）。 |
+| `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
+| `BACKEND_PORT` / `FRONTEND_PORT` | – | 宿主端口，默认 `28000` / `5173`。 |
+| `VITE_API_URL` | – | 前端调用的后端地址；默认 `http://localhost:28000`。 |
 
 说明：
 
-- 使用第三方兼容网关时，`*_BASE_URL` 和模型名按该网关文档填写。
-- 若对话与媒体走同一服务，可让 `OPENAI_*` 和 `MEDIA_*` 使用同一套配置。
-- `docker compose up -d --build` 会自动启动 Postgres，并在 backend 启动时跑 migration。
-- 完整环境变量参考见 [.env.example](./.env.example)。
+- 图像通道还支持备用供应商（`CANVAS_IMAGE_FALLBACK_*`）及按供应商的字段映射 / 异步轮询旋钮（`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`、`_RESPONSE_FORMAT`、`_POLL_ENABLED`、`_POLL_MAX_ATTEMPTS`、`_POLL_INTERVAL` …），以适配非 OpenAI 网关。详见 [.env.example](./.env.example)。
+- 聊天与图像/视频可共用一个供应商（设置对应的 `*_BASE_URL` 和 key）。
+- 产品免费、单工作区：没有鉴权，计费是空操作桩（`CANVAS_CREDIT_COST_*` 不起作用）。
 
-启动后访问：
+## API
 
-- 前端：[http://localhost:5173](http://localhost:5173)
-- 后端 API：[http://localhost:28000](http://localhost:28000)
+所有路由在 `/api/v1/canvas/` 下。
 
+| 用途 | 端点 |
+| --- | --- |
+| 场景（CRUD） | `GET/POST /scenes/`、`GET/PATCH/DELETE /scenes/{id}/` |
+| 聊天（NDJSON 流） | `POST /scenes/{id}/chat/` |
+| 图像编辑 / 生成 | `POST /scenes/{id}/image-edit/` → `GET /image-edit-jobs/{job_id}/` |
+| 拆分（主体 + 背景） | `POST /scenes/{id}/split/` |
+| 视频 | `POST /scenes/{id}/video/` → `GET /video-jobs/{job_id}/` |
+| 换视角（fal.ai） | `POST /scenes/{id}/angle/` → `GET /angle-jobs/{job_id}/` |
+| 进行中的 job（恢复轮询） | `GET /scenes/{id}/active-jobs/` |
+| 发到聊天的上传 | `POST /scenes/{id}/upload-attachment/` |
+| 素材库 | `GET /media-library/folders/`、`GET /media-library/folders/{scene_id}/items/` |
+| Skills | `GET /skills/` |
 
-## 常用 API
+聊天端点走 **NDJSON**（一行一个 JSON；事件类型：`user_created`、`tool_call`、`tool_result`、`assistant_final`、`assistant`、`error`、`done`），不是 SSE。
 
-- 场景：`/api/v1/excalidraw/scenes/`
-- 聊天：`/api/v1/excalidraw/scenes/{id}/chat/`
-- 图片编辑：`/api/v1/excalidraw/scenes/{id}/image-edit/`
-- 视频生成：`/api/v1/excalidraw/scenes/{id}/video/`
-- 任务查询：`/api/v1/excalidraw/image-edit-jobs/{job_id}/`、`/api/v1/excalidraw/video-jobs/{job_id}/`
+## 后端
 
-
-## 后端架构
-
-技术栈：Django + DRF + Celery + Redis + PostgreSQL + LangGraph。
-
-### 目录结构
+技术栈：**Django + DRF + Celery + Redis + PostgreSQL + deepagents**（底层是 LangChain / LangGraph）。
 
 ```
 backend/
-├── config/                # Django 配置
-│   ├── settings.py        # 全局设置、数据库、CORS、Celery
-│   ├── celery.py          # Celery 应用初始化
-│   └── urls.py            # 根路由
-└── studio/                # 主应用
-    ├── models.py           # 数据模型（Scene, Job, Asset, Folder）
-    ├── views.py            # API 端点（Chat, ImageEdit, Video）
-    ├── serializers.py      # DRF 序列化
-    ├── urls.py             # 应用路由
-    ├── graphs.py           # AI Agent Graph（LangGraph 编排）
-    ├── memory.py           # Redis 记忆系统（summary + memory）
-    ├── tasks.py            # Celery 异步任务（图片编辑、视频生成）
-    ├── video_script.py     # 视频分镜脚本分析
-    └── tools/              # 媒体生成工具
-        ├── image.py        # 图片生成 & 编辑（OpenAI SDK / Compat）
-        ├── video.py        # 视频生成（OpenAI SDK / Compat）
-        ├── assets.py       # 资产存储 & 文件夹管理
-        └── common.py       # 共享工具（URL 解析、图片下载、OpenAI client）
+├── config/                      # Django 工程 (settings, celery, urls, wsgi/asgi)
+└── studio/                      # 主 app，挂在 /api/v1/canvas/
+    ├── models.py                # Scene, ChatMessage, ImageEditJob/Result,
+    │                            #   VideoJob, AngleJob/Result, DataFolder/DataAsset
+    ├── views.py  serializers.py  urls.py
+    ├── tasks.py                 # Celery: canvas.image_edit_job / image_edit_cutout_job
+    │                            #   / video_job / angle_job / cutout_llm_step
+    └── services/
+        ├── image.py video.py angle.py        # 建 job + 调供应商
+        ├── image_client.py                   # OpenAI 兼容图像客户端（按前缀可配）
+        ├── attachments.py scenes.py billing.py (空操作) http_retry.py listings_utils.py
+        └── agent/
+            ├── builder.py        # create_deep_agent (model, tools, skills, memory, store)
+            ├── skills.py  context.py
+            ├── tools/            # common.py, image.py (generate_image), video.py (generate_video)
+            └── skills/           # image-prompt-sop/SKILL.md, amazon-listing-pack-sop/SKILL.md
 ```
 
-### 媒体生成双路径架构
+### 异步 job 流水线
 
-图片和视频均支持两条执行路径，由 `*_COMPAT_ENDPOINT` 环境变量切换：
+一个生成请求会在事务里建 `QUEUED` job、提交后入 Celery 队列（返回 `202` + `{job_id, status}`）。任务跑在专用队列上：
 
-| 功能 | OpenAI SDK（默认） | Compat 兼容端点 |
-|---|---|---|
-| 生图 | Responses API + `image_generation` | POST JSON → 同步提取或异步轮询 |
-| 图片编辑 | Responses API + `image_generation(edit)` | POST JSON（含原图 data URL）→ 同步/异步 |
-| 视频 | `client.videos.create` → 轮询 → 下载 | POST JSON 或 multipart → 轮询 → 下载 |
+| 队列（worker） | 池 | 任务 |
+| --- | --- | --- |
+| `canvas`（`worker_canvas`） | gevent | `image_edit_job`、`video_job`、`angle_job`、`cutout_llm_step` |
+| `canvas_cpu`（`worker_canvas_cpu`） | prefork | `image_edit_cutout_job`（rembg alpha，CPU 密集） |
+| `excalidraw`（`worker`） | prefork | 默认队列 |
 
-Compat 路径的字段名（尺寸、时长、图片引用）、请求格式（JSON/multipart）均通过环境变量配置，详见 [.env.example](./.env.example)。
+抠图/拆分是两段链：第一段（LLM，跑 `canvas`）出白底图，第二段（rembg，跑 `canvas_cpu`）把白底转透明 alpha。前端轮询 job 端点（或 `/active-jobs/`），就绪后落到画布。聊天 agent 调用的图像/视频工具建的是同样的 job —— agent 返回一句"已入队"，不阻塞等渲染。
 
-### 图片生成 & 编辑流程
+## FAQ
 
-```
-POST /api/v1/excalidraw/scenes/{id}/image-edit/
-  → 创建 ExcalidrawImageEditJob（status=QUEUED）
-  → Celery: run_excalidraw_image_edit_job
-    → _edit_image_media(source_bytes, prompt, size)
-      ├─ COMPAT_ENDPOINT 有值 → _post_compat_image_request()
-      │   ├─ 响应含图片数据 → 同步提取 bytes
-      │   └─ 响应含 task_id  → 异步轮询 → 下载图片
-      └─ 未设置 → Responses API（image_generation action=edit）
-    → [is_cutout? → rembg 去白底]
-    → _save_asset() → ExcalidrawImageEditResult
-```
+- **查日志**（某个 job 失败时）—— 要带上三个 worker：
 
-AI 聊天中的生图走 `graphs.py → imagetool → _generate_image_media()`，流程类似但不经过 Job 队列。
+  ```bash
+  docker compose logs -f backend worker worker_canvas worker_canvas_cpu
+  ```
 
-### 视频生成流程
-
-```
-POST /api/v1/excalidraw/scenes/{id}/video/
-  → 创建 ExcalidrawVideoJob（status=QUEUED）
-  → Celery: run_excalidraw_video_job
-    → _generate_video_media(payload)
-      ├─ COMPAT_ENDPOINT 有值 → JSON 或 multipart → 轮询 → 下载
-      └─ 未设置 → OpenAI Videos API → 轮询 → 下载
-    → 保存缩略图 → 更新 job（status, result_url, thumbnail_url）
-    → 失败时指数退避重试（最多 6 次，20s ~ 180s）
-```
-
-前端通过轮询 `/api/v1/excalidraw/video-jobs/{job_id}/` 获取任务状态和结果 URL。
-
-### SSE 流式响应
-
-聊天端点 `?stream=1` 返回 SSE 事件流：
-
-```
-data: {"intent": "image"}          ← 通知前端正在生成图片/视频
-data: {"tool": "imagetool", "result": {...}}  ← 工具执行结果
-data: {"delta": "文本片段"}         ← 流式文本
-data: {"done": true, "message": {...}}        ← 完成
-```
-
-### 记忆系统
-
-Redis 存储两层状态（per workspace + scene）：
-
-- **summary_state** — 当前对话摘要（goal、constraints、decisions、open_questions、next_actions）
-- **memory_state** — 长期记忆（preferences、policies、constraints）
-
-每轮对话后更新 summary；条目在滑动窗口内出现 ≥ `MEMORY_STABILITY_MIN_COUNT` 次才提升为长期 memory，避免噪声写入。
-
-### Celery 任务
-
-| 任务 | 触发方式 | 重试 |
-|---|---|---|
-| `run_excalidraw_image_edit_job` | 图片编辑 POST | 不重试 |
-| `run_excalidraw_video_job` | 视频生成 POST / AI 聊天 | 指数退避，最多 6 次 |
-
-## 前端架构
-
-技术栈：React 18 + TypeScript + Vite + Tailwind CSS + shadcn/ui + react-i18next + Excalidraw。
-
-### 核心页面模块划分
-
-画布主页面 `canvex.tsx` 拆分为类型、常量、工具函数、样式和 8 个自定义 Hook，主组件仅作为编排层。
-
-```
-frontend/src/
-├── types/canvex.ts                    # 共享 TypeScript 类型（SceneData, SceneRecord, ChatMessage 等）
-├── constants/canvex.ts                # API 常量、防抖时间、尺寸选项
-├── utils/canvex.ts                    # 纯函数（toSceneSummary, sanitizeAppState, normalizeMermaid 等）
-├── styles/canvex-media-sidebar.css    # 媒体库侧边栏样式
-├── hooks/
-│   ├── use-canvex-theme.ts            # 画布主题解析、视频封面生成、视频元素判断
-│   ├── use-canvas-elements.ts         # 元素创建（文本/矩形/图片）、选区计算、坐标转换
-│   ├── use-scene-persistence.ts       # localStorage 缓存、场景 CRUD、保存防抖、URL 同步
-│   ├── use-pinning.ts                 # 钉选笔记、占位符管理、闪烁动画、Mermaid 流程图插入
-│   ├── use-media-library.ts           # 媒体库加载、项目文件夹分组、图片/视频插入
-│   ├── use-image-edit-pipeline.ts     # 图片编辑工具栏、任务轮询、结果插入、编辑恢复
-│   ├── use-video-pipeline.ts          # 视频生成、任务轮询、Overlay 刷新、状态追踪
-│   └── use-chat.ts                    # SSE 流式聊天、消息持久化、工具调用分发
-└── pages/dashboard/canvex.tsx         # 编排层：初始化 Hook、组装回调、渲染 JSX
-```
-
-### Hook 初始化顺序
-
-```
-theme → canvasElements → scenePersistence → pinning → mediaLibrary
-      → imageEditPipeline → videoPipeline → chat
-```
-
-后续 Hook 可依赖前序 Hook 的返回值；跨 Hook 的循环依赖通过 `useRef` 间接引用打断：
-
-| Ref | 写入方 | 读取方 |
-|-----|--------|--------|
-| `captureSceneSnapshotRef` | 主组件（所有 Hook 初始化后赋值） | pinning, imageEdit, video |
-| `scheduleVideoOverlayRefreshRef` | 主组件（videoPipeline 初始化后赋值） | imageEdit |
-| `createPinnedImageRef` | imageEditPipeline（useEffect 赋值） | chat, mediaLibrary |
-| `createPinnedVideoRef` | videoPipeline（useEffect 赋值） | chat, mediaLibrary |
-
-### 共享状态方案
-
-不使用 React Context。原因：
-
-1. 共享数据大部分是 `useRef`（不触发渲染），Context 没有意义。
-2. 参数传递让每个 Hook 的依赖关系显式可见。
-3. 与现有 `createPinnedImageRef` / `createPinnedVideoRef` 的间接引用模式一致。
-
-主组件声明约 30 个 `useRef`，按需传给各 Hook。
-
-### 回调稳定性
-
-为防止无限重渲染，关键模式：
-
-- `searchParams`（每次渲染都是新对象）存入 `searchParamsRef`，`updateSceneParam` 只读 ref。
-- `selectScene` 使用 `sceneIdRef.current` 而非 `activeSceneId` 状态，避免自身 setState 导致回调重建。
-- `updateSelectedEditSelection` 内部通过 ref 读取 `selectedEditKey` / `selectedEditRect`，不放入 `useCallback` 依赖。
-- `captureSceneSnapshot` 和 `scheduleVideoOverlayRefresh` 通过 `useCallback(() => ref.current(), [])` 包装为稳定引用，再传给各 Hook。
-
-## 常见问题
-
-- 媒体任务失败：查看日志
-
-```bash
-docker compose logs -f backend worker frontend
-```
-
-- 图片/视频结果与预期不一致：优先检查模型配置与接口url与 `MEDIA_*` 变量。
-- 前端请求报跨域：检查后端 CORS 配置。
+- **图像/视频结果不对或报错** —— 先核对供应商模型名、base URL，以及 `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_VIDEO_*` 的 key。
+- **图生图/视频/换视角一直不返回** —— 供应商要能拉到你的源图；把 `PUBLIC_MEDIA_BASE` 设成可公网访问的地址。
+- **前端请求被 CORS 拦** —— 保持 `CORS_ALLOW_ALL_ORIGINS=true`（默认），或把你的来源加进 `CORS_ALLOWED_ORIGINS`。
