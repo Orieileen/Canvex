@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
 import { screenPointToWorld } from "@/lib/excalidraw-bounds";
@@ -36,6 +37,7 @@ export function CanvasImagePlacementOverlay({
   onPlace,
   onCancel,
 }: CanvasImagePlacementOverlayProps) {
+  const { t } = useTranslation("canvasUi");
   const ghostRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -131,7 +133,7 @@ export function CanvasImagePlacementOverlay({
         style={{ visibility: "hidden" }}
       />
       <div className="pointer-events-none absolute left-1/2 top-3 z-[60] -translate-x-1/2 rounded-full bg-foreground/85 px-3 py-1 text-xs text-background shadow">
-        Click to place · Esc to cancel
+        {t("placement.hint")}
       </div>
     </>
   );

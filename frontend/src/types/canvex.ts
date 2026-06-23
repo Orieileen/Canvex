@@ -162,7 +162,7 @@ export interface ChatAttachment {
   height: number;
 }
 
-/** POST /api/v1/canvas/scenes/<id>/chat/ 流式响应 (application/x-ndjson)。
+/** POST /api/v1/canvas/scenes/<id>/chat/ 流式响应 (text/event-stream, SSE)。
  *
  * 每行一个 JSON 对象,顺序:
  *   1. `user_created` —— 后端落库后的 user ChatMessage, 用来替换乐观气泡
@@ -176,6 +176,7 @@ export type CanvasChatStreamEvent =
   | { event: "user_created"; message: CanvasChatMessage }
   | { event: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { event: "tool_result"; id: string; content: string }
+  | { event: "assistant_delta"; id: string; content: string }
   | { event: "assistant_final"; content: string }
   | { event: "assistant"; message: CanvasChatMessage }
   | { event: "error"; detail: string }

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ArrowLeft, Film, Folder, Images, Loader2, Play } from "lucide-react";
+
+import type { TFunction } from "i18next";
 
 import {
   Sheet,
@@ -32,8 +35,6 @@ import type {
  * 入口在侧栏 (发 window 事件), 面板挂在 CanvasArea —— 那里才有 pinImage/pinVideo +
  * 当前 sceneId。插入后保持打开 (方便连续挑多张)。
  */
-
-const UNTITLED = "Untitled canvas";
 
 const imgKey = (i: CanvasMediaImage) => i.asset_id;
 const vidKey = (v: CanvasMediaVideo) => v.job_id;
@@ -72,6 +73,7 @@ async function loadKindPage<T>(
   setState: React.Dispatch<React.SetStateAction<KindState<T>>>,
   seq: number,
   seqRef: React.MutableRefObject<number>,
+  loadErrorMessage: string,
   onPageZeroError?: () => void,
 ) {
   setState((s) => ({ ...s, loading: true }));
@@ -88,7 +90,7 @@ async function loadKindPage<T>(
   } catch (err) {
     if (seqRef.current !== seq) return; // 过期 → 静默丢弃
     setState((s) => ({ ...s, loading: false }));
-    toast.error(extractApiError(err, "Failed to load media. Please try again."));
+    toast.error(extractApiError(err, loadErrorMessage));
     if (offset === 0) onPageZeroError?.();
   }
 }
@@ -108,6 +110,7 @@ export function MediaLibrary({
   onInsertImage,
   onInsertVideo,
 }: MediaLibraryProps) {
+  const { t } = useTranslation("canvasUi");
   const [folders, setFolders] = useState<CanvasMediaFolder[]>([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState<string | null>(null);
@@ -126,13 +129,13 @@ export function MediaLibrary({
     } catch (err) {
       if (!isCancelled?.()) {
         setFoldersError(
-          extractApiError(err, "Failed to load media library. Please try again later."),
+          extractApiError(err, t("media.errors.loadLibrary")),
         );
       }
     } finally {
       if (!isCancelled?.()) setFoldersLoading(false);
     }
-  }, []);
+  }, [t]);
 
   // 每次打开重新拉文件夹列表 (生成持续进行, 缓存会过期), 并回到列表层。
   useEffect(() => {
@@ -172,49 +175,49 @@ export function MediaLibrary({
       setImageState(freshKind);
       setVideoState(freshKind);
       if (folder.image_count > 0) {
-        void loadKindPage(folder.scene_id, "images", 0, imgKey, setImageState, seq, reqSeqRef, onItemsPageZeroError);
+        void loadKindPage(folder.scene_id, "images", 0, imgKey, setImageState, seq, reqSeqRef, t("media.errors.loadMedia"), onItemsPageZeroError);
       }
       if (folder.video_count > 0) {
-        void loadKindPage(folder.scene_id, "videos", 0, vidKey, setVideoState, seq, reqSeqRef, onItemsPageZeroError);
+        void loadKindPage(folder.scene_id, "videos", 0, vidKey, setVideoState, seq, reqSeqRef, t("media.errors.loadMedia"), onItemsPageZeroError);
       }
     },
-    [onItemsPageZeroError],
+    [onItemsPageZeroError, t],
   );
 
   const loadMoreImages = useCallback(() => {
     if (openFolderId) {
-      void loadKindPage(openFolderId, "images", imageState.nextOffset, imgKey, setImageState, reqSeqRef.current, reqSeqRef);
+      void loadKindPage(openFolderId, "images", imageState.nextOffset, imgKey, setImageState, reqSeqRef.current, reqSeqRef, t("media.errors.loadMedia"));
     }
-  }, [openFolderId, imageState.nextOffset]);
+  }, [openFolderId, imageState.nextOffset, t]);
 
   const loadMoreVideos = useCallback(() => {
     if (openFolderId) {
-      void loadKindPage(openFolderId, "videos", videoState.nextOffset, vidKey, setVideoState, reqSeqRef.current, reqSeqRef);
+      void loadKindPage(openFolderId, "videos", videoState.nextOffset, vidKey, setVideoState, reqSeqRef.current, reqSeqRef, t("media.errors.loadMedia"));
     }
-  }, [openFolderId, videoState.nextOffset]);
+  }, [openFolderId, videoState.nextOffset, t]);
 
   const handleImage = useCallback(
     async (item: CanvasMediaImage) => {
       try {
         await onInsertImage(item);
-        toast.success("Image inserted");
+        toast.success(t("media.toasts.imageInserted"));
       } catch (err) {
-        toast.error(extractApiError(err, "Failed to insert media. Please try again."));
+        toast.error(extractApiError(err, t("media.errors.insertMedia")));
       }
     },
-    [onInsertImage],
+    [onInsertImage, t],
   );
 
   const handleVideo = useCallback(
     (item: CanvasMediaVideo) => {
       try {
         onInsertVideo(item);
-        toast.success("Video inserted");
+        toast.success(t("media.toasts.videoInserted"));
       } catch (err) {
-        toast.error(extractApiError(err, "Failed to insert media. Please try again."));
+        toast.error(extractApiError(err, t("media.errors.insertMedia")));
       }
     },
-    [onInsertVideo],
+    [onInsertVideo, t],
   );
 
   return (
@@ -229,21 +232,21 @@ export function MediaLibrary({
                 className="-ml-1 mb-0.5 flex w-fit items-center gap-1 text-xs font-medium text-sienna transition-colors hover:text-ember"
               >
                 <ArrowLeft className="size-3.5" />
-                All canvases
+                {t("media.allCanvases")}
               </button>
               <SheetTitle className="flex items-center gap-1.5 text-foreground">
                 <Folder className="size-4 shrink-0 text-sienna" />
-                {openFolder.scene_title || UNTITLED}
+                {openFolder.scene_title || t("media.untitled")}
               </SheetTitle>
               <SheetDescription>
-                {folderCountLabel(openFolder.image_count, openFolder.video_count)}
+                {folderCountLabel(t, openFolder.image_count, openFolder.video_count)}
               </SheetDescription>
             </>
           ) : (
             <>
-              <SheetTitle className="text-foreground">Media library</SheetTitle>
+              <SheetTitle className="text-foreground">{t("media.title")}</SheetTitle>
               <SheetDescription>
-                Generated media grouped by canvas. Open a folder, then click an item to add it to the current canvas.
+                {t("media.subtitle")}
               </SheetDescription>
             </>
           )}
@@ -252,29 +255,30 @@ export function MediaLibrary({
         {foldersLoading ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            Loading…
+            {t("media.loading")}
           </div>
         ) : foldersError ? (
           <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-destructive">
             {foldersError}
           </div>
         ) : folders.length === 0 ? (
-          <EmptyState icon={<Images className="size-8" />} label="No media generated yet." />
+          <EmptyState icon={<Images className="size-8" />} label={t("media.empty")} />
         ) : openFolder ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             {openFolder.image_count > 0 && (
               <div className="mb-5">
                 <MediaSection
                   icon={<Images className="size-3.5" />}
-                  label="Images"
-                  loadMoreLabel="Load more images"
+                  label={t("media.sections.images")}
+                  loadMoreLabel={t("media.loadMore.images")}
                   state={imageState}
                   onLoadMore={loadMoreImages}
                   renderItem={(img) => (
                     <ThumbButton
                       key={img.asset_id}
                       src={absoluteMediaUrl(img.url)}
-                      alt="Generated image"
+                      alt={t("media.alt.image")}
+                      title={t("media.insertIntoCanvas")}
                       onClick={() => void handleImage(img)}
                     />
                   )}
@@ -284,15 +288,16 @@ export function MediaLibrary({
             {openFolder.video_count > 0 && (
               <MediaSection
                 icon={<Film className="size-3.5" />}
-                label="Videos"
-                loadMoreLabel="Load more videos"
+                label={t("media.sections.videos")}
+                loadMoreLabel={t("media.loadMore.videos")}
                 state={videoState}
                 onLoadMore={loadMoreVideos}
                 renderItem={(vid) => (
                   <ThumbButton
                     key={vid.job_id}
                     src={vid.thumbnail_url ? absoluteMediaUrl(vid.thumbnail_url) : ""}
-                    alt="Generated video"
+                    alt={t("media.alt.video")}
+                    title={t("media.insertIntoCanvas")}
                     onClick={() => handleVideo(vid)}
                     overlay={
                       <span className="absolute bottom-1.5 right-1.5 flex size-6 items-center justify-center rounded-full bg-black/55 text-white">
@@ -311,8 +316,8 @@ export function MediaLibrary({
               {folders.map((f) => (
                 <FolderCard
                   key={f.scene_id}
-                  title={f.scene_title || UNTITLED}
-                  count={folderCountLabel(f.image_count, f.video_count)}
+                  title={f.scene_title || t("media.untitled")}
+                  count={folderCountLabel(t, f.image_count, f.video_count)}
                   cover={absoluteMediaUrl(f.cover_url)}
                   onClick={() => drillIn(f)}
                 />
@@ -325,10 +330,10 @@ export function MediaLibrary({
   );
 }
 
-function folderCountLabel(imageCount: number, videoCount: number): string {
+function folderCountLabel(t: TFunction, imageCount: number, videoCount: number): string {
   const parts: string[] = [];
-  if (imageCount > 0) parts.push(`${imageCount} image${imageCount > 1 ? "s" : ""}`);
-  if (videoCount > 0) parts.push(`${videoCount} video${videoCount > 1 ? "s" : ""}`);
+  if (imageCount > 0) parts.push(t("media.count.images", { count: imageCount }));
+  if (videoCount > 0) parts.push(t("media.count.videos", { count: videoCount }));
   return parts.join(" · ");
 }
 
@@ -418,12 +423,14 @@ function FolderCard({
 function ThumbButton({
   src,
   alt,
+  title,
   onClick,
   overlay,
   placeholder,
 }: {
   src: string;
   alt: string;
+  title: string;
   onClick: () => void;
   overlay?: React.ReactNode;
   placeholder?: React.ReactNode;
@@ -432,7 +439,7 @@ function ThumbButton({
     <button
       type="button"
       onClick={onClick}
-      title="Insert into current canvas"
+      title={title}
       className={cn(
         "group relative aspect-square overflow-hidden rounded-lg border border-border bg-card",
         "transition-shadow hover:ring-2 hover:ring-ember focus-visible:ring-2 focus-visible:ring-ember focus-visible:outline-none",

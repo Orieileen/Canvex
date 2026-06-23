@@ -1,9 +1,11 @@
 import { isRouteErrorResponse, useRouteError } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 export default function ErrorPage() {
+  const { t } = useTranslation('canvasUi')
   const error = useRouteError() as any
-  let title = 'Unexpected Application Error'
-  let message = 'Something went wrong.'
+  let title = t('errorPage.title')
+  let message = t('errorPage.message')
   if (isRouteErrorResponse(error)) {
     title = `${error.status} — ${error.statusText}`
     message = (error.data && (error.data.message || error.data)) || message
@@ -17,4 +19,3 @@ export default function ErrorPage() {
     </div>
   )
 }
-

@@ -35,7 +35,7 @@ Public API:
 - `build_canvas_agent()` → cached CompiledStateGraph
 - `invoke_canvas_agent(messages, *, scene_id)` → final assistant text
 - `stream_canvas_agent(messages, *, scene_id)` → Iterator[dict] of
-  `tool_call` / `tool_result` / `assistant_final` events for the view's NDJSON stream.
+  `tool_call` / `tool_result` / `assistant_final` events for the view's SSE stream.
 """
 import logging
 import threading
@@ -48,6 +48,7 @@ from deepagents.backends.utils import create_file_data
 from django.conf import settings
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     SystemMessage,
@@ -144,17 +145,18 @@ _store: BaseStore | None = None
 AGENT_RECURSION_LIMIT = 25
 
 # Tool results can be huge (image dataURLs, error tracebacks). The frontend only
-# renders a short preview; trim aggressively so we don't flood the NDJSON stream.
+# renders a short preview; trim aggressively so we don't flood the SSE stream.
 TOOL_RESULT_MAX_CHARS = 2000
 
 
-# NDJSON event-type strings. Kept here (not in views.py) because `stream_canvas_agent`
+# SSE event-type strings. Kept here (not in views.py) because `stream_canvas_agent`
 # emits a subset of these directly — centralising prevents view + builder + tests from
 # drifting on spelling.
 class StreamEvent:
     USER_CREATED = "user_created"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    ASSISTANT_DELTA = "assistant_delta"
     ASSISTANT_FINAL = "assistant_final"
     ASSISTANT = "assistant"
     ERROR = "error"
@@ -515,21 +517,25 @@ def stream_canvas_agent(
 
     Yields (in order):
     - `{"event": "tool_call", "id": str, "name": str, "args": dict}` — one per
-      unique tool call. The same tool_call_id can appear in multiple `updates`
-      chunks when the graph replays a node; we dedup on id so the frontend
-      doesn't render ghost cards.
+      unique tool call (deduped on tool_call_id), from the `updates` stream.
     - `{"event": "tool_result", "id": str, "content": str}` — tool output, with
-      `content` flattened + clamped to TOOL_RESULT_MAX_CHARS.
+      `content` flattened + clamped to TOOL_RESULT_MAX_CHARS, from `updates`.
+    - `{"event": "assistant_delta", "id": str, "content": str}` — token-level
+      text deltas from the `messages` stream, for the live typewriter. `id` is
+      the AIMessageChunk id so the frontend can distinguish consecutive deltas
+      of one message from a fresh segment. Tool-call argument tokens (empty
+      text) are not emitted.
     - `{"event": "assistant_final", "content": str}` — exactly once at the end,
-      with the text of the LATEST AIMessage that carried non-empty text. Intermediate
-      AIMessages (those with only tool_calls) don't count.
+      the authoritative text of the LATEST AIMessage that carried non-empty text
+      (intermediate tool-only AIMessages don't count). The frontend replaces the
+      streamed text with this.
 
     Wraps LLM / tool / graph errors in CanvasAgentInvocationError; programming
     bugs (AttributeError etc.) still propagate uncaught.
 
-    `stream_mode="updates"` is chosen over `"messages"` because we want discrete
-    events, not token-by-token deltas — the view re-packages these as NDJSON
-    lines and the frontend treats each as a self-contained action.
+    `stream_mode=["updates", "messages"]` combines both: `updates` gives discrete
+    per-node tool events, `messages` gives token-by-token text deltas. The view
+    re-packages each as an SSE frame.
 
     `disabled_skills` mirrors `invoke_canvas_agent`: per-turn opt-out list
     from the frontend skill selector. `attachments` carry canvas image
@@ -544,12 +550,35 @@ def stream_canvas_agent(
     last_ai_text = ""
 
     try:
-        for chunk in agent.stream(
-            state, context=ctx, config=config, stream_mode="updates",
+        for mode, data in agent.stream(
+            state, context=ctx, config=config,
+            stream_mode=["updates", "messages"],
         ):
-            if not isinstance(chunk, dict):
+            if mode == "messages":
+                # Token-level deltas for the live typewriter. `messages` yields
+                # (chunk, metadata); stream only AIMessageChunks carrying real
+                # text — tool-call argument tokens have empty content and are
+                # skipped. The authoritative final text still comes from the
+                # `updates` branch (last_ai_text) + the ASSISTANT_FINAL frame.
+                chunk, meta = data if isinstance(data, tuple) else (data, {})
+                # Only the top-level agent's reply tokens reach the user. Subagents
+                # (the deepagents `task` tool) and any internal LLM node run in a
+                # child graph namespace (non-empty checkpoint_ns); their tokens must
+                # not leak into the user-facing typewriter.
+                in_subgraph = bool((meta or {}).get("checkpoint_ns"))
+                if isinstance(chunk, AIMessageChunk) and not in_subgraph:
+                    text = _flatten_content(chunk.content)
+                    if text:
+                        yield {
+                            "event": StreamEvent.ASSISTANT_DELTA,
+                            "id": getattr(chunk, "id", "") or "",
+                            "content": text,
+                        }
                 continue
-            for _node, update in chunk.items():
+            # mode == "updates": discrete per-node tool / message events.
+            if not isinstance(data, dict):
+                continue
+            for _node, update in data.items():
                 if not isinstance(update, dict):
                     continue
                 msgs = update.get("messages")

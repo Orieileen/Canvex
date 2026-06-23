@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ImageOff, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +42,7 @@ export function SmartImage({
   onClick,
   placeholder,
 }: SmartImageProps) {
+  const { t } = useTranslation("canvasUi");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -120,7 +122,7 @@ export function SmartImage({
             className="flex items-center gap-1 rounded border bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
           >
             <RefreshCw className="size-2.5" />
-            Retry
+            {t("image.retry")}
           </button>
         </div>
       )}

@@ -1,4 +1,5 @@
 import { Check, Sliders } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +47,8 @@ export function SkillSelector({
   buttonDisabled = false,
   className,
 }: SkillSelectorProps) {
+  const { t } = useTranslation("canvasUi");
+
   // No skills loaded yet (empty registry or fetch failed) — render nothing
   // rather than an empty popover. Frontend stays out of the user's way.
   if (skills.length === 0) return null;
@@ -67,7 +70,7 @@ export function SkillSelector({
           variant="ghost"
           className={cn("relative size-8 rounded-lg", className)}
           disabled={buttonDisabled}
-          aria-label="Configure skills"
+          aria-label={t("skills.configureAriaLabel")}
         >
           <Sliders className="size-4" />
           {disabledSkills.length > 0 && (
@@ -82,7 +85,7 @@ export function SkillSelector({
       </PopoverTrigger>
       <PopoverContent align="start" side="top" className="w-80 p-2">
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-          Skills for this message
+          {t("skills.header")}
         </div>
         <div className="max-h-64 overflow-y-auto">
           {skills.map((skill) => {
@@ -120,7 +123,7 @@ export function SkillSelector({
           })}
         </div>
         <div className="mt-1 border-t px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
-          Uncheck to skip a skill for the next message only.
+          {t("skills.hint")}
         </div>
       </PopoverContent>
     </Popover>

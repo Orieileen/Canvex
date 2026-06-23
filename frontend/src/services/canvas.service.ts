@@ -136,12 +136,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Chat stream — NDJSON via fetch (NOT axios).
+ * Chat stream — SSE via fetch (NOT axios, NOT EventSource).
  *
- * 直接用 fetch 的原因, 轮不到 axios:
+ * 直接用 fetch 的原因:
  * 1. axios 的浏览器 adapter 不暴露 ReadableStream, 它把整个响应 buffer 完才
  *    resolve, 流式的意义直接丢掉
- * 2. EventSource 更原生但无法挂自定义 header (如 ngrok-skip-browser-warning)
+ * 2. EventSource 是 SSE 的原生客户端, 但只能 GET、不能带 POST body, 也无法挂
+ *    自定义 header (如 ngrok-skip-browser-warning) —— 聊天是带 body 的 POST,
+ *    所以只能用 fetch 自己解析 SSE 帧。
  * Canvex 后端 AllowAny, 无需 Authorization —— 不带 token。
  */
 export async function* postChatStream(
@@ -169,7 +171,7 @@ export async function* postChatStream(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/x-ndjson",
+        Accept: "text/event-stream",
         "ngrok-skip-browser-warning": "true",
       },
       body: JSON.stringify(body),
@@ -182,23 +184,39 @@ export async function* postChatStream(
   const reader = resp.body
     .pipeThrough(new TextDecoderStream("utf-8"))
     .getReader();
-  // Parse NDJSON by advancing a cursor through `buffer` instead of reslicing
-  // on every newline — reslicing is O(buffer²) across the whole stream for
-  // short lines (each slice copies the remaining tail).
+  // Parse SSE frames: events are separated by a blank line ("\n\n"); within a
+  // frame the `data:` lines carry the payload (joined by "\n" per spec), and
+  // other lines (":" keep-alive comments, event:/id:/retry:) are ignored. We
+  // advance a cursor through `buffer` instead of reslicing on every frame —
+  // reslicing is O(buffer²) for many small frames. The payloads are single-line
+  // JSON identical to the old NDJSON events; only the framing changed.
+  const frameData = (frame: string): string => {
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("data:")) {
+        const v = line.slice(5);
+        data += (data ? "\n" : "") + (v.startsWith(" ") ? v.slice(1) : v);
+      }
+    }
+    return data;
+  };
   let buffer = "";
   let cursor = 0;
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (value) buffer += value;
-      let nl = buffer.indexOf("\n", cursor);
-      while (nl !== -1) {
-        const line = buffer.slice(cursor, nl).trim();
-        cursor = nl + 1;
-        if (line) {
-          yield JSON.parse(line) as CanvasChatStreamEvent;
+      // Strip CR so CRLF/CR line endings (a proxy may rewrite them) normalize to
+      // LF — then "\n\n" frame splitting works. Safe: json.dumps escapes any real
+      // CR inside payloads, so raw CR only ever appears as an SSE line terminator.
+      if (value) buffer += value.replace(/\r/g, "");
+      let sep = buffer.indexOf("\n\n", cursor);
+      while (sep !== -1) {
+        const data = frameData(buffer.slice(cursor, sep));
+        cursor = sep + 2;
+        if (data && data !== "[DONE]") {
+          yield JSON.parse(data) as CanvasChatStreamEvent;
         }
-        nl = buffer.indexOf("\n", cursor);
+        sep = buffer.indexOf("\n\n", cursor);
       }
       // Compact once the backlog is large enough that trailing unparsed bytes
       // aren't a material fraction — bounded memory even on very long streams.
@@ -208,8 +226,9 @@ export async function* postChatStream(
       }
       if (done) break;
     }
-    const trailing = buffer.slice(cursor).trim();
-    if (trailing) yield JSON.parse(trailing) as CanvasChatStreamEvent;
+    // Defensive: a final frame not terminated by a blank line.
+    const tail = frameData(buffer.slice(cursor));
+    if (tail && tail !== "[DONE]") yield JSON.parse(tail) as CanvasChatStreamEvent;
   } catch (err) {
     // Tell the server we're done so it stops producing into an orphan
     // connection. cancel() releases the lock too, so releaseLock in the
@@ -272,7 +291,7 @@ export const canvasService = {
     request.get<CanvasChatMessage[]>(`${SCENES}${sceneId}/chat/`, {
       params: { limit },
     }),
-  // POST 返 NDJSON 流 —— 见顶部 postChatStream 函数 (async generator)
+  // POST 返 SSE 流 —— 见顶部 postChatStream 函数 (async generator)
   postChatStream,
 
   // ── Skills ────────────────────────────────────────────────────────────────

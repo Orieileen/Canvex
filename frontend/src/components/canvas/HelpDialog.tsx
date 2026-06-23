@@ -6,6 +6,8 @@ import {
   Rocket,
   Lightbulb,
 } from "lucide-react";
+import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 import {
   Dialog,
@@ -24,84 +26,6 @@ interface HelpSection {
   tips?: string[];
 }
 
-// Tutorial content. Kept in sync with the actual feature behaviour (see the
-// canvas selection / spatial-prompt / ImageEditBar / SkillSelector code).
-const SECTIONS: HelpSection[] = [
-  {
-    icon: SquareDashed,
-    title: "Annotate to steer edits (boxes & arrows)",
-    blurb:
-      "Draw a box, arrow, or text label over an image to tell the AI exactly where to edit. Your marks are turned into coordinates in the prompt — the source image stays clean and the annotations never show up in the result.",
-    steps: [
-      "Select an image, draw a shape on top of it, then select both together (marquee or shift-click) — the toolbar switches to “image + shapes”.",
-      "A box / ellipse marks a region; an arrow marks a single point at its tip; a text label near a shape is the instruction for that spot (e.g. box the logo + type “make this red”).",
-      "Click the “TEXT” tile in the toolbar to preview the exact prompt (e.g. “top-right region (x≈60–90%): make this red”).",
-      "Press Apply (wand) — the AI gets the clean original plus your region text. Or use Cutout / Split to target the subject you boxed.",
-    ],
-    tips: [
-      "Rough boxes are fine — coordinates are coarse (a 3×3 grid word + a percentage span), so you don’t need pixel-perfect marks.",
-      "Drag arrows FROM the label TOWARD the spot: the arrowhead end is what the model reads.",
-    ],
-  },
-  {
-    icon: Wand2,
-    title: "The AI toolbar",
-    blurb:
-      "Select any image on the canvas to get a floating toolbar — re-edit, cut out, split, animate, rotate, mock up, color-grade, merge, download, or send to chat, without typing into the chat box.",
-    steps: [
-      "Select an image — the toolbar appears below it. Pick a tab: Image / Video / Angle / Split / Merge / Mockup (tabs that don’t fit your selection grey out).",
-      "On the Image tab, type a change, set aspect ratio · quality (1K / 2K / 4K) · count (×1 / ×2 / ×4), then press Apply.",
-    ],
-    list: {
-      heading: "Modes",
-      items: [
-        "Image — edit / restyle by prompt. Cutout (scissors) = one-click transparent background.",
-        "Split — two stacked results: a transparent subject + a clean subject-removed background (all-or-nothing).",
-        "Angle — drag a 3D cube to re-render the shot from a new viewpoint (needs a pinned image).",
-        "Video — describe the motion → a clip (needs a pinned image; takes 1–5 min).",
-        "Mockup — wrap a design onto the image via depth: set target → drop another image → Depth / Mask / Opacity.",
-        "Merge — flatten the image + your marks into one PNG locally (no AI call).",
-        "Single images also get Adjust (a Lightroom-style color panel), Send to chat, and Download.",
-      ],
-    },
-    tips: [
-      "Click a thumbnail tile on the left of the toolbar to preview exactly what the AI will receive.",
-    ],
-  },
-  {
-    icon: Sparkles,
-    title: "Skills",
-    blurb:
-      "The sliders icon in the chat box lets you turn OFF a skill (a canned playbook the assistant follows) for just your next message, so it answers your request literally instead of running a workflow.",
-    steps: [
-      "Click the sliders icon → “Skills for this message”. Every skill is on by default; the assistant decides which one fits.",
-      "Uncheck a skill to skip it for the next message only — your choice resets automatically after you send.",
-    ],
-    list: {
-      heading: "Available skills",
-      items: [
-        "image-prompt-sop — rewrites a vague request into a high-quality prompt and auto-picks size + count for a single image.",
-        "amazon-listing-pack-sop — turns one product photo into a 7-image Amazon set (main, infographic, angle, detail, 2 lifestyle, scale) generated in parallel.",
-      ],
-    },
-    tips: [
-      "The dot on the sliders icon means at least one skill is off this turn. The selector only disables skills — it never forces one.",
-    ],
-  },
-  {
-    icon: Rocket,
-    title: "Getting started",
-    blurb:
-      "Generate images and videos by describing them in the chat box, organize work into scenes, and reuse past assets from the media library.",
-    steps: [
-      "Click “New canvas”, give it a name, and a blank scene opens.",
-      "Type into the chat box at the bottom to generate. A placeholder reserves the spot, then the result drops in (images take seconds; video 1–5 min). You can ask for up to 4 at once.",
-      "Each row under SCENES is its own canvas; edits autosave. Pin a canvas to the top, rename, or delete via the ⋮ menu.",
-      "Open “Media library” to browse everything you’ve made (grouped by canvas) and click a thumbnail to drop it into the current canvas.",
-    ],
-  },
-];
-
 export function HelpDialog({
   open,
   onOpenChange,
@@ -109,17 +33,45 @@ export function HelpDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation("canvasUi");
+
+  // Tutorial content. The icon + which sections have a list live here; the text
+  // (title/blurb/steps/tips/items) is pulled whole from the i18n arrays via
+  // returnObjects, so adding/removing a step only touches help.ts.
+  const SECTIONS: HelpSection[] = useMemo(() => {
+    // returnObjects yields the array; if a key is missing/renamed i18next returns
+    // the key string, so guard with Array.isArray to fail soft (empty) not crash.
+    const arr = (key: string): string[] => {
+      const v = t(key, { returnObjects: true });
+      return Array.isArray(v) ? (v as string[]) : [];
+    };
+    const defs: { icon: typeof HelpCircle; key: string; hasList?: boolean; hasTips?: boolean }[] = [
+      { icon: SquareDashed, key: "annotate", hasTips: true },
+      { icon: Wand2, key: "toolbar", hasList: true, hasTips: true },
+      { icon: Sparkles, key: "skills", hasList: true, hasTips: true },
+      { icon: Rocket, key: "gettingStarted" },
+    ];
+    return defs.map(({ icon, key, hasList, hasTips }) => ({
+      icon,
+      title: t(`help.${key}.title`),
+      blurb: t(`help.${key}.blurb`),
+      steps: arr(`help.${key}.steps`),
+      list: hasList
+        ? { heading: t(`help.${key}.list.heading`), items: arr(`help.${key}.list.items`) }
+        : undefined,
+      tips: hasTips ? arr(`help.${key}.tips`) : undefined,
+    }));
+  }, [t]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] gap-0 overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <HelpCircle className="size-5 text-primary" />
-            Canvex — Help &amp; tips
+            {t("help.dialogTitle")}
           </DialogTitle>
-          <DialogDescription>
-            A quick tour of the canvas: annotations, the AI toolbar, skills, and the basics.
-          </DialogDescription>
+          <DialogDescription>{t("help.dialogDescription")}</DialogDescription>
         </DialogHeader>
 
         <div className="-mr-2 flex max-h-[70vh] flex-col gap-7 overflow-y-auto pr-2 pt-1">

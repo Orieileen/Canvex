@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   Frame,
   Github,
   HelpCircle,
   Images,
+  Languages,
   Loader2,
   MoreVertical,
   PanelLeftClose,
@@ -43,6 +45,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useLanguageToggle } from "@/hooks/use-language";
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
@@ -63,9 +66,10 @@ export interface CanvasSceneRenamedDetail {
 export const CANVAS_OPEN_MEDIA_LIBRARY_EVENT = "canvas:open-media-library";
 
 // 作者社交链接 (用户提供)。展开=底部一排图标, 折叠=纵向堆叠。
-const SOCIAL_LINKS: { href: string; label: string; Icon: typeof Github }[] = [
-  { href: "https://x.com/real_meired", label: "Twitter", Icon: Twitter },
-  { href: "https://github.com/Orieileen/Canvex", label: "GitHub", Icon: Github },
+// `id` 是稳定的逻辑键 (React key + 翻译键), `label` 是可翻译的展示文案。
+const SOCIAL_LINKS: { id: string; href: string; label: string; Icon: typeof Github }[] = [
+  { id: "twitter", href: "https://x.com/real_meired", label: "Twitter", Icon: Twitter },
+  { id: "github", href: "https://github.com/Orieileen/Canvex", label: "GitHub", Icon: Github },
 ];
 
 // 侧栏折叠态持久化 (localStorage), 跨刷新/重开浏览器保留用户选择。
@@ -86,7 +90,7 @@ const SIDEBAR_PINNED_KEY = "canvex:canvas-pinned-scenes";
 
 // 侧栏分组标题 (PINNED / SCENES) 共用样式。
 const SIDEBAR_SECTION_LABEL =
-  "mb-1.5 px-1 text-[10px] font-bold tracking-[0.08em] text-stone-400";
+  "mb-1.5 px-2.5 text-xs font-semibold text-stone-500";
 
 function loadPinned(): string[] {
   try {
@@ -115,6 +119,8 @@ export function CanvasSidebar({
   onSceneCreated,
   onSceneDeleted,
 }: CanvasSidebarProps) {
+  const { t } = useTranslation("canvasUi");
+  const { lang, toggle: toggleLanguage } = useLanguageToggle();
   const [scenes, setScenes] = useState<CanvasSceneListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -167,11 +173,11 @@ export function CanvasSidebar({
       const { data } = await canvasService.listScenes();
       setScenes(data);
     } catch (err) {
-      toast.error(extractApiError(err, "Failed to load canvases"));
+      toast.error(extractApiError(err, t("sidebar.toast.loadFailed")));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadScenes();
@@ -231,7 +237,7 @@ export function CanvasSidebar({
       setCreateOpen(false);
       onSceneCreated?.(data.id);
     } catch (err) {
-      toast.error(extractApiError(err, "Failed to create canvas"));
+      toast.error(extractApiError(err, t("sidebar.toast.createFailed")));
     } finally {
       setCreating(false);
     }
@@ -259,7 +265,7 @@ export function CanvasSidebar({
         prev.map((s) => (s.id === scene.id ? { ...s, title: trimmed } : s)),
       );
     } catch (err) {
-      toast.error(extractApiError(err, "Failed to rename canvas"));
+      toast.error(extractApiError(err, t("sidebar.toast.renameFailed")));
     }
   }
 
@@ -276,16 +282,16 @@ export function CanvasSidebar({
       if (deleteTarget.id === activeSceneId) {
         onSceneDeleted?.(deleteTarget.id);
       }
-      toast.success("Canvas deleted");
+      toast.success(t("sidebar.toast.deleted"));
     } catch (err) {
-      toast.error(extractApiError(err, "Failed to delete canvas"));
+      toast.error(extractApiError(err, t("sidebar.toast.deleteFailed")));
     } finally {
       setDeleting(false);
       setDeleteTarget(null);
     }
   }
 
-  const deleteSceneTitle = deleteTarget?.title || "Untitled canvas";
+  const deleteSceneTitle = deleteTarget?.title || t("sidebar.untitled");
 
   // 置顶分组 (localStorage 持久化): 置顶场景排在最上方独立模块, 其余在 SCENES 下。
   // 用 Set 做 O(1) 成员判断, 单次遍历切两组 (都保留 scenes 原序)。
@@ -309,14 +315,14 @@ export function CanvasSidebar({
           <button
             type="button"
             onClick={() => onSelectScene(scene.id)}
-            title={scene.title || "Untitled canvas"}
-            aria-label={scene.title || "Untitled canvas"}
+            title={scene.title || t("sidebar.untitled")}
+            aria-label={scene.title || t("sidebar.untitled")}
             aria-current={isActive ? "page" : undefined}
             className={cn(
               "flex size-9 items-center justify-center rounded-md transition-colors",
               isActive
-                ? "bg-primary/10 text-stone-900"
-                : "text-stone-500 hover:bg-stone-200 hover:text-stone-700",
+                ? "bg-stone-200 text-stone-900"
+                : "text-stone-500 hover:bg-stone-100 hover:text-stone-700",
             )}
           >
             <Frame className="size-4" strokeWidth={2} />
@@ -326,7 +332,14 @@ export function CanvasSidebar({
     }
 
     return (
-      <li key={scene.id} className="group flex items-center gap-0.5">
+      <li
+        key={scene.id}
+        className={cn(
+          // 整行作为一个块: 选中/hover 的底色加在 li 上, 让名称按钮和 ⋮ 合为一体。
+          "group flex items-center gap-0.5 rounded-md pr-1 transition-colors",
+          !isEditing && (isActive ? "bg-stone-200" : "hover:bg-stone-100"),
+        )}
+      >
         {isEditing ? (
           <Input
             ref={editInputRef}
@@ -356,15 +369,13 @@ export function CanvasSidebar({
             type="button"
             aria-current={isActive ? "page" : undefined}
             className={cn(
-              "flex flex-1 items-center truncate rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
-              isActive
-                ? "bg-primary/10 text-stone-900"
-                : "text-stone-700 hover:bg-stone-200",
+              "flex flex-1 items-center truncate px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
+              isActive ? "text-stone-900" : "text-stone-700",
             )}
             onClick={() => onSelectScene(scene.id)}
           >
             <span className="truncate">
-              {scene.title || "Untitled canvas"}
+              {scene.title || t("sidebar.untitled")}
             </span>
           </button>
         )}
@@ -373,8 +384,8 @@ export function CanvasSidebar({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="flex size-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100 data-[state=open]:opacity-100"
-                aria-label="Canvas actions"
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:text-stone-700 group-hover:opacity-100 data-[state=open]:opacity-100"
+                aria-label={t("sidebar.actions.menu")}
               >
                 <MoreVertical className="size-3.5" />
               </button>
@@ -384,25 +395,25 @@ export function CanvasSidebar({
                 {isPinned ? (
                   <>
                     <PinOff className="mr-2 size-3.5" />
-                    Unpin
+                    {t("sidebar.actions.unpin")}
                   </>
                 ) : (
                   <>
                     <Pin className="mr-2 size-3.5" />
-                    Pin to top
+                    {t("sidebar.actions.pin")}
                   </>
                 )}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => startRename(scene)}>
                 <Pencil className="mr-2 size-3.5" />
-                Rename
+                {t("sidebar.actions.rename")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
                 onClick={() => setDeleteTarget(scene)}
               >
                 <Trash2 className="mr-2 size-3.5" />
-                Delete
+                {t("sidebar.actions.delete")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -427,59 +438,61 @@ export function CanvasSidebar({
     <aside
       data-collapsed={collapsed ? "true" : "false"}
       className={cn(
-        "shrink-0 py-8 flex flex-col h-screen sticky top-0 bg-stone-50 overflow-hidden overscroll-contain transition-[width] duration-200 ease-out",
+        "shrink-0 py-8 flex flex-col h-screen sticky top-0 bg-white overflow-hidden overscroll-contain transition-[width] duration-200 ease-out",
         collapsed ? "w-16 px-2" : "w-[230px] px-5",
       )}
     >
-      {/* 品牌标: 展开 = ring mark + "Canvex"; 折叠 = 仅 ring mark 居中 */}
-      <div className={cn("mb-4 flex items-center", collapsed ? "justify-center" : "gap-2 px-1")}>
-        <RingIcon className="shrink-0 text-primary" aria-hidden />
+      {/* 品牌 + 折叠按钮同排 (ChatGPT 风格): 展开 = ring+Canvex 左 / 折叠按钮右; 折叠态仅 ring 居中 */}
+      <div className={cn("mb-3 flex items-center", collapsed ? "justify-center" : "justify-between px-1")}>
+        <div className="flex items-center gap-2">
+          <RingIcon className="shrink-0 text-stone-900" aria-hidden />
+          {!collapsed && (
+            <span className="text-[17px] font-semibold tracking-tight text-stone-900">Canvex</span>
+          )}
+        </div>
         {!collapsed && (
-          <span className="text-[17px] font-semibold tracking-tight text-stone-900">Canvex</span>
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+            aria-label={t("sidebar.collapseSidebar")}
+            title={t("sidebar.collapseSidebar")}
+          >
+            <PanelLeftClose className="size-4" strokeWidth={2.5} />
+          </button>
         )}
       </div>
-      {/* 顶部: 展开时 [新建 / 收起] 同排; 折叠时纵向堆叠 [展开 / 新建] */}
+      {/* 新建画布: ChatGPT 风格普通行 (图标+文字, 灰底 hover); 折叠态 = 展开按钮 + 新建图标纵向堆叠 */}
       {collapsed ? (
         <div className="mb-1.5 flex flex-col items-center gap-1.5">
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
-            aria-label="Expand sidebar"
-            title="Expand sidebar"
+            className="flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+            aria-label={t("sidebar.expandSidebar")}
+            title={t("sidebar.expandSidebar")}
           >
             <PanelLeftOpen className="size-4" strokeWidth={2.5} />
           </button>
           <button
             type="button"
             onClick={openCreate}
-            className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:opacity-90"
-            aria-label="New canvas"
-            title="New canvas"
+            className="flex size-9 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900"
+            aria-label={t("sidebar.newCanvas")}
+            title={t("sidebar.newCanvas")}
           >
-            <Plus className="size-3.5" />
+            <Plus className="size-4" strokeWidth={2} />
           </button>
         </div>
       ) : (
-        <div className="mb-2 flex items-center gap-2">
-          <Button
-            size="sm"
-            className="flex-1 justify-center gap-2"
-            onClick={openCreate}
-          >
-            <Plus className="size-3.5" />
-            New canvas
-          </Button>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            className="flex size-8 shrink-0 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar"
-          >
-            <PanelLeftClose className="size-4" strokeWidth={2.5} />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={openCreate}
+          className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+        >
+          <Plus className="size-4 shrink-0" strokeWidth={2} />
+          {t("sidebar.newCanvas")}
+        </button>
       )}
 
       {/* 「素材库」入口 (紧贴 New canvas 下方): 发全局事件, CanvasArea 接住打开面板。
@@ -491,9 +504,9 @@ export function CanvasSidebar({
             type="button"
             disabled={!activeSceneId}
             onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="mx-auto flex size-9 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-stone-200 hover:text-stone-900 disabled:pointer-events-none disabled:opacity-40"
-            aria-label="Media library"
-            title={activeSceneId ? "Media library" : "Select a canvas first"}
+            className="mx-auto flex size-9 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900 disabled:pointer-events-none disabled:opacity-40"
+            aria-label={t("sidebar.mediaLibrary")}
+            title={activeSceneId ? t("sidebar.mediaLibrary") : t("sidebar.selectCanvasFirst")}
           >
             <Images className="size-4" strokeWidth={2} />
           </button>
@@ -502,11 +515,11 @@ export function CanvasSidebar({
             type="button"
             disabled={!activeSceneId}
             onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_MEDIA_LIBRARY_EVENT))}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-200 disabled:pointer-events-none disabled:opacity-40"
-            title={activeSceneId ? undefined : "Select a canvas first"}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100 disabled:pointer-events-none disabled:opacity-40"
+            title={activeSceneId ? undefined : t("sidebar.selectCanvasFirst")}
           >
             <Images className="size-4 shrink-0" strokeWidth={2} />
-            Media library
+            {t("sidebar.mediaLibrary")}
           </button>
         )}
       </div>
@@ -525,17 +538,18 @@ export function CanvasSidebar({
             )}
           >
             <Loader2 className="size-3 animate-spin" />
-            {!collapsed && "Loading…"}
+            {!collapsed && t("sidebar.loading")}
           </div>
         ) : scenes.length === 0 ? (
           !collapsed && (
             <p className="px-2 py-2 text-xs text-stone-400">
-              No canvases yet. Start with "New canvas".
+              {t("sidebar.empty")}
             </p>
           )
         ) : (
           <>
-            {pinnedScenes.length > 0 && renderSceneSection("PINNED", pinnedScenes)}
+            {pinnedScenes.length > 0 &&
+              renderSceneSection(t("sidebar.sections.pinned"), pinnedScenes)}
 
             {/* 折叠态: 置顶组与普通组之间一条短分隔线 (无文字 label 可区分两组) */}
             {collapsed && pinnedScenes.length > 0 && unpinnedScenes.length > 0 && (
@@ -543,24 +557,47 @@ export function CanvasSidebar({
             )}
 
             {unpinnedScenes.length > 0
-              ? renderSceneSection("SCENES", unpinnedScenes)
+              ? renderSceneSection(t("sidebar.sections.scenes"), unpinnedScenes)
               : !collapsed && (
                   <p className="px-2 py-1 text-xs text-stone-400">
-                    All canvases are pinned.
+                    {t("sidebar.allPinned")}
                   </p>
                 )}
           </>
         )}
       </nav>
 
+      {/* 中英文切换: 展开 = 行(显示目标语言); 折叠 = 图标。切换并持久化到 localStorage。 */}
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={toggleLanguage}
+          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+          aria-label={t("sidebar.toggleLanguage")}
+          title={t("sidebar.toggleLanguage")}
+        >
+          <span className="text-[11px] font-bold">{lang === "en" ? "EN" : "中"}</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={toggleLanguage}
+          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+          title={t("sidebar.toggleLanguage")}
+        >
+          <Languages className="size-4 shrink-0" strokeWidth={2} />
+          {lang === "en" ? "中文" : "English"}
+        </button>
+      )}
+
       {/* 帮助入口: 展开 = 行; 折叠 = 图标。打开教程弹层。 */}
       {collapsed ? (
         <button
           type="button"
           onClick={() => setHelpOpen(true)}
-          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-700"
-          aria-label="Help & tips"
-          title="Help & tips"
+          className="mx-auto mt-1 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+          aria-label={t("sidebar.helpTips")}
+          title={t("sidebar.helpTips")}
         >
           <HelpCircle className="size-4" strokeWidth={2} />
         </button>
@@ -568,10 +605,10 @@ export function CanvasSidebar({
         <button
           type="button"
           onClick={() => setHelpOpen(true)}
-          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-200"
+          className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
         >
           <HelpCircle className="size-4 shrink-0" strokeWidth={2} />
-          Help &amp; tips
+          {t("sidebar.helpTips")}
         </button>
       )}
 
@@ -582,15 +619,15 @@ export function CanvasSidebar({
           collapsed ? "flex-col items-center gap-1" : "items-center gap-1 px-1",
         )}
       >
-        {SOCIAL_LINKS.map(({ href, label, Icon }) => (
+        {SOCIAL_LINKS.map(({ id, href, label, Icon }) => (
           <a
-            key={label}
+            key={id}
             href={href}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label={label}
-            title={label}
-            className="flex size-8 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-200 hover:text-primary"
+            aria-label={t(`sidebar.social.${id}`, label)}
+            title={t(`sidebar.social.${id}`, label)}
+            className="flex size-8 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
           >
             <Icon className="size-4" strokeWidth={2} />
           </a>
@@ -613,16 +650,16 @@ export function CanvasSidebar({
             }}
           >
             <DialogHeader>
-              <DialogTitle>New canvas</DialogTitle>
+              <DialogTitle>{t("sidebar.createDialog.title")}</DialogTitle>
               <DialogDescription>
-                Give your canvas a name, or leave it blank to use the default.
+                {t("sidebar.createDialog.description")}
               </DialogDescription>
             </DialogHeader>
             <Input
               value={createName}
               onChange={(e) => setCreateName(e.target.value)}
-              placeholder="Untitled canvas"
-              aria-label="New canvas"
+              placeholder={t("sidebar.createDialog.placeholder")}
+              aria-label={t("sidebar.newCanvas")}
               autoFocus
               maxLength={255}
               className="my-4"
@@ -635,16 +672,16 @@ export function CanvasSidebar({
                 onClick={() => setCreateOpen(false)}
                 disabled={creating}
               >
-                Cancel
+                {t("sidebar.cancel")}
               </Button>
               <Button
                 type="submit"
                 size="sm"
-                className="rounded-full bg-ember px-6 text-white hover:bg-ember/90"
+                className="rounded-full bg-stone-900 px-6 text-white hover:bg-stone-800"
                 disabled={creating}
               >
                 {creating && <Loader2 className="size-3.5 animate-spin" />}
-                Create
+                {t("sidebar.createDialog.create")}
               </Button>
             </DialogFooter>
           </form>
@@ -659,13 +696,15 @@ export function CanvasSidebar({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete canvas</AlertDialogTitle>
+            <AlertDialogTitle>{t("sidebar.deleteDialog.title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete "{deleteSceneTitle}"? This cannot be undone.
+              {t("sidebar.deleteDialog.description", { name: deleteSceneTitle })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>
+              {t("sidebar.cancel")}
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20"
               disabled={deleting}
@@ -674,7 +713,11 @@ export function CanvasSidebar({
                 void handleDelete();
               }}
             >
-              {deleting ? <Loader2 className="size-3.5 animate-spin" /> : "Delete"}
+              {deleting ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                t("sidebar.actions.delete")
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

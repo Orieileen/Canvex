@@ -7,7 +7,10 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Aperture, Blend, Clapperboard, Contrast, Download, Frame, Hexagon, Layers, Loader2, MessageSquarePlus, RotateCcw, RotateCw, Scissors, SlidersHorizontal, SplitSquareHorizontal, Wand2, X, type LucideIcon } from "lucide-react";
+import { motion } from "framer-motion";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { ExcalidrawImageElement } from "@excalidraw/excalidraw/element/types";
 
 import { captureMockupAtSize } from "@/components/canvas/Mockup3dOverlay";
@@ -75,112 +78,6 @@ import {
  *     烧进 PNG (跨图 shape 烧进每张被它覆盖的图; 不碰任一图的 orphan 被忽略).
  *     详见 `selectionToSourceFiles`. Video/Angle/Split 一张图语义, 禁用.
  */
-
-// ── i18n (hardcoded English) ─────────────────────────────────────────────────
-// Canvex has no `canvas` i18n namespace yet — strings inlined verbatim from
-// meired's en.json (canvas.edit / canvas.gizmo). Folded back into i18n when the
-// full string merge lands; keys preserved so the merge is a mechanical lookup.
-type TParams = Record<string, string | number>;
-const EDIT_LABELS: Record<string, string> = {
-  "edit.tabImage": "Image",
-  "edit.tabVideo": "Video",
-  "edit.tabAngle": "Angle",
-  "edit.tabSplit": "Split",
-  "edit.tabMerge": "Merge",
-  "edit.tabMockup": "Mockup",
-  "edit.tabAdjust": "Adjust",
-  "edit.sendToChat": "Send to chat",
-  "edit.download": "Download image",
-  "edit.cutout": "Cutout",
-  "edit.cutoutUnavailable": "Cutout unavailable for multi-image",
-  "edit.apply": "Apply",
-  "edit.sizeAuto": "Auto",
-  "edit.placeholderCombine": "Combine {{count}} images…",
-  "edit.placeholderAddText": "Add to canvas text…",
-  "edit.placeholderDescribe": "Describe edits…",
-  "edit.pinFirst": "Pin image via chat first",
-  "edit.describeVideo": "Describe the video…",
-  "edit.generateVideo": "Generate video",
-  "edit.durationSuffix": "{{n}}s",
-  "edit.dragCube": "Drag the cube to pick an angle",
-  "edit.generateAngle": "Generate angle",
-  "edit.splitDesc": "Split into subject cutout + clean background",
-  "edit.splitBtn": "Split image",
-  "edit.mergeDesc": "Flatten selection into one image",
-  "edit.mergeBtn": "Merge into one image",
-  "edit.depth.idle": "Preparing depth…",
-  "edit.depth.loading": "Computing depth…",
-  "edit.depth.ready": "Drop a design image onto the highlighted base",
-  "edit.depth.error": "Depth failed — try again",
-  "edit.sliderDepth": "Depth",
-  "edit.sliderMask": "Mask",
-  "edit.sliderOpacity": "Opacity",
-  "edit.reposition": "Click on the image to re-position the design",
-  "edit.removeMockup": "Remove mockup",
-  "edit.cancel": "Cancel",
-  "edit.mockupInstruction": "Wrap a design onto this image (depth-aware mockup)",
-  "edit.setMockupTarget": "Set as mockup target",
-  "edit.adjust.group_light": "Light",
-  "edit.adjust.group_color": "Color",
-  "edit.adjust.group_detail": "Detail",
-  "edit.adjust.group_effects": "Effects",
-  "edit.adjust.light": "Light",
-  "edit.adjust.exposure": "Exposure",
-  "edit.adjust.contrast": "Contrast",
-  "edit.adjust.highlights": "Highlights",
-  "edit.adjust.shadows": "Shadows",
-  "edit.adjust.whites": "Whites",
-  "edit.adjust.blacks": "Blacks",
-  "edit.adjust.vibrance": "Vibrance",
-  "edit.adjust.saturation": "Saturation",
-  "edit.adjust.temperature": "Temperature",
-  "edit.adjust.tint": "Tint",
-  "edit.adjust.sharpen": "Sharpen",
-  "edit.adjust.clarity": "Clarity",
-  "edit.adjust.grain": "Grain",
-  "edit.adjust.vignette": "Vignette",
-  "edit.adjust.soft": "Soft Light",
-  "edit.adjust.glow": "Glow",
-  "edit.adjust.band_red": "Red",
-  "edit.adjust.band_orange": "Orange",
-  "edit.adjust.band_yellow": "Yellow",
-  "edit.adjust.band_green": "Green",
-  "edit.adjust.band_aqua": "Aqua",
-  "edit.adjust.band_blue": "Blue",
-  "edit.adjust.band_purple": "Purple",
-  "edit.adjust.band_magenta": "Magenta",
-  "edit.adjust.bandHue": "Hue",
-  "edit.adjust.bandSat": "Saturation",
-  "edit.adjust.bandLum": "Luminance",
-  "edit.adjust.title": "Adjust",
-  "edit.adjust.auto": "Auto enhance",
-  "edit.adjust.close": "Close",
-  "edit.adjust.reset": "Reset",
-  "edit.showPromptFromText": "Show prompt from canvas text",
-  "edit.promptFromText": "Prompt from canvas text",
-  "edit.promptFromTextExpand": "Prompt from canvas text — click to expand",
-  "edit.textBadge": "text",
-  "edit.expandPreview": "Expand preview {{index}} of {{total}}",
-  "edit.expandPreviewSimple": "Expand preview",
-  "edit.expandHint": "{{label}} — click to expand",
-  "edit.selectionPreview": "Selection preview",
-  "edit.dismiss": "dismiss",
-  "edit.downloadFailed": "Download failed, please retry",
-};
-
-/** Minimal i18n shim — looks the key up in EDIT_LABELS and interpolates
- *  `{{name}}` placeholders. Mirrors `t("edit.x", { count })` call shape so the
- *  later real-i18n swap is a 1:1 import change. Unknown key → returns the key
- *  (loud-fails in UI instead of silently blanking). */
-function t(key: string, params?: TParams): string {
-  let s = EDIT_LABELS[key] ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      s = s.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), String(v));
-    }
-  }
-  return s;
-}
 
 type TabKey = "image" | "video" | "angle" | "split" | "merge" | "mockup";
 
@@ -320,6 +217,7 @@ const EDGE_MARGIN = 8;
 const forwardWheelToCanvas = forwardWheelToExcalidrawCanvas;
 
 export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, onSendToChat }: ImageEditBarProps) {
+  const { t } = useTranslation("canvasUi");
   // 初始 placement 用 0,0 而不是 screenY+screenHeight+ANCHOR_GAP —— 后者在
   // 巨图 (screenHeight > 1000px) 下会把 absolute child 定位到 y=2000+, 撑大
   // document.scrollHeight 出全页纵向 scrollbar. useLayoutEffect 同帧覆盖,
@@ -410,7 +308,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
   );
 
   return (
-    <div
+    <motion.div
       ref={rootRef}
       onWheel={forwardWheelToCanvas}
       data-image-edit-bar
@@ -423,8 +321,12 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
       style={{
         left: placement.left,
         top: placement.top,
-        transform: "translate(-50%, 0)",
       }}
+      // 入场: 柔和上浮+淡入。x 恒为 -50% 维持水平居中 (替代原 translate(-50%,0));
+      // framer 接管 transform, 故 inline transform 移除。
+      initial={{ opacity: 0, y: 6, x: "-50%" }}
+      animate={{ opacity: 1, y: 0, x: "-50%" }}
+      transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
       aria-hidden={placement.hidden || undefined}
     >
       <SelectionPreview urls={preview.urls} promptPreview={promptPreview} />
@@ -470,7 +372,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
                   variant="ghost"
                   label={t("edit.download")}
                   disabled={false}
-                  onClick={() => void handleImageDownload(selection.image, imageSourceUrl)}
+                  onClick={() => void handleImageDownload(selection.image, imageSourceUrl, t)}
                 >
                   <Download className="size-4" />
                 </IconButton>
@@ -548,7 +450,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
           <span className="ml-2 text-muted-foreground">· {t("edit.dismiss")}</span>
         </button>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -578,6 +480,7 @@ function SelectionPreview({ urls, promptPreview }: { urls: string[]; promptPrevi
 }
 
 function PromptTile({ prompt }: { prompt: string }) {
+  const { t } = useTranslation("canvasUi");
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -605,6 +508,7 @@ function PromptTile({ prompt }: { prompt: string }) {
 }
 
 function PreviewThumb({ url, index, total }: { url: string; index: number; total: number }) {
+  const { t } = useTranslation("canvasUi");
   const label =
     total > 1
       ? t("edit.expandPreview", { index: index + 1, total })
@@ -630,6 +534,7 @@ function PreviewThumb({ url, index, total }: { url: string; index: number; total
 }
 
 function PreviewImage({ url, className }: { url: string; className?: string }) {
+  const { t } = useTranslation("canvasUi");
   return (
     <img
       src={url}
@@ -663,6 +568,7 @@ interface ImagePanelProps {
 }
 
 function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit }: ImagePanelProps) {
+  const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
   const [resolution, setResolution] = useState<ImageEditResolution>("2K");
@@ -792,6 +698,7 @@ interface VideoPanelProps {
 }
 
 function VideoPanel({ canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPanelProps) {
+  const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("16:9");
@@ -885,6 +792,7 @@ interface AnglePanelProps {
 }
 
 function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
+  const { t } = useTranslation("canvasUi");
   const [angles, setAngles] = useState<CameraAngles>(DEFAULT_CAMERA_ANGLES);
 
   const canGenerate = !!sourceUrl && !isSubmitting;
@@ -939,6 +847,7 @@ interface SplitPanelProps {
 /** Split = subject cutout + clean-bg inpaint (fixed pipeline); the only knob is
  *  the resolution tier (1K/2K/4K). For other tweaks, switch to the Image tab. */
 function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
+  const { t } = useTranslation("canvasUi");
   const [resolution, setResolution] = useState<ImageEditResolution>("2K");
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -979,6 +888,7 @@ interface MergePanelProps {
 }
 
 function MergePanel({ isProcessing, onSubmit }: MergePanelProps) {
+  const { t } = useTranslation("canvasUi");
   return (
     <NoInputPanel
       description={t("edit.mergeDesc")}
@@ -1015,6 +925,7 @@ function MockupPanel({
   onEnter, onExit, onRemove,
   onStrengthChange, onMaskThresholdChange, onOpacityChange,
 }: MockupPanelProps) {
+  const { t } = useTranslation("canvasUi");
   if (binding) {
     return (
       <form
@@ -1129,6 +1040,7 @@ interface AdjustPanelProps {
  *  customData(就地、无新图,常驻 overlay 实时渲染);重置(仅有调整时显示)删绑定
  *  还原原图。面板无本地态 —— 值由页面从 customData 重算下传。 */
 export function AdjustPanel({ binding, onChange, onBandChange, onReset, onAuto, onClose }: AdjustPanelProps) {
+  const { t } = useTranslation("canvasUi");
   const sectionRefs = useRef<Partial<Record<AdjustGroupSpec["id"], HTMLElement | null>>>({});
   if (!binding) return null;
   const dirty = !isAdjustNeutral(binding);
@@ -1261,6 +1173,7 @@ interface ColorMixSectionProps {
 }
 
 function ColorMixSection({ colorMix, onBandChange }: ColorMixSectionProps) {
+  const { t } = useTranslation("canvasUi");
   const [active, setActive] = useState<ColorBand>("red");
   return (
     <div className="mt-1 flex flex-col gap-2 border-t border-border/50 pt-2">
@@ -1406,7 +1319,7 @@ function Divider() {
  *  用 createImageBitmap 读底图: 跨域 blob 解码 off-thread, 也避开
  *  HTMLImageElement 的 tainted-canvas 限制。
  *  注: 旋转 / 翻转 暂不处理(沿用旧行为)。 */
-async function handleImageDownload(el: ExcalidrawImageElement, imageSourceUrl: string) {
+async function handleImageDownload(el: ExcalidrawImageElement, imageSourceUrl: string, t: TFunction) {
   try {
     const res = await fetch(imageSourceUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -175,25 +175,67 @@
     100% { background-position: -200% 0; }
   }
   .canvas-shimmer-sweep {
-    background-image: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, 0.55) 50%, transparent 62%);
+    /* 更宽、更柔的高光带 + 更慢的扫光 = 更克制的高级感。 */
+    background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.42) 50%, transparent 70%);
     background-size: 200% 100%;
-    animation: canvas-shimmer 1.6s linear infinite;
+    animation: canvas-shimmer 2.6s linear infinite;
   }
   @keyframes canvas-glow-breathe {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 0.72; }
+    0%, 100% { opacity: 0.28; }
+    50% { opacity: 0.6; }
   }
   .canvas-glow-breathe {
-    animation: canvas-glow-breathe 2.2s ease-in-out infinite;
+    animation: canvas-glow-breathe 2.8s ease-in-out infinite;
   }
+
+  /* 思考时输入框 border 上环绕转圈的橙色光 (ChatOverlay)。conic-gradient 的起始
+     角 --thinking-angle 由 @property 注册才能动画;mask 只露出 border 那一圈, 于是
+     橙色彗尾沿圆角边框绕圈。容器需 position:relative + 一个 border-radius 供 inherit。 */
+  @keyframes thinking-glow-rotate {
+    to {
+      --thinking-angle: 360deg;
+    }
+  }
+  .thinking-glow::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 2px;
+    background: conic-gradient(
+      from var(--thinking-angle),
+      transparent 0deg,
+      var(--ember) 45deg,
+      transparent 110deg,
+      transparent 360deg
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: thinking-glow-rotate 1.6s linear infinite;
+    filter: drop-shadow(0 0 4px var(--ember));
+    pointer-events: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .canvas-shimmer-sweep {
       display: none;
     }
-    .canvas-glow-breathe {
+    .canvas-glow-breathe,
+    .thinking-glow::before {
       animation: none;
     }
   }
+}
+
+/* Registered so the conic-gradient start angle is animatable (plain custom
+   properties can't be tweened). Must live at the top level, not in a layer. */
+@property --thinking-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
 }
 
 /* ────────────────────────────────────────────────────────────────────

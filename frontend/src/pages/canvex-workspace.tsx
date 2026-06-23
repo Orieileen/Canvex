@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { AnimatePresence, motion } from "framer-motion";
 import { History, Loader2, Map as MapIcon } from "lucide-react";
 
 import { Minimap } from "@/components/canvas/Minimap";
@@ -8,6 +10,8 @@ import { Mockup3dOverlay } from "@/components/canvas/Mockup3dOverlay";
 import { CanvasMeasureOverlay } from "@/components/canvas/CanvasMeasureOverlay";
 import { CanvasImagePlacementOverlay } from "@/components/canvas/CanvasImagePlacementOverlay";
 import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOverlay";
+import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
+import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
@@ -95,12 +99,9 @@ const SAVE_STATUS_TEXT: Record<Exclude<SaveState, "idle">, string> = {
   saved: "text-muted-foreground",
   error: "text-destructive",
 };
-const SAVE_STATUS_LABEL: Record<Exclude<SaveState, "idle">, string> = {
-  pending: "Unsaved changes…",
-  saving: "Saving…",
-  saved: "Saved",
-  error: "Save failed",
-};
+// The non-idle SaveState values are exactly the sub-keys under
+// `workspace.saveStatus.*`, so the label resolves directly via
+// t(`workspace.saveStatus.${saveState}`) — no lookup table needed.
 
 // Tool results include a confirmation string like
 //   "Image generation queued (job_id=<UUID>, n=1). …"
@@ -144,7 +145,7 @@ const TOOL_TO_JOB_KIND: Record<string, JobKind> = {
 //   bottom-[21px] = chat input (顶 16 + 高 42, 中心 37) - button 32 / 2 = 21
 //   left 步进: 16 (起始) → +32 (button) +8 (gap) = 56 → 96 ...
 // mobile bar 出现时 CSS sibling selector 把按钮顶到 bottom: 61, 见 index.css.
-const FLOATING_BTN_BASE = "absolute bottom-[21px] z-50 rounded-full border shadow-lg backdrop-blur ring-1 ring-black/8";
+const FLOATING_BTN_BASE = "absolute bottom-[21px] z-50 rounded-md border shadow-lg backdrop-blur ring-1 ring-black/8";
 const FLOATING_BTN_HOVER = "hover:bg-ember hover:text-primary-foreground";
 
 function extractMarkdownImageUrls(text: string): string[] {
@@ -248,6 +249,17 @@ interface CanvasAreaProps {
 }
 
 function CanvasArea({ sceneId }: CanvasAreaProps) {
+  const { t } = useTranslation("canvasUi");
+  // Always-current `t` for use inside effects that must NOT re-run on language
+  // change (react-i18next returns a new `t` ref each `languageChanged`). Without
+  // this, the scene-load effect below would list `t` in its deps and a language
+  // toggle mid-stream would abort the live reply + job polls and wipe the chat.
+  const tRef = useRef(t);
+  tRef.current = t;
+  // Keep Excalidraw's own native UI (crop hints, context menus) in sync with the
+  // app language toggle.
+  const { lang } = useLanguageToggle();
+  const excalidrawLang = excalidrawLangCode(lang);
   const activeSceneId = sceneId;
 
   const [scene, setScene] = useState<CanvasScene | null>(null);
@@ -276,6 +288,36 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // pinned to the canvas as text). Loaded from history on scene mount, appended
   // during streaming.
   const [chatMessages, setChatMessages] = useState<CanvasChatMessage[]>([]);
+  // Live assistant text accumulated from `assistant_delta` tokens (typewriter).
+  // Cleared the moment the persisted `assistant` message lands (same React batch,
+  // so the live bubble swaps to the real one with no flicker).
+  const [streamingText, setStreamingText] = useState("");
+  // True once the persisted `assistant` arrived: the typewriter should finish
+  // dripping its remaining text, then swap in the persisted bubble.
+  const [streamFinalizing, setStreamFinalizing] = useState(false);
+  // AIMessageChunk id of the delta run currently accumulating — when it changes
+  // (a fresh assistant segment after a tool call), the buffer resets.
+  const streamDeltaIdRef = useRef<string | null>(null);
+  // Persisted assistant message held until the typewriter catches up, so the
+  // live bubble and the final bubble swap with identical text (no jump).
+  const pendingAssistantRef = useRef<CanvasChatMessage | null>(null);
+  // Single reset for all streaming state. `commitPending` first flushes a held
+  // persisted message into the transcript — used both when the typewriter settles
+  // and when a new turn starts before the previous one finished, so a fast
+  // re-submit never silently drops the prior reply.
+  const resetStream = useCallback((commitPending: boolean) => {
+    const pending = pendingAssistantRef.current;
+    pendingAssistantRef.current = null;
+    if (commitPending && pending) {
+      setChatMessages((prev) => appendUniqueMessage(prev, pending));
+    }
+    setStreamingText("");
+    setStreamFinalizing(false);
+    streamDeltaIdRef.current = null;
+  }, []);
+  // Typewriter reached the full text AND a reply is finalizing → commit the
+  // persisted bubble + clear the live one in one batch.
+  const handleStreamSettled = useCallback(() => resetStream(true), [resetStream]);
   const [chatStatus, setChatStatus] = useState<ChatOverlayStatus | null>(null);
   const [toolBadge, setToolBadge] = useState<string | null>(null);
   // Skills loaded this turn — sniffed from read_file tool_calls via
@@ -574,7 +616,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           });
       } catch (err) {
         if (cancelled) return;
-        setLoadError(extractApiError(err, "Failed to load canvas"));
+        setLoadError(extractApiError(err, tRef.current("workspace.error.loadFailed")));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -598,6 +640,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       sceneAbortRef.current?.abort();
       sceneAbortRef.current = null;
     };
+    // `t` intentionally NOT a dep (we read it via tRef) — re-running this
+    // scene-load effect on a language toggle would abort the live stream + wipe
+    // the chat. eslint is satisfied because tRef.current isn't reactive.
   }, [activeSceneId, resetPinning]);
 
   const performSave = useCallback(async () => {
@@ -739,20 +784,20 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         // No placeholder = markdown-fallback path with no on-canvas surface;
         // toast the failure so user knows the inline-image rendering failed.
         if (!result.ok && placeholders.length === 0) {
-          toast.error(`${kind} generation failed: ${result.reason}`);
+          toast.error(t("workspace.toast.generationFailed", { kind: t(`workspace.kindNames.${kind}`), reason: result.reason }));
         }
       } catch (err) {
         // AbortError from scene switch = expected, stay quiet
         if ((err as DOMException)?.name === "AbortError") return;
-        const reason = extractApiError(err, "polling failed");
+        const reason = extractApiError(err, t("workspace.tombstone.pollingFailed"));
         if (placeholders.length > 0) {
           markPlaceholdersFailed(placeholders, reason);
         } else {
-          toast.error(extractApiError(err, `${kind} job polling failed`));
+          toast.error(extractApiError(err, t("workspace.toast.jobPollingFailed", { kind: t(`workspace.kindNames.${kind}`) })));
         }
       }
     },
-    [markPlaceholdersFailed, pinImage, pinVideo, replacePlaceholderWithImage, replacePlaceholderWithVideo],
+    [markPlaceholdersFailed, pinImage, pinVideo, replacePlaceholderWithImage, replacePlaceholderWithVideo, t],
   );
 
   useResumeCanvasJobs({
@@ -805,14 +850,21 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           return [...prev, attachment];
         });
       } catch (err) {
-        toast.error(extractApiError(err, "Failed to attach image"));
+        toast.error(extractApiError(err, t("workspace.toast.attachFailed")));
       }
     },
-    [activeSceneId],
+    [activeSceneId, t],
   );
 
   const handleRemoveAttachment = useCallback((url: string) => {
     setAttachments((prev) => prev.filter((a) => a.url !== url));
+  }, []);
+
+  // Stop button: abort the in-flight chat stream. The for-await in
+  // handleChatSubmit rejects with AbortError → its catch returns quietly and the
+  // finally tears down (drops the partial reply, clears the typewriter).
+  const handleStopStream = useCallback(() => {
+    streamAbortRef.current?.abort();
   }, []);
 
   const handleChatSubmit = useCallback(
@@ -841,6 +893,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       setIsStreaming(true);
       setChatStatus(null);
       setToolBadge(null);
+      // Flush any prior pending reply before starting a new turn (fast re-submit).
+      resetStream(true);
       // Make sure the scene has a chat frame for the panel to anchor to (created
       // on the first message; no-op thereafter). Recreates it if the user deleted it.
       ensureChatFrame();
@@ -862,6 +916,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               setChatMessages((prev) => appendUniqueMessage(prev, event.message));
               break;
             case "tool_call": {
+              // A tool call ends the current assistant text segment. The persisted
+              // reply keeps only the LAST segment (the text after the last tool —
+              // last_ai_text), so reset the live buffer here to match; otherwise a
+              // "text → tool → text" turn would show the pre-tool text concatenated
+              // with the final and then jump on settle.
+              setStreamingText("");
+              streamDeltaIdRef.current = null;
               // Skill loads route to skillBadges (ember pill); skip the
               // generic read_file toolBadge (an internal mechanic).
               const skillSlug = skillSlugFromToolCall(event.name, event.args);
@@ -909,7 +970,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               for (let i = 0; i < count; i++) {
                 const ph = createPlaceholder(
                   kind,
-                  `Generating ${kind}…`,
+                  t("workspace.placeholder.generating", { kind: t(`workspace.kindNames.${kind}`) }),
                   undefined,
                   permanentLabel !== undefined || slotIndex !== undefined
                     ? { permanentLabel, slotIndex }
@@ -941,9 +1002,23 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
                 const isRefusal = event.content.startsWith("Refused:");
                 const reason = isRefusal
                   ? event.content.split("\n")[0].slice(0, 200)
-                  : "job id missing from tool result";
+                  : t("workspace.tombstone.jobIdMissing");
                 markPlaceholdersFailed(placeholders, reason);
               }
+              break;
+            }
+            case "assistant_delta": {
+              // Accumulate tokens into the live bubble; reset only when a new
+              // NON-EMPTY message segment id appears (a fresh assistant turn after
+              // a tool call). An absent/empty id keeps accumulating — never resets
+              // to a single token. Decide BEFORE mutating the ref so the
+              // functional update sees the right branch.
+              const sameSegment =
+                !event.id || event.id === streamDeltaIdRef.current;
+              streamDeltaIdRef.current = event.id;
+              setStreamingText((prev) =>
+                sameSegment ? prev + event.content : event.content,
+              );
               break;
             }
             case "assistant_final":
@@ -953,15 +1028,20 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               // extract markdown image URLs and pin them alongside the text pin.
               for (const url of extractMarkdownImageUrls(event.content)) {
                 void pinImage({ url, dedupKey: url }).catch((err) => {
-                  toast.error(extractApiError(err, "Failed to load image"));
+                  toast.error(extractApiError(err, t("workspace.toast.loadImageFailed")));
                 });
               }
               break;
             case "assistant":
-              setChatMessages((prev) => appendUniqueMessage(prev, event.message));
+              // Persisted message lands. Don't swap yet — hold it and point the
+              // typewriter at the authoritative full text; the streaming bubble
+              // finishes dripping then calls handleStreamSettled to swap it in.
+              pendingAssistantRef.current = event.message;
+              setStreamingText(event.message.content);
+              setStreamFinalizing(true);
               break;
             case "error":
-              showTransientStatus({ label: "Reply failed", variant: "error" });
+              showTransientStatus({ label: t("workspace.status.replyFailed"), variant: "error" });
               break;
             case "done":
               break;
@@ -974,25 +1054,33 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         }
         // Fell off the stream normally — show success chip briefly
         if (!abort.signal.aborted) {
-          showTransientStatus({ label: "Replied", variant: "success" });
+          showTransientStatus({ label: t("workspace.status.replied"), variant: "success" });
         }
       } catch (err) {
         if (abort.signal.aborted) return; // user-initiated abort, stay quiet
-        toast.error(extractApiError(err, "Chat failed"));
-        showTransientStatus({ label: "Reply failed", variant: "error" });
+        toast.error(extractApiError(err, t("workspace.toast.chatFailed")));
+        showTransientStatus({ label: t("workspace.status.replyFailed"), variant: "error" });
       } finally {
         // Any placeholder still in the map never saw a tool_result (stream
         // aborted / errored / never got that far). Tombstone so the user sees
         // WHY their reserved spot didn't fill.
         for (const { placeholders } of pendingCalls.values()) {
-          markPlaceholdersFailed(placeholders, "stream ended before result");
+          markPlaceholdersFailed(placeholders, t("workspace.tombstone.streamEnded"));
         }
+        // Only the CURRENT turn owns the shared streaming UI state. A turn that
+        // was superseded by a fast re-submit (its `abort` !== the current ref)
+        // must NOT reset isStreaming / badges / the streaming buffer — that would
+        // clobber the new turn that just started.
         if (streamAbortRef.current === abort) {
           streamAbortRef.current = null;
+          setIsStreaming(false);
+          setToolBadge(null);
+          setSkillBadges(clearIfNonEmpty);
+          // If a persisted reply is pending, leave the typewriter running — it
+          // settles via handleStreamSettled. Only drop the partial text when
+          // there was no reply to finalize (error / abort / empty).
+          if (!pendingAssistantRef.current) resetStream(false);
         }
-        setIsStreaming(false);
-        setToolBadge(null);
-        setSkillBadges(clearIfNonEmpty);
       }
     },
     [
@@ -1003,7 +1091,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       ensureChatFrame,
       pollAndPinJob,
       resetPackRow,
+      resetStream,
       showTransientStatus,
+      t,
     ],
   );
 
@@ -1011,7 +1101,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     return (
       <div className="flex flex-1 items-center justify-center text-muted-foreground">
         <Loader2 className="mr-2 size-5 animate-spin" />
-        Loading…
+        {t("workspace.loading")}
       </div>
     );
   }
@@ -1019,7 +1109,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   if (loadError || !scene) {
     return (
       <div className="flex flex-1 items-center justify-center px-8 text-center text-muted-foreground">
-        {loadError || "Canvas not found"}
+        {loadError || t("workspace.error.notFound")}
       </div>
     );
   }
@@ -1036,6 +1126,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     <div ref={canvasPaneRef} data-canvas-pane className="relative min-h-0 flex-1 overflow-hidden">
       <Excalidraw
         key={scene.id}
+        langCode={excalidrawLang}
         initialData={initialData}
         excalidrawAPI={handleExcalidrawApi}
         onChange={handleExcalidrawChange}
@@ -1044,6 +1135,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
+        onStop={handleStopStream}
         isStreaming={isStreaming}
         status={chatStatus}
         toolBadge={toolBadge}
@@ -1056,8 +1148,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         variant="ghost"
         size="icon-sm"
         onClick={jumpToLatest}
-        title="Back to latest"
-        aria-label="Back to latest"
+        title={t("workspace.backToLatest")}
+        aria-label={t("workspace.backToLatest")}
         data-back-to-latest
         className={cn(
           FLOATING_BTN_BASE,
@@ -1071,8 +1163,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         variant="ghost"
         size="icon-sm"
         onClick={() => setShowMinimap((v) => !v)}
-        title="Toggle minimap"
-        aria-label="Toggle minimap"
+        title={t("workspace.toggleMinimap")}
+        aria-label={t("workspace.toggleMinimap")}
         aria-pressed={showMinimap}
         data-minimap-toggle
         // toggle 按钮: active ember 底反映状态; inactive hover 也走 ember,
@@ -1088,24 +1180,34 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       >
         <MapIcon className="size-4" strokeWidth={1.5} />
       </Button>
-      {showMinimap && (
-        // 面板浮在按钮上方 16px gap. mobile bar 显示时按钮 + 面板都上移
-        // (CSS sibling override 见 index.css).
-        <div data-minimap-panel className="absolute bottom-[69px] left-4 z-50">
-          <Minimap apiRef={excalidrawApiRef} apiVersion={apiVersion} />
-        </div>
-      )}
+      <AnimatePresence>
+        {showMinimap && (
+          // 面板浮在按钮上方 16px gap. mobile bar 显示时按钮 + 面板都上移
+          // (CSS sibling override 见 index.css). 入场/退场: 从左下角缩放+淡入。
+          <motion.div
+            data-minimap-panel
+            className="absolute bottom-[69px] left-4 z-50"
+            style={{ transformOrigin: "bottom left" }}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <Minimap apiRef={excalidrawApiRef} apiVersion={apiVersion} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       {saveState !== "idle" && (
         // 右下角, y 跟 Back-to-latest / 地图按钮的 bottom-[21px] 同基线 (横向对齐).
         <div
           data-canvas-save-status
           className={cn(
-            "pointer-events-none absolute bottom-[21px] right-4 z-40 rounded-full border px-3 py-1 text-[11px] shadow-sm backdrop-blur",
+            "pointer-events-none absolute bottom-[21px] right-4 z-40 flex h-8 items-center rounded-md border px-3 text-[11px] shadow-sm backdrop-blur",
             SAVE_STATUS_CHROME,
             SAVE_STATUS_TEXT[saveState],
           )}
         >
-          {SAVE_STATUS_LABEL[saveState]}
+          {t(`workspace.saveStatus.${saveState}`)}
         </div>
       )}
       {/* Adjust overlay first (renders below) so a coexisting mockup decal paints
@@ -1118,11 +1220,15 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         tick={excalidrawTick}
       />
       <CanvasGeneratingOverlay excalidrawApiRef={excalidrawApiRef} tick={excalidrawTick} />
+      <CanvasLandingOverlay excalidrawApiRef={excalidrawApiRef} tick={excalidrawTick} />
       <ChatFrameOverlay
         excalidrawApiRef={excalidrawApiRef}
         tick={excalidrawTick}
         messages={chatMessages}
         streaming={isStreaming}
+        streamingText={streamingText}
+        streamFinalizing={streamFinalizing}
+        onStreamSettled={handleStreamSettled}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
@@ -1250,10 +1356,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
 }
 
 function EmptyState() {
+  const { t } = useTranslation("canvasUi");
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
       <p className="max-w-sm text-sm text-muted-foreground">
-        Select a canvas from the sidebar, or create a new one to get started.
+        {t("workspace.emptyState")}
       </p>
     </div>
   );

@@ -1,4 +1,5 @@
 import { type ReactNode, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -28,6 +29,7 @@ interface CanvasGeneratingOverlayProps {
  * sibling overlays. Renders nothing when no job is in flight.
  */
 export function CanvasGeneratingOverlay({ excalidrawApiRef, tick }: CanvasGeneratingOverlayProps) {
+  const { t } = useTranslation("canvasUi");
   void tick; // re-render trigger; live state read fresh below
   const api = excalidrawApiRef.current;
   if (!api) return null;
@@ -59,7 +61,7 @@ export function CanvasGeneratingOverlay({ excalidrawApiRef, tick }: CanvasGenera
           {/* Centered status. */}
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-ember">
             <Loader2 className="size-5 animate-spin motion-reduce:animate-none" strokeWidth={2} />
-            <span className="text-sm font-medium">Generating…</span>
+            <span className="text-sm font-medium">{t("generating.generating")}</span>
           </div>
         </PlaceholderCard>
       ))}
@@ -70,7 +72,9 @@ export function CanvasGeneratingOverlay({ excalidrawApiRef, tick }: CanvasGenera
           {/* Centered failure icon + message. */}
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-4 text-center text-destructive">
             <AlertTriangle className="size-5" strokeWidth={2} />
-            <span className="whitespace-pre-wrap text-sm font-medium">{failedMessage(el, elements)}</span>
+            <span className="whitespace-pre-wrap text-sm font-medium">
+              {failedMessage(el, elements, t("generating.failedFallback"))}
+            </span>
           </div>
         </PlaceholderCard>
       ))}
@@ -108,10 +112,11 @@ function PlaceholderCard({
 function failedMessage(
   rect: ExcalidrawElement,
   elements: readonly ExcalidrawElement[],
+  fallback: string,
 ): string {
   const groups = new Set(rect.groupIds ?? []);
   const text = elements.find(
     (e) => e.type === "text" && e.id !== rect.id && (e.groupIds ?? []).some((g) => groups.has(g)),
   ) as { text?: string } | undefined;
-  return text?.text || "Generation failed";
+  return text?.text || fallback;
 }
