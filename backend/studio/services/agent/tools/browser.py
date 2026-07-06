@@ -96,7 +96,9 @@ def browse(
 
     logger.info("browse: scene=%s task=%r", ctx.scene_id, task[:160])
     try:
-        outcome = run_browse(task)
+        # ctx.emit_browse_log (set by stream_canvas_agent) streams each browser-use
+        # step-log line to the frontend live; None on the non-streaming path.
+        outcome = run_browse(task, on_log_line=ctx.emit_browse_log)
     except BrowserBusy as exc:
         # Subclass of BrowserToolUnavailable — must be caught first. Transient, so
         # tell the user to retry rather than reporting the feature as unavailable.

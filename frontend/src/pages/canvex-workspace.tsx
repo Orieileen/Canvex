@@ -13,6 +13,7 @@ import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOve
 import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
+import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -340,6 +341,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // Bumped on every Excalidraw onChange tick; MockupOverlay needs to re-read
   // live API state (viewport + element positions) every change.
   const [excalidrawTick, setExcalidrawTick] = useState(0);
+  // Live browse step-logs keyed by browse-log frame id — one entry per turn that
+  // ran a `browse` tool. BrowseLogOverlay renders these into the on-canvas log
+  // frames; frames absent here fall back to their persisted customData (reload).
+  const [browseLogs, setBrowseLogs] = useState<Record<string, BrowseLogLive>>({});
 
   const latestDataRef = useRef<CanvasSceneData>({});
   // Content hash `length:versionSum:fileCount` —— element.version 只在真实改动
@@ -394,6 +399,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
     ensureChatFrame,
+    createBrowseLogFrame,
+    persistBrowseLogText,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -889,6 +896,17 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         string,
         { kind: JobKind; placeholders: PinPlaceholder[] }
       >();
+      // Browse-log bookkeeping is ALSO stream-local (not component refs) for the
+      // same reason: a fast re-submit starting turn B must not wipe turn A's
+      // frame id / line buffer before turn A's finally persists them. `frameId`
+      // is the log frame created on this turn's first browse_log line;
+      // `attempted` gates that one-shot creation (so a failed create isn't
+      // retried each line); `lines` accumulates for end-of-turn persistence.
+      const browseLog: { frameId: string | null; attempted: boolean; lines: string[] } = {
+        frameId: null,
+        attempted: false,
+        lines: [],
+      };
 
       setIsStreaming(true);
       setChatStatus(null);
@@ -1029,6 +1047,24 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
                 toast.error(extractApiError(err, t("workspace.toast.loadImageFailed")));
               });
               break;
+            case "browse_log": {
+              // A `browse` tool is narrating its steps live. On the first line,
+              // spin up a log frame below the chat frame titled with this turn's
+              // message; append every line (React state keyed by frame id for
+              // render + the stream-local `browseLog.lines` for end-of-turn
+              // persistence).
+              if (!browseLog.attempted) {
+                browseLog.attempted = true;
+                browseLog.frameId = createBrowseLogFrame(content);
+              }
+              const fid = browseLog.frameId;
+              if (fid) {
+                browseLog.lines.push(event.line);
+                const lines = [...browseLog.lines];
+                setBrowseLogs((prev) => ({ ...prev, [fid]: { title: content, lines } }));
+              }
+              break;
+            }
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);
@@ -1075,6 +1111,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for (const { placeholders } of pendingCalls.values()) {
           markPlaceholdersFailed(placeholders, t("workspace.tombstone.streamEnded"));
         }
+        // Persist THIS turn's browse log into its frame's customData so it
+        // survives a reload (live lines otherwise live only in React state).
+        // Stream-local — NOT inside the current-turn guard below — so a fast
+        // re-submit (which repoints streamAbortRef) can't skip persisting the
+        // superseded turn's transcript. Runs on abort/error too (partial log).
+        if (browseLog.frameId && browseLog.lines.length) {
+          persistBrowseLogText(browseLog.frameId, browseLog.lines.join("\n"));
+        }
         // Only the CURRENT turn owns the shared streaming UI state. A turn that
         // was superseded by a fast re-submit (its `abort` !== the current ref)
         // must NOT reset isStreaming / badges / the streaming buffer — that would
@@ -1097,6 +1141,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
+      createBrowseLogFrame,
+      persistBrowseLogText,
       pollAndPinJob,
       resetPackRow,
       resetStream,
@@ -1237,6 +1283,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         streamingText={streamingText}
         streamFinalizing={streamFinalizing}
         onStreamSettled={handleStreamSettled}
+      />
+      <BrowseLogOverlay
+        excalidrawApiRef={excalidrawApiRef}
+        tick={excalidrawTick}
+        liveLogs={browseLogs}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}

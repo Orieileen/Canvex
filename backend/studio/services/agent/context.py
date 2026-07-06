@@ -11,6 +11,7 @@ per-scene (so "scene A's memory" never leaks to "scene B").
 - meired 多租户的 org_id / user_id 字段已删 —— Canvex 单工作区, 模型无
   organization / user, 没有跨租户归属面。只保留 scene_id + attachment_urls。
 """
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 
@@ -30,3 +31,12 @@ class CanvasAgentContext:
     # clamped tool_result text) so long summaries can't truncate the URLs. Dicts
     # (not bare strings) leave room for richer fields later. Empty = nothing to place.
     produced_assets: list[dict] = field(default_factory=list)
+    # Live side-channel for streaming a sub-tool's progress to the SSE layer AS IT
+    # HAPPENS, not just at graph-chunk boundaries. `stream_canvas_agent` sets this
+    # to a callback that wraps each line into a `browse_log` frame and enqueues it
+    # on the streaming queue; the `browse` tool calls it with browser-use step-log
+    # lines from its worker thread (so the frontend can render them live in a
+    # per-turn log frame). None on the non-streaming invoke path — tools then skip
+    # live emission. MUST be thread-safe (browse runs in a daemon thread); the
+    # callback stream_canvas_agent installs just does a thread-safe queue put.
+    emit_browse_log: Callable[[str], None] | None = None

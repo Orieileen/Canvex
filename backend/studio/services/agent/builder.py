@@ -38,6 +38,7 @@ Public API:
   `tool_call` / `tool_result` / `assistant_final` events for the view's SSE stream.
 """
 import logging
+import queue
 import threading
 from pathlib import Path
 from typing import Any, Iterator
@@ -238,6 +239,9 @@ class StreamEvent:
     # A canvas asset a tool produced this turn (e.g. a browse screenshot) — the
     # frontend places it on the Excalidraw board. Carries {url}.
     CANVAS_ASSET = "canvas_asset"
+    # One live browser-use step-log line while a `browse` tool runs. The frontend
+    # renders these in a per-turn log frame below the chat frame. Carries {line}.
+    BROWSE_LOG = "browse_log"
     ERROR = "error"
     DONE = "done"
 
@@ -653,9 +657,16 @@ def stream_canvas_agent(
       the authoritative text of the LATEST AIMessage that carried non-empty text
       (intermediate tool-only AIMessages don't count). The frontend replaces the
       streamed text with this.
+    - `{"event": "browse_log", "line": str}` — a live browser-use step-log line,
+      emitted while a `browse` tool call runs (see the concurrency note below).
 
     Wraps LLM / tool / graph errors in CanvasAgentInvocationError; programming
     bugs (AttributeError etc.) still propagate uncaught.
+
+    Concurrency: the graph runs on a background "pump" thread that feeds a queue
+    this generator drains, so browse_log lines pushed from the browse worker
+    thread interleave with graph frames LIVE (a blocking `browse` node would
+    otherwise stall all output until it returned). See the body for details.
 
     `stream_mode=["updates", "messages"]` combines both: `updates` gives discrete
     per-node tool events, `messages` gives token-by-token text deltas. The view
@@ -670,106 +681,171 @@ def stream_canvas_agent(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
     )
-    emitted_tool_ids: set[str] = set()
-    last_ai_text = ""
-    # Canvas assets tools produce mid-turn (browse screenshots) are drained
-    # INCREMENTALLY as their chunk arrives: flushed promptly, and never lost to a
-    # later error in the same turn (assets from completed chunks are already out).
-    # Incremental — not a post-loop / `finally` drain — so we never yield during a
-    # GeneratorExit when the SSE client disconnects mid-stream.
-    emitted_assets = 0
 
-    def _drain_new_canvas_assets():
-        nonlocal emitted_assets
-        assets = getattr(ctx, "produced_assets", None) or []
-        while emitted_assets < len(assets):
-            url = assets[emitted_assets].get("url")
-            emitted_assets += 1
-            if url:
-                yield {"event": StreamEvent.CANVAS_ASSET, "url": url}
+    # Live streaming must interleave TWO producers onto one SSE stream:
+    #   (1) the graph's own frames (tool_call / tool_result / assistant_delta), and
+    #   (2) browse step-log lines, which arrive WHILE a `browse` tool call blocks a
+    #       graph node — exactly when a synchronous `for ... in agent.stream()`
+    #       would be parked inside that node yielding nothing.
+    # So the graph runs on a background "pump" thread that puts frames on a
+    # thread-safe queue, and THIS generator just drains the queue and yields. The
+    # browse tool pushes browse_log frames onto the SAME queue from its worker
+    # thread (via ctx.emit_browse_log below), so they surface the instant they log.
+    frames: queue.Queue = queue.Queue()
+    sentinel = object()
+    # Set in our finally (client disconnect / done) so the pump stops pulling
+    # further graph steps and the browse sink stops enqueuing into a dead queue.
+    aborted = threading.Event()
+    # Graph outcome, read after the pump posts the sentinel.
+    pump_result: dict = {}
+
+    def _emit_browse_log(line: str) -> None:
+        # Called from the browse worker thread; drop once the consumer is gone so a
+        # browse that outlives a disconnected client can't grow the queue unbounded.
+        if not aborted.is_set():
+            frames.put({"event": StreamEvent.BROWSE_LOG, "line": line})
+    ctx.emit_browse_log = _emit_browse_log
+
+    def _pump():
+        emitted_tool_ids: set[str] = set()
+        emitted_assets = 0
+        last_ai_text = ""
+
+        def drain_new_canvas_assets():
+            # Canvas assets tools produce mid-turn (browse screenshots) are drained
+            # INCREMENTALLY as their chunk arrives: flushed promptly, never lost to
+            # a later error in the same turn (completed chunks are already out).
+            nonlocal emitted_assets
+            assets = getattr(ctx, "produced_assets", None) or []
+            while emitted_assets < len(assets):
+                url = assets[emitted_assets].get("url")
+                emitted_assets += 1
+                if url:
+                    frames.put({"event": StreamEvent.CANVAS_ASSET, "url": url})
+
+        try:
+            for mode, data in agent.stream(
+                state, context=ctx, config=config,
+                stream_mode=["updates", "messages"],
+            ):
+                if aborted.is_set():
+                    break
+                # By the time a chunk arrives its producing node has run, so any
+                # browse screenshots it persisted are already on ctx — flush now.
+                drain_new_canvas_assets()
+                if mode == "messages":
+                    # Token-level deltas for the live typewriter. `messages` yields
+                    # (chunk, metadata); stream only AIMessageChunks carrying real
+                    # text — tool-call argument tokens have empty content and are
+                    # skipped. The authoritative final text still comes from the
+                    # `updates` branch (last_ai_text) + the ASSISTANT_FINAL frame.
+                    chunk, meta = data if isinstance(data, tuple) else (data, {})
+                    # Only the top-level agent's reply tokens reach the user.
+                    # Subagents (the deepagents `task` tool) and any internal LLM
+                    # node run in a child graph namespace (non-empty checkpoint_ns);
+                    # their tokens must not leak into the user-facing typewriter.
+                    in_subgraph = bool((meta or {}).get("checkpoint_ns"))
+                    if isinstance(chunk, AIMessageChunk) and not in_subgraph:
+                        text = _flatten_content(chunk.content)
+                        if text:
+                            frames.put({
+                                "event": StreamEvent.ASSISTANT_DELTA,
+                                "id": getattr(chunk, "id", "") or "",
+                                "content": text,
+                            })
+                    continue
+                # mode == "updates": discrete per-node tool / message events.
+                if not isinstance(data, dict):
+                    continue
+                for _node, update in data.items():
+                    if not isinstance(update, dict):
+                        continue
+                    msgs = update.get("messages")
+                    # Nodes that bypass the `add_messages` reducer return
+                    # `Overwrite(value=[...])`; unwrap it so we iterate the list,
+                    # not the wrapper dataclass (which is not iterable).
+                    if isinstance(msgs, Overwrite):
+                        msgs = msgs.value
+                    if not msgs:
+                        continue
+                    for msg in msgs:
+                        if isinstance(msg, AIMessage):
+                            for tc in (getattr(msg, "tool_calls", None) or []):
+                                tc_id = tc.get("id") or ""
+                                if tc_id and tc_id in emitted_tool_ids:
+                                    continue
+                                if tc_id:
+                                    emitted_tool_ids.add(tc_id)
+                                frames.put({
+                                    "event": StreamEvent.TOOL_CALL,
+                                    "id": tc_id,
+                                    "name": tc.get("name") or "",
+                                    "args": tc.get("args") or {},
+                                })
+                            text = _flatten_content(msg.content)
+                            if text.strip():
+                                last_ai_text = text
+                        elif isinstance(msg, ToolMessage):
+                            content = _flatten_content(msg.content)
+                            if len(content) > TOOL_RESULT_MAX_CHARS:
+                                content = content[:TOOL_RESULT_MAX_CHARS] + "…"
+                            frames.put({
+                                "event": StreamEvent.TOOL_RESULT,
+                                "id": getattr(msg, "tool_call_id", "") or "",
+                                "content": content,
+                            })
+            # Flush assets from the final chunk (in-loop drain covers earlier ones).
+            drain_new_canvas_assets()
+            pump_result["final"] = last_ai_text
+        except (TimeoutError, ConnectionError) as exc:
+            pump_result["error"] = CanvasAgentInvocationError(
+                f"agent upstream failure: {exc}"
+            )
+        except BaseException as exc:  # noqa: BLE001 — catch BaseException too: on the
+            # request thread the original generator would propagate a non-Exception
+            # (e.g. SystemExit) out to the view; here the graph runs on a daemon
+            # thread where that error would just vanish and the consumer would emit
+            # an empty assistant_final. Recording it surfaces a proper error frame.
+            pump_result["error"] = CanvasAgentInvocationError(
+                f"agent stream failed: {type(exc).__name__}: {exc}"
+            )
+        finally:
+            # Tear down any web_operator Playwright session opened this turn from
+            # THIS thread — the graph (and its session use) ran here, so closing
+            # here can't race an in-flight step the way closing from the consumer
+            # thread could. Guarded so a teardown error can't strand the consumer
+            # on frames.get(); the sentinel is ALWAYS posted last.
+            try:
+                close_session(id(ctx))
+            except Exception:  # noqa: BLE001
+                logger.exception("stream_canvas_agent: close_session failed")
+            # The graph ran on THIS thread, so any ORM work its tools did (e.g.
+            # persisting browse screenshots) opened a thread-local DB connection
+            # that the request cycle won't reap — close it here to avoid leaking
+            # one connection per turn.
+            try:
+                from django.db import connection  # noqa: PLC0415
+                connection.close()
+            except Exception:  # noqa: BLE001
+                logger.exception("stream_canvas_agent: db connection close failed")
+            frames.put(sentinel)
+
+    pump = threading.Thread(target=_pump, name="canvas-graph-pump", daemon=True)
+    pump.start()
 
     try:
-        for mode, data in agent.stream(
-            state, context=ctx, config=config,
-            stream_mode=["updates", "messages"],
-        ):
-            # By the time a chunk is yielded its producing node has run, so any
-            # browse screenshots it persisted are already on ctx — flush them now.
-            yield from _drain_new_canvas_assets()
-            if mode == "messages":
-                # Token-level deltas for the live typewriter. `messages` yields
-                # (chunk, metadata); stream only AIMessageChunks carrying real
-                # text — tool-call argument tokens have empty content and are
-                # skipped. The authoritative final text still comes from the
-                # `updates` branch (last_ai_text) + the ASSISTANT_FINAL frame.
-                chunk, meta = data if isinstance(data, tuple) else (data, {})
-                # Only the top-level agent's reply tokens reach the user. Subagents
-                # (the deepagents `task` tool) and any internal LLM node run in a
-                # child graph namespace (non-empty checkpoint_ns); their tokens must
-                # not leak into the user-facing typewriter.
-                in_subgraph = bool((meta or {}).get("checkpoint_ns"))
-                if isinstance(chunk, AIMessageChunk) and not in_subgraph:
-                    text = _flatten_content(chunk.content)
-                    if text:
-                        yield {
-                            "event": StreamEvent.ASSISTANT_DELTA,
-                            "id": getattr(chunk, "id", "") or "",
-                            "content": text,
-                        }
-                continue
-            # mode == "updates": discrete per-node tool / message events.
-            if not isinstance(data, dict):
-                continue
-            for _node, update in data.items():
-                if not isinstance(update, dict):
-                    continue
-                msgs = update.get("messages")
-                # Nodes that bypass the `add_messages` reducer return
-                # `Overwrite(value=[...])`; unwrap it so we iterate the list,
-                # not the wrapper dataclass (which is not iterable).
-                if isinstance(msgs, Overwrite):
-                    msgs = msgs.value
-                if not msgs:
-                    continue
-                for msg in msgs:
-                    if isinstance(msg, AIMessage):
-                        for tc in (getattr(msg, "tool_calls", None) or []):
-                            tc_id = tc.get("id") or ""
-                            if tc_id and tc_id in emitted_tool_ids:
-                                continue
-                            if tc_id:
-                                emitted_tool_ids.add(tc_id)
-                            yield {
-                                "event": StreamEvent.TOOL_CALL,
-                                "id": tc_id,
-                                "name": tc.get("name") or "",
-                                "args": tc.get("args") or {},
-                            }
-                        text = _flatten_content(msg.content)
-                        if text.strip():
-                            last_ai_text = text
-                    elif isinstance(msg, ToolMessage):
-                        content = _flatten_content(msg.content)
-                        if len(content) > TOOL_RESULT_MAX_CHARS:
-                            content = content[:TOOL_RESULT_MAX_CHARS] + "…"
-                        yield {
-                            "event": StreamEvent.TOOL_RESULT,
-                            "id": getattr(msg, "tool_call_id", "") or "",
-                            "content": content,
-                        }
-    except (TimeoutError, ConnectionError) as exc:
-        raise CanvasAgentInvocationError(f"agent upstream failure: {exc}") from exc
-    except Exception as exc:
-        raise CanvasAgentInvocationError(
-            f"agent stream failed: {type(exc).__name__}: {exc}"
-        ) from exc
+        while True:
+            item = frames.get()
+            if item is sentinel:
+                break
+            yield item
+        if "error" in pump_result:
+            raise pump_result["error"]
     finally:
-        # Tear down any web_operator Playwright session opened this turn (no-op if
-        # none). Plain cleanup (no yield) — safe in a finally even under a
-        # GeneratorExit from a client disconnect. Idle self-reap is the backstop.
-        close_session(id(ctx))
+        # No-op on normal completion; on client disconnect (GeneratorExit) it tells
+        # the pump to stop after its current step and silences the browse sink. The
+        # pump owns close_session, so there's nothing to tear down here.
+        aborted.set()
+        ctx.emit_browse_log = None
 
-    # Flush assets produced by the final chunk (the in-loop drain flushes earlier
-    # chunks at the start of the next iteration; the last chunk has none after it).
-    yield from _drain_new_canvas_assets()
-    yield {"event": StreamEvent.ASSISTANT_FINAL, "content": last_ai_text}
+    yield {"event": StreamEvent.ASSISTANT_FINAL, "content": pump_result.get("final", "")}

@@ -35,12 +35,129 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Live step-log capture (browser-use logger → per-browse sink)
+# ---------------------------------------------------------------------------
+# browser-use narrates its progress ("📍 Step 1", "🧠 Memory", "🎯 Next goal",
+# "▶️ navigate", …) through the `browser_use` / `bubus` loggers. We surface that
+# live to the frontend by attaching ONE shared handler to those loggers and
+# routing each record to the browse whose worker THREAD emitted it — browser-use
+# runs its whole async step loop on the dedicated worker thread (see
+# `_run_coro_blocking`), so `record.thread` uniquely identifies the browse even
+# when CANVAS_BROWSER_MAX_CONCURRENCY lets two run at once. Thread-routing (not a
+# per-browse addHandler) is what keeps concurrent browses from cross-talking:
+# a logger handler otherwise sees records from every browse.
+#
+# TRADEOFF (accepted): routing on record.thread means any line browser-use logs
+# from a DIFFERENT thread (a run_in_executor / to_thread pool thread, or a bubus
+# dispatch thread) has no registered sink and is silently dropped. The load-bearing
+# step narration is emitted from the worker's own event-loop thread so it's always
+# captured; only incidental off-thread INFO would be missed. This is the price of
+# per-browse isolation — the alternative (one sink, no routing) would cross-talk
+# between concurrent browses, which is worse.
+_LOG_LOGGER_NAMES = ("browser_use", "bubus")
+_MAX_LOG_LINE_CHARS = 600
+# browser-use colourises its log messages with ANSI SGR escapes; strip them so
+# the on-canvas panel shows clean text, not literal "\x1b[32m…[0m" garbage.
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+_log_sinks: dict[int, Callable[[str], None]] = {}
+_log_sinks_lock = threading.Lock()
+_log_handler_installed = False
+
+
+class _ThreadRoutedLogHandler(logging.Handler):
+    """Forward each browser-use log record to the sink registered for the thread
+    that emitted it. No-op for records from threads without a browse in flight
+    (i.e. everything else in the process). Never raises into the logging call."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        sink = _log_sinks.get(record.thread)
+        if sink is None:
+            return
+        try:
+            line = self.format(record)
+        except Exception:  # noqa: BLE001 — a bad format string must not break logging
+            return
+        line = _ANSI_SGR_RE.sub("", line).rstrip()
+        if not line.strip():  # drop blank / whitespace-only spacer lines
+            return
+        try:
+            sink(line[:_MAX_LOG_LINE_CHARS])
+        except Exception:  # noqa: BLE001 — a wedged sink must not break logging
+            pass
+
+
+def _ensure_log_handler() -> None:
+    """Install the shared handler once, lazily. Raises the browser-use loggers to
+    INFO so the step narration reaches us even if the process quieted them; adds
+    (never replaces) a handler, so browser-use's own stdout logging is untouched."""
+    global _log_handler_installed
+    if _log_handler_installed:
+        return
+    with _log_sinks_lock:
+        if _log_handler_installed:
+            return
+        handler = _ThreadRoutedLogHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler.setLevel(logging.INFO)
+        for name in _LOG_LOGGER_NAMES:
+            lg = logging.getLogger(name)
+            lg.addHandler(handler)
+            # Logger-level filtering happens BEFORE handlers, so INFO records
+            # never reach our handler unless the logger passes INFO. We must
+            # raise it (there's no per-handler way around logger-level filtering).
+            # TRADEOFF (accepted): this is a global, unrestored bump — if an
+            # operator had quieted browser_use to WARNING it's now INFO
+            # process-wide, so its step narration also flows to root/stdout for
+            # every later browse. browser-use defaults to INFO anyway, so this is
+            # usually a no-op; the feature fundamentally needs INFO to exist.
+            if not lg.isEnabledFor(logging.INFO):
+                lg.setLevel(logging.INFO)
+        _log_handler_installed = True
+
+
+def _register_log_sink(thread_ident: int, sink: Callable[[str], None]) -> None:
+    _ensure_log_handler()
+    with _log_sinks_lock:
+        _log_sinks[thread_ident] = sink
+
+
+def _unregister_log_sink(thread_ident: int) -> None:
+    with _log_sinks_lock:
+        _log_sinks.pop(thread_ident, None)
+
+
+def _bounded_sink(
+    on_log_line: Callable[[str], None] | None,
+) -> Callable[[str], None] | None:
+    """Wrap `on_log_line` to forward at most `_MAX_LOG_LINES` lines (then one
+    final truncation notice, then silence). Returns None when there's no consumer
+    so the worker skips log-handler registration entirely."""
+    if on_log_line is None:
+        return None
+
+    state = {"count": 0}
+
+    def sink(line: str) -> None:
+        n = state["count"]
+        if n < _MAX_LOG_LINES:
+            state["count"] = n + 1
+            on_log_line(line)
+        elif n == _MAX_LOG_LINES:
+            state["count"] = n + 1
+            on_log_line("… (browse log truncated)")
+
+    return sink
 
 
 class BrowserToolUnavailable(RuntimeError):
@@ -112,6 +229,12 @@ def _get_browse_semaphore() -> threading.BoundedSemaphore:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# Hard cap on how many step-log lines we forward per browse — a runaway page /
+# retry loop must not flood the SSE stream (and the on-canvas log frame) with
+# unbounded text. Well above a normal browse's line count.
+_MAX_LOG_LINES = 800
+
+
 def run_browse(
     task: str,
     *,
@@ -119,6 +242,7 @@ def run_browse(
     max_steps: int | None = None,
     timeout_seconds: int | None = None,
     max_screenshots: int | None = None,
+    on_log_line: Callable[[str], None] | None = None,
 ) -> BrowseOutcome:
     """Run one autonomous browsing task to completion and return the outcome.
 
@@ -126,6 +250,11 @@ def run_browse(
     if the optional deps are missing or the process is gevent-patched; every
     other browser-use / playwright error is caught and folded into a
     best-effort BrowseOutcome (a partial answer beats crashing the chat turn).
+
+    `on_log_line`, if given, is called with each browser-use step-log line as it
+    happens (from the browse worker thread) — the SSE layer uses it to stream the
+    browse's progress live. Bounded by `_MAX_LOG_LINES`; forwarding failures are
+    swallowed so a wedged consumer can never affect the browse.
     """
     _assert_not_gevent()
 
@@ -158,7 +287,7 @@ def run_browse(
             "to retry in a moment"
         )
     try:
-        return _run_coro_blocking(_make_coro, timeout_seconds)
+        return _run_coro_blocking(_make_coro, timeout_seconds, _bounded_sink(on_log_line))
     except BrowserToolUnavailable:
         raise
     except TimeoutError:
@@ -202,7 +331,9 @@ def _assert_not_gevent() -> None:
         )
 
 
-def _run_coro_blocking(make_coro, timeout_seconds: int):
+def _run_coro_blocking(
+    make_coro, timeout_seconds: int, on_log_line: Callable[[str], None] | None = None
+):
     """Run an async coroutine to completion from sync code with a HARD deadline.
 
     Runs in a dedicated daemon thread with a fresh event loop so that (a) it is
@@ -210,10 +341,17 @@ def _run_coro_blocking(make_coro, timeout_seconds: int):
     browser subprocess can't block the turn or interpreter shutdown (it may linger
     as an OS orphan). `asyncio.wait_for` is the primary deadline; the outer
     `thread.join` is a backstop with slack.
+
+    When `on_log_line` is set, the worker registers it as this thread's browse-log
+    sink for the lifetime of the coroutine — browser-use logs from this thread's
+    event loop then route to it (see `_ThreadRoutedLogHandler`).
     """
     box: dict = {}
 
     def worker():
+        ident = threading.get_ident()
+        if on_log_line is not None:
+            _register_log_sink(ident, on_log_line)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -223,6 +361,8 @@ def _run_coro_blocking(make_coro, timeout_seconds: int):
         except BaseException as exc:  # noqa: BLE001 — ferry any error across the thread boundary
             box["error"] = exc
         finally:
+            if on_log_line is not None:
+                _unregister_log_sink(ident)
             # Cancel whatever browser-use / playwright left pending (websocket
             # readers, cleanup monitors) and let it unwind before closing, so a
             # timed-out browse doesn't emit "Task was destroyed but it is pending"
@@ -246,6 +386,12 @@ def _run_coro_blocking(make_coro, timeout_seconds: int):
     # the join timeout only trips if the thread itself is wedged below asyncio.
     t.join(timeout_seconds + 30)
     if t.is_alive():
+        # The worker wedged below asyncio and its finally never ran, so its
+        # sink is still registered — deregister it here (keyed by the worker's
+        # own ident, t.ident) so a wedged-past-backstop browse can't leak a
+        # _log_sinks entry for the life of the orphan thread.
+        if on_log_line is not None and t.ident is not None:
+            _unregister_log_sink(t.ident)
         raise TimeoutError(f"browse worker thread still alive after {timeout_seconds}s")
     if "error" in box:
         err = box["error"]

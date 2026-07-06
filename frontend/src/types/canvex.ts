@@ -182,5 +182,8 @@ export type CanvasChatStreamEvent =
   // A canvas asset a tool produced this turn (e.g. a browse screenshot) — the
   // client places it on the Excalidraw board via pinImage.
   | { event: "canvas_asset"; url: string }
+  // One live browser-use step-log line while a `browse` tool runs — the client
+  // appends it to a per-turn log frame below the chat frame.
+  | { event: "browse_log"; line: string }
   | { event: "error"; detail: string }
   | { event: "done" };

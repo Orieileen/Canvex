@@ -33,6 +33,14 @@ import {
   findChatFrame,
   isChatNoteElement,
 } from "@/lib/canvas-chat-frame";
+import {
+  BROWSE_LOG_FRAME_HEIGHT,
+  BROWSE_LOG_FRAME_MARKER,
+  BROWSE_LOG_FRAME_WIDTH,
+  BROWSE_LOG_TEXT_KEY,
+  BROWSE_LOG_TITLE_KEY,
+  findBrowseLogFrames,
+} from "@/lib/canvas-browse-log-frame";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -601,6 +609,15 @@ export interface UseCanvasPinning {
   /** Find or create the scene's chat frame (native Excalidraw frame the
    *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
   ensureChatFrame: () => string | null;
+  /** Create a fresh "browse log" frame stacked below the chat frame (and below
+   *  any existing browse-log frames), titled with the triggering user message.
+   *  BrowseLogOverlay anchors a scrollable log panel to it. Returns the new
+   *  frame id, or null if the API isn't mounted / creation failed. */
+  createBrowseLogFrame: (title: string) => string | null;
+  /** Persist accumulated log text into a browse-log frame's customData so it
+   *  survives a scene reload (the live transcript otherwise lives only in React
+   *  state during the turn). No-op if the frame is gone. */
+  persistBrowseLogText: (frameId: string, text: string) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1028,6 +1045,69 @@ export function useCanvasPinning(
       return null;
     }
   }, [apiRef]);
+
+  /** Create a browse-log frame below the chat frame (and below any existing
+   *  browse-log frames), aligned to the chat frame's x. Falls back to the pin
+   *  origin when there's no chat frame yet. Wrapped in try — a placement failure
+   *  must never break the chat turn (caller is outside try). */
+  const createBrowseLogFrame = useCallback(
+    (title: string): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const chat = findChatFrame(elements);
+        // Stack below the lowest of {chat frame, existing browse-log frames} so
+        // repeat browses in one scene queue downward instead of overlapping.
+        let below = chat ? chat.y + chat.height : PIN_ORIGIN_Y;
+        for (const f of findBrowseLogFrames(elements)) {
+          below = Math.max(below, f.y + f.height);
+        }
+        const x = chat ? chat.x : PIN_ORIGIN_X;
+        const y = below + PIN_GAP;
+        // frame skeleton 必须带 children (见 ensureChatFrame 的同款说明)。
+        const created = convertToExcalidrawElements([
+          { type: "frame", x, y, width: BROWSE_LOG_FRAME_WIDTH, height: BROWSE_LOG_FRAME_HEIGHT, children: [] },
+        ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
+        if (!created.length) return null;
+        const frame = {
+          ...created[0],
+          name: "Browse log",
+          customData: {
+            aiChatType: BROWSE_LOG_FRAME_MARKER,
+            [BROWSE_LOG_TITLE_KEY]: title,
+            [BROWSE_LOG_TEXT_KEY]: "",
+          },
+        } as ExcalidrawElement;
+        api.updateScene({ elements: [...elements, frame] });
+        api.scrollToContent([frame], { fitToViewport: false, animate: true });
+        return frame.id;
+      } catch (err) {
+        console.error("createBrowseLogFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef],
+  );
+
+  const persistBrowseLogText = useCallback(
+    (frameId: string, text: string): void => {
+      const api = apiRef.current;
+      if (!api) return;
+      try {
+        const elements = api.getSceneElements();
+        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
+        if (!frame) return;
+        const next = newElementWith(frame, {
+          customData: { ...(frame.customData ?? {}), [BROWSE_LOG_TEXT_KEY]: text },
+        });
+        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
+      } catch (err) {
+        console.error("persistBrowseLogText failed", err);
+      }
+    },
+    [apiRef],
+  );
 
   const commitImagePin = useCallback(
     async ({ dataURL, mimeType, customData, startAt }: {
@@ -1591,6 +1671,8 @@ export function useCanvasPinning(
 
   return {
     ensureChatFrame,
+    createBrowseLogFrame,
+    persistBrowseLogText,
     pinImage,
     pinVideo,
     pinMergedImage,
