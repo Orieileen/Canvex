@@ -211,6 +211,24 @@ CANVAS_BROWSER_HEADLESS = _as_bool(os.getenv("CANVAS_BROWSER_HEADLESS"), True)
 # N × this value.
 CANVAS_BROWSER_MAX_CONCURRENCY = int(os.getenv("CANVAS_BROWSER_MAX_CONCURRENCY", "2") or 2)
 
+# web_operator subagent — deterministic Playwright primitives (navigate / snapshot /
+# click / type) the agent drives step-by-step, an alternative to the autonomous
+# `browse` tool. OFF by default; shares the CANVAS_BROWSER_* deps + model slot.
+CANVAS_BROWSER_OPERATOR_ENABLED = _as_bool(os.getenv("CANVAS_BROWSER_OPERATOR_ENABLED"), False)
+# Per browser-operation timeout (navigate/click/…), and how long an idle session's
+# owner thread lives before self-reaping (safety net if turn-end cleanup is missed).
+CANVAS_BROWSER_OP_TIMEOUT = int(os.getenv("CANVAS_BROWSER_OP_TIMEOUT", "30") or 30)
+# Idle reap is only a BACKSTOP — the primary cleanup is close_session at turn end.
+# So keep it generous: a turn whose LLM stalls between browser steps must not lose
+# its session mid-flight. A leaked session (only if turn-end cleanup is missed)
+# lives at most this long.
+CANVAS_BROWSER_SESSION_IDLE_TIMEOUT = int(os.getenv("CANVAS_BROWSER_SESSION_IDLE_TIMEOUT", "300") or 300)
+# Extra Chromium launch args (comma-separated), empty by default (keeps the sandbox).
+# Set to "--no-sandbox" ONLY when running headless Chromium as root in a container.
+CANVAS_BROWSER_CHROMIUM_ARGS = [
+    a.strip() for a in os.getenv("CANVAS_BROWSER_CHROMIUM_ARGS", "").split(",") if a.strip()
+]
+
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。
 CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")
