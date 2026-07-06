@@ -29,11 +29,12 @@ interface BrowseLogOverlayProps {
 
 /**
  * Scrollable log panels anchored to the scene's browse-log frames — the sibling
- * of ChatFrameOverlay, one panel per frame. Each frame narrates one browse
- * tool-run (browser-use's step log), titled with the message that triggered it.
- * Native frames can't scroll their contents, so the log lives in these HTML
- * panels (not canvas text); each tracks its frame's live screen rect every tick,
- * so it moves/zooms with the frame and stays pinned inside it.
+ * of ChatFrameOverlay, one panel per frame. Each frame collects the browse
+ * step-log (browser-use's narration) for ONE chat turn, titled with that turn's
+ * message; if a turn runs the browse tool more than once, all of its lines share
+ * the one frame. Native frames can't scroll their contents, so the log lives in
+ * these HTML panels (not canvas text); each tracks its frame's live screen rect
+ * every tick, so it moves/zooms with the frame and stays pinned inside it.
  */
 export function BrowseLogOverlay({
   excalidrawApiRef,
@@ -84,12 +85,11 @@ function BrowseLogPanel({
         })
       : null;
 
-  // Live transcript wins (this session's turn); else fall back to the text
+  // Live transcript wins (this session's turn); else fall back to the lines
   // persisted in customData (survived a reload).
   const persisted = getBrowseLogFrameData(frame);
   const title = live?.title || persisted.title;
-  const lines =
-    live?.lines ?? (persisted.log ? persisted.log.split("\n") : []);
+  const lines = live?.lines ?? persisted.lines;
 
   // Stick to the bottom as lines stream in.
   const lineCount = lines.length;

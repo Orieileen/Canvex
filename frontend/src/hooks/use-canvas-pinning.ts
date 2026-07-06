@@ -40,6 +40,7 @@ import {
   BROWSE_LOG_TEXT_KEY,
   BROWSE_LOG_TITLE_KEY,
   findBrowseLogFrames,
+  serializeBrowseLog,
 } from "@/lib/canvas-browse-log-frame";
 
 /**
@@ -614,10 +615,11 @@ export interface UseCanvasPinning {
    *  BrowseLogOverlay anchors a scrollable log panel to it. Returns the new
    *  frame id, or null if the API isn't mounted / creation failed. */
   createBrowseLogFrame: (title: string) => string | null;
-  /** Persist accumulated log text into a browse-log frame's customData so it
-   *  survives a scene reload (the live transcript otherwise lives only in React
-   *  state during the turn). No-op if the frame is gone. */
-  persistBrowseLogText: (frameId: string, text: string) => void;
+  /** Persist the accumulated log lines into a browse-log frame's customData (as
+   *  a JSON array — faithful per-line round-trip) so they survive a scene reload;
+   *  the live transcript otherwise lives only in React state during the turn.
+   *  No-op if the frame is gone. */
+  persistBrowseLogText: (frameId: string, lines: string[]) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -891,6 +893,28 @@ export async function pinCanvasJobResult(
   return { ok: true };
 }
 
+/** Build a native Excalidraw frame element at exact geometry with our name +
+ *  customData. Centralizes the fragile convert incantation shared by the chat
+ *  frame and the browse-log frame: a frame skeleton MUST carry `children: []`
+ *  (convertToExcalidrawElements does `children.forEach` and throws otherwise),
+ *  the skeleton type doesn't include `frame` (hence the cast), and convert drops
+ *  name/customData so they're re-applied after. Returns null if convert yields
+ *  nothing. Caller does the updateScene. */
+function buildFrameElement(opts: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  name: string;
+  customData: Record<string, unknown>;
+}): ExcalidrawElement | null {
+  const created = convertToExcalidrawElements([
+    { type: "frame", x: opts.x, y: opts.y, width: opts.width, height: opts.height, children: [] },
+  ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
+  if (!created.length) return null;
+  return { ...created[0], name: opts.name, customData: opts.customData } as ExcalidrawElement;
+}
+
 export function useCanvasPinning(
   apiRef: RefObject<ExcalidrawImperativeAPI | null>,
 ): UseCanvasPinning {
@@ -1023,19 +1047,13 @@ export function useCanvasPinning(
       const viewH = (app.height ?? 800) / zoom;
       const x = -(app.scrollX ?? 0) + Math.min(80, viewW * 0.06);
       const y = -(app.scrollY ?? 0) + Math.max(40, (viewH - CHAT_FRAME_HEIGHT) / 2);
-      // skeleton 必须带 children (空也要给) —— convertToExcalidrawElements 内部对
-      // frame skeleton 做 `children.forEach`, 缺了直接抛。TS skeleton 类型未含 frame,
-      // 故 cast 收口。customData / name 会被 convert 丢掉, 创建后再盖上 (findChatFrame
-      // 靠 customData.aiChatType 认这个聊天框)。
-      const created = convertToExcalidrawElements([
-        { type: "frame", x, y, width: CHAT_FRAME_WIDTH, height: CHAT_FRAME_HEIGHT, children: [] },
-      ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
-      if (!created.length) return null;
-      const frame = {
-        ...created[0],
-        name: "Chat",
-        customData: { aiChatType: CHAT_FRAME_MARKER },
-      } as ExcalidrawElement;
+      // findChatFrame 靠 customData.aiChatType 认这个聊天框 (convert 会丢 name/
+      // customData, buildFrameElement 创建后再盖上)。
+      const frame = buildFrameElement({
+        x, y, width: CHAT_FRAME_WIDTH, height: CHAT_FRAME_HEIGHT,
+        name: "Chat", customData: { aiChatType: CHAT_FRAME_MARKER },
+      });
+      if (!frame) return null;
       // 迁移: 去掉旧版聊天文字 pin —— 现在聊天在面板里, 不再撒到画布上。
       const kept = elements.filter((el) => !isChatNoteElement(el));
       api.updateScene({ elements: [...kept, frame] });
@@ -1065,20 +1083,16 @@ export function useCanvasPinning(
         }
         const x = chat ? chat.x : PIN_ORIGIN_X;
         const y = below + PIN_GAP;
-        // frame skeleton 必须带 children (见 ensureChatFrame 的同款说明)。
-        const created = convertToExcalidrawElements([
-          { type: "frame", x, y, width: BROWSE_LOG_FRAME_WIDTH, height: BROWSE_LOG_FRAME_HEIGHT, children: [] },
-        ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
-        if (!created.length) return null;
-        const frame = {
-          ...created[0],
+        const frame = buildFrameElement({
+          x, y, width: BROWSE_LOG_FRAME_WIDTH, height: BROWSE_LOG_FRAME_HEIGHT,
           name: "Browse log",
           customData: {
             aiChatType: BROWSE_LOG_FRAME_MARKER,
             [BROWSE_LOG_TITLE_KEY]: title,
-            [BROWSE_LOG_TEXT_KEY]: "",
+            [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
           },
-        } as ExcalidrawElement;
+        });
+        if (!frame) return null;
         api.updateScene({ elements: [...elements, frame] });
         api.scrollToContent([frame], { fitToViewport: false, animate: true });
         return frame.id;
@@ -1091,7 +1105,7 @@ export function useCanvasPinning(
   );
 
   const persistBrowseLogText = useCallback(
-    (frameId: string, text: string): void => {
+    (frameId: string, lines: string[]): void => {
       const api = apiRef.current;
       if (!api) return;
       try {
@@ -1099,7 +1113,7 @@ export function useCanvasPinning(
         const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
         if (!frame) return;
         const next = newElementWith(frame, {
-          customData: { ...(frame.customData ?? {}), [BROWSE_LOG_TEXT_KEY]: text },
+          customData: { ...(frame.customData ?? {}), [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog(lines) },
         });
         api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
       } catch (err) {

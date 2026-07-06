@@ -67,6 +67,10 @@ logger = logging.getLogger(__name__)
 # between concurrent browses, which is worse.
 _LOG_LOGGER_NAMES = ("browser_use", "bubus")
 _MAX_LOG_LINE_CHARS = 600
+# Hard cap on how many step-log lines we forward per browse — a runaway page /
+# retry loop must not flood the SSE stream (and the on-canvas log frame) with
+# unbounded text. Well above a normal browse's line count.
+_MAX_LOG_LINES = 800
 # browser-use colourises its log messages with ANSI SGR escapes; strip them so
 # the on-canvas panel shows clean text, not literal "\x1b[32m…[0m" garbage.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -81,6 +85,10 @@ class _ThreadRoutedLogHandler(logging.Handler):
     (i.e. everything else in the process). Never raises into the logging call."""
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Intentionally lock-free: a single dict.get is atomic under the GIL, and
+        # taking _log_sinks_lock inside a logging handler (which runs mid-arbitrary
+        # code, possibly holding other locks) risks lock-ordering trouble. Worst
+        # case on a future free-threaded build is one dropped/garbled log line.
         sink = _log_sinks.get(record.thread)
         if sink is None:
             return
@@ -146,15 +154,15 @@ def _bounded_sink(
     if on_log_line is None:
         return None
 
-    state = {"count": 0}
+    count = 0
 
     def sink(line: str) -> None:
-        n = state["count"]
-        if n < _MAX_LOG_LINES:
-            state["count"] = n + 1
+        nonlocal count
+        if count < _MAX_LOG_LINES:
+            count += 1
             on_log_line(line)
-        elif n == _MAX_LOG_LINES:
-            state["count"] = n + 1
+        elif count == _MAX_LOG_LINES:
+            count += 1
             on_log_line("… (browse log truncated)")
 
     return sink
@@ -228,12 +236,6 @@ def _get_browse_semaphore() -> threading.BoundedSemaphore:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-
-# Hard cap on how many step-log lines we forward per browse — a runaway page /
-# retry loop must not flood the SSE stream (and the on-canvas log frame) with
-# unbounded text. Well above a normal browse's line count.
-_MAX_LOG_LINES = 800
-
 
 def run_browse(
     task: str,

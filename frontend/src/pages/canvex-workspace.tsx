@@ -1059,8 +1059,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               }
               const fid = browseLog.frameId;
               if (fid) {
-                browseLog.lines.push(event.line);
-                const lines = [...browseLog.lines];
+                // Immutable append: one new array per line, shared by both the
+                // persistence buffer and the React state (React needs a fresh
+                // reference to re-render; a mutate-then-clone would copy twice).
+                browseLog.lines = [...browseLog.lines, event.line];
+                const lines = browseLog.lines;
                 setBrowseLogs((prev) => ({ ...prev, [fid]: { title: content, lines } }));
               }
               break;
@@ -1117,7 +1120,17 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         // re-submit (which repoints streamAbortRef) can't skip persisting the
         // superseded turn's transcript. Runs on abort/error too (partial log).
         if (browseLog.frameId && browseLog.lines.length) {
-          persistBrowseLogText(browseLog.frameId, browseLog.lines.join("\n"));
+          const fid = browseLog.frameId;
+          persistBrowseLogText(fid, browseLog.lines);
+          // Drop the now-redundant live entry: BrowseLogOverlay renders identically
+          // from the frame's persisted customData, so keeping the buffer in state
+          // just leaks one array per browse turn for the scene's lifetime.
+          setBrowseLogs((prev) => {
+            if (!(fid in prev)) return prev;
+            const next = { ...prev };
+            delete next[fid];
+            return next;
+          });
         }
         // Only the CURRENT turn owns the shared streaming UI state. A turn that
         // was superseded by a fast re-submit (its `abort` !== the current ref)

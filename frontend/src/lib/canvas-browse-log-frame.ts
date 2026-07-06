@@ -1,5 +1,7 @@
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 
+import { getAiChatType } from "@/lib/excalidraw-custom-data";
+
 /**
  * 「浏览日志框」—— 每次触发 browse 工具的对话轮各一个原生 Excalidraw frame，
  * 摞在主聊天框 (canvas-chat-frame) 下方。BrowseLogOverlay 把一个可滚动的日志
@@ -12,7 +14,10 @@ import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
  */
 export const BROWSE_LOG_FRAME_MARKER = "browse-log-frame";
 
-/** customData 键 —— 字符串读写两侧必须一致 (场景 autosave 回读同名键)。 */
+/** customData 键 —— 字符串读写两侧必须一致 (场景 autosave 回读同名键)。
+ *  browseLog 存的是「行数组的 JSON」而非换行拼接串:一条 browser-use 日志本身
+ *  可能含换行 (如 Final Result 块),用 \n join+split 会把它拆成多行,重载后与
+ *  直播视图不一致。存 JSON 数组则逐行忠实往返。 */
 export const BROWSE_LOG_TITLE_KEY = "browseTitle";
 export const BROWSE_LOG_TEXT_KEY = "browseLog";
 
@@ -20,15 +25,16 @@ export const BROWSE_LOG_TEXT_KEY = "browseLog";
 export const BROWSE_LOG_FRAME_WIDTH = 2048;
 export const BROWSE_LOG_FRAME_HEIGHT = 1024;
 
-function aiChatType(el: ExcalidrawElement): string | undefined {
-  const cd = el.customData as { aiChatType?: unknown } | undefined;
-  return typeof cd?.aiChatType === "string" ? cd.aiChatType : undefined;
-}
-
 export function isBrowseLogFrame(el: ExcalidrawElement): boolean {
   return (
-    !el.isDeleted && el.type === "frame" && aiChatType(el) === BROWSE_LOG_FRAME_MARKER
+    !el.isDeleted && el.type === "frame" && getAiChatType(el) === BROWSE_LOG_FRAME_MARKER
   );
+}
+
+/** Serialize the live line buffer for storage in customData (JSON array — see
+ *  BROWSE_LOG_TEXT_KEY). Sole writer of the stored shape. */
+export function serializeBrowseLog(lines: string[]): string {
+  return JSON.stringify(lines);
 }
 
 /** 当前 scene 的所有浏览日志框 (按场景顺序)。 */
@@ -38,13 +44,25 @@ export function findBrowseLogFrames(
   return elements.filter(isBrowseLogFrame);
 }
 
-/** 从一个浏览日志框读出标题 + 已持久化的日志文本 (customData)。 */
+/** 从一个浏览日志框读出标题 + 已持久化的日志行 (customData)。日志优先按 JSON
+ *  数组解析 (逐行忠实往返);解析失败或非数组时回落到按 \n 切分 (兼容旧值 / 空)。 */
 export function getBrowseLogFrameData(el: ExcalidrawElement): {
   title: string;
-  log: string;
+  lines: string[];
 } {
   const cd = (el.customData ?? {}) as Record<string, unknown>;
   const title = typeof cd[BROWSE_LOG_TITLE_KEY] === "string" ? (cd[BROWSE_LOG_TITLE_KEY] as string) : "";
-  const log = typeof cd[BROWSE_LOG_TEXT_KEY] === "string" ? (cd[BROWSE_LOG_TEXT_KEY] as string) : "";
-  return { title, log };
+  const raw = cd[BROWSE_LOG_TEXT_KEY];
+  let lines: string[] = [];
+  if (typeof raw === "string" && raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      lines = Array.isArray(parsed)
+        ? parsed.filter((x): x is string => typeof x === "string")
+        : raw.split("\n");
+    } catch {
+      lines = raw.split("\n"); // 旧的换行拼接值 / 非 JSON —— 尽量还原
+    }
+  }
+  return { title, lines };
 }
