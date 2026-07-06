@@ -20,4 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Agentic 浏览器功能依赖（browse / web_operator）：browser-use + Playwright + Chromium。
+# 放在业务代码 COPY 之前，改代码不会重建这层重依赖(约 +500MB Chromium + 系统库)。
+# 注意：backend 与 workers 共用本镜像，都会带上；只有 CANVAS_BROWSER_ENABLED/
+# CANVAS_BROWSER_OPERATOR_ENABLED 打开时才会真正用到。要瘦身可删掉这两行、改回运行时按需装。
+COPY requirements-browser.txt /app/
+RUN pip install --no-cache-dir -r requirements-browser.txt \
+    && python -m playwright install --with-deps chromium
+
 COPY . /app/
