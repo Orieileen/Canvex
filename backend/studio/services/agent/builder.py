@@ -148,8 +148,13 @@ written summary plus screenshots saved to the user's canvas library.
 already have: current prices, a competitor's listing, today's facts, reading a \
 page the user linked, or gathering reference images. For anything you already \
 know, just answer — don't browse.
-- Give `browse` ONE concrete, self-contained goal per call (include the site/brand/\
-product if known). It finds its own URLs; you don't supply one.
+- Give `browse` ONE concrete, self-contained goal per call — describe WHAT TO FIND \
+or READ (include the site/brand/product if known). It finds its own URLs; you don't \
+supply one.
+- Screenshots are captured AUTOMATICALLY and placed on the canvas for the user. Do \
+NOT ask browse to "take a screenshot", "save it to the canvas library", or "return a \
+screenshot URL" — that happens on its own, and telling it to produce a URL makes it \
+fail. Just state the research/reading goal.
 - It is READ-ONLY. It never logs in, submits forms, buys, or posts. Never tell the \
 user you did any of those via browsing.
 - browse counts against your per-turn tool-call cap. Don't chain many browses; one \
