@@ -179,5 +179,8 @@ export type CanvasChatStreamEvent =
   | { event: "assistant_delta"; id: string; content: string }
   | { event: "assistant_final"; content: string }
   | { event: "assistant"; message: CanvasChatMessage }
+  // A canvas asset a tool produced this turn (e.g. a browse screenshot) — the
+  // client places it on the Excalidraw board via pinImage.
+  | { event: "canvas_asset"; url: string }
   | { event: "error"; detail: string }
   | { event: "done" };

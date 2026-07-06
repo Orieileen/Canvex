@@ -105,14 +105,22 @@ def browse(
             "web results."
         )
 
-    screenshot_urls = _persist_screenshots(outcome, scene_id=ctx.scene_id)
-    return _format_result(outcome, screenshot_urls)
+    assets = _persist_screenshots(outcome, scene_id=ctx.scene_id)
+    # Hand the persisted screenshots to the streaming layer (via the shared
+    # context) so it emits `canvas_asset` frames and the frontend drops them onto
+    # the board. Structured {url,width,height} — not parsed from the clamped
+    # tool_result text — so long summaries can't truncate the URLs.
+    ctx.produced_assets.extend(assets)
+    return _format_result(outcome, [a["url"] for a in assets])
 
 
-def _persist_screenshots(outcome, *, scene_id: str) -> list[str]:
+def _persist_screenshots(outcome, *, scene_id: str) -> list[dict]:
     """Save each captured PNG as a DataAsset under Canvas/<scene>/ and return
-    their relative /media URLs. Best-effort: a persistence failure logs and is
-    skipped, never fails the tool (the summary is the real payload)."""
+    [{"url": <absolute media URL>}, ...]. Best-effort: a persistence failure logs
+    and is skipped, never fails the tool (the summary is the real payload).
+
+    Dicts (not bare URL strings) so the produced_assets side-channel can carry
+    richer fields later without changing the drain/frame contract."""
     if not outcome.screenshots:
         return []
     try:
@@ -122,7 +130,7 @@ def _persist_screenshots(outcome, *, scene_id: str) -> list[str]:
         return []
 
     folder = get_or_create_canvas_scene_folder(scene)
-    urls: list[str] = []
+    assets: list[dict] = []
     for i, shot in enumerate(outcome.screenshots):
         try:
             asset = persist_bytes_to_asset(
@@ -131,10 +139,10 @@ def _persist_screenshots(outcome, *, scene_id: str) -> list[str]:
                 display_filename=f"browse-{scene_id}-{i}.png",
                 ext="png",
             )
-            urls.append(absolute_media_url(asset.file.url))
+            assets.append({"url": absolute_media_url(asset.file.url)})
         except Exception:  # noqa: BLE001 — one bad frame shouldn't sink the tool
             logger.exception("browse: failed to persist screenshot %d (scene %s)", i, scene_id)
-    return urls
+    return assets
 
 
 def _format_result(outcome, screenshot_urls: list[str]) -> str:

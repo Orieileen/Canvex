@@ -23,3 +23,10 @@ class CanvasAgentContext:
     # frequently hallucinates "I started the generation" without actually
     # calling the tool with the attachments. Empty list = no fallback.
     attachment_urls: list[str] = field(default_factory=list)
+    # Canvas assets a tool produced synchronously THIS turn (e.g. browse
+    # screenshots persisted as DataAssets). Tools append {"url": ...} dicts;
+    # stream_canvas_agent drains this and emits one `canvas_asset` SSE frame each
+    # so the frontend can place them on the board. Structured (not parsed from the
+    # clamped tool_result text) so long summaries can't truncate the URLs. Dicts
+    # (not bare strings) leave room for richer fields later. Empty = nothing to place.
+    produced_assets: list[dict] = field(default_factory=list)

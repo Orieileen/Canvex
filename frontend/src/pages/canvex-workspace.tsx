@@ -1021,6 +1021,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               );
               break;
             }
+            case "canvas_asset":
+              // A tool (e.g. browse) produced a screenshot this turn — drop it
+              // onto the board. dedupKey=url so it never double-places with the
+              // assistant_final markdown fallback below.
+              void pinImage({ url: event.url, dedupKey: event.url }).catch((err) => {
+                toast.error(extractApiError(err, t("workspace.toast.loadImageFailed")));
+              });
+              break;
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);

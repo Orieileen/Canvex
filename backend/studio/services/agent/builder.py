@@ -188,6 +188,9 @@ class StreamEvent:
     ASSISTANT_DELTA = "assistant_delta"
     ASSISTANT_FINAL = "assistant_final"
     ASSISTANT = "assistant"
+    # A canvas asset a tool produced this turn (e.g. a browse screenshot) — the
+    # frontend places it on the Excalidraw board. Carries {url}.
+    CANVAS_ASSET = "canvas_asset"
     ERROR = "error"
     DONE = "done"
 
@@ -587,12 +590,30 @@ def stream_canvas_agent(
     )
     emitted_tool_ids: set[str] = set()
     last_ai_text = ""
+    # Canvas assets tools produce mid-turn (browse screenshots) are drained
+    # INCREMENTALLY as their chunk arrives: flushed promptly, and never lost to a
+    # later error in the same turn (assets from completed chunks are already out).
+    # Incremental — not a post-loop / `finally` drain — so we never yield during a
+    # GeneratorExit when the SSE client disconnects mid-stream.
+    emitted_assets = 0
+
+    def _drain_new_canvas_assets():
+        nonlocal emitted_assets
+        assets = getattr(ctx, "produced_assets", None) or []
+        while emitted_assets < len(assets):
+            url = assets[emitted_assets].get("url")
+            emitted_assets += 1
+            if url:
+                yield {"event": StreamEvent.CANVAS_ASSET, "url": url}
 
     try:
         for mode, data in agent.stream(
             state, context=ctx, config=config,
             stream_mode=["updates", "messages"],
         ):
+            # By the time a chunk is yielded its producing node has run, so any
+            # browse screenshots it persisted are already on ctx — flush them now.
+            yield from _drain_new_canvas_assets()
             if mode == "messages":
                 # Token-level deltas for the live typewriter. `messages` yields
                 # (chunk, metadata); stream only AIMessageChunks carrying real
@@ -661,4 +682,7 @@ def stream_canvas_agent(
             f"agent stream failed: {type(exc).__name__}: {exc}"
         ) from exc
 
+    # Flush assets produced by the final chunk (the in-loop drain flushes earlier
+    # chunks at the start of the next iteration; the last chunk has none after it).
+    yield from _drain_new_canvas_assets()
     yield {"event": StreamEvent.ASSISTANT_FINAL, "content": last_ai_text}
