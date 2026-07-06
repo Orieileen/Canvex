@@ -203,6 +203,13 @@ CANVAS_BROWSER_MAX_STEPS = int(os.getenv("CANVAS_BROWSER_MAX_STEPS", "25") or 25
 CANVAS_BROWSER_TIMEOUT_SECONDS = int(os.getenv("CANVAS_BROWSER_TIMEOUT_SECONDS", "180") or 180)
 CANVAS_BROWSER_MAX_SCREENSHOTS = int(os.getenv("CANVAS_BROWSER_MAX_SCREENSHOTS", "4") or 4)
 CANVAS_BROWSER_HEADLESS = _as_bool(os.getenv("CANVAS_BROWSER_HEADLESS"), True)
+# Max concurrent browses PER WORKER PROCESS. Each browse blocks its web (gthread)
+# worker for up to the timeout above while driving Chromium; this caps how many run
+# at once so a burst can't exhaust the thread pool or spawn unbounded Chromium.
+# Excess calls are refused fast (not queued). Default 2 fits a turn's two parallel
+# browse tool calls. NOTE: per-process — with N gunicorn workers the global cap is
+# N × this value.
+CANVAS_BROWSER_MAX_CONCURRENCY = int(os.getenv("CANVAS_BROWSER_MAX_CONCURRENCY", "2") or 2)
 
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。

@@ -29,7 +29,7 @@ from langchain.tools import ToolRuntime, tool
 
 from studio.models import Scene
 
-from ..browser_runner import BrowserToolUnavailable, run_browse
+from ..browser_runner import BrowserBusy, BrowserToolUnavailable, run_browse
 from ..context import CanvasAgentContext
 from .common import (
     absolute_media_url,
@@ -97,6 +97,15 @@ def browse(
     logger.info("browse: scene=%s task=%r", ctx.scene_id, task[:160])
     try:
         outcome = run_browse(task)
+    except BrowserBusy as exc:
+        # Subclass of BrowserToolUnavailable — must be caught first. Transient, so
+        # tell the user to retry rather than reporting the feature as unavailable.
+        logger.info("browse busy: scene=%s (%s)", ctx.scene_id, exc)
+        return (
+            f"{REFUSED_PREFIX} the browser is busy with other tasks right now "
+            f"({exc}). Tell the user to try again in a moment; do not fabricate "
+            "web results."
+        )
     except BrowserToolUnavailable as exc:
         logger.warning("browse unavailable: scene=%s err=%s", ctx.scene_id, exc)
         return (

@@ -49,6 +49,13 @@ class BrowserToolUnavailable(RuntimeError):
     rather than a 500 — the feature is optional and off by default."""
 
 
+class BrowserBusy(BrowserToolUnavailable):
+    """All concurrent browse slots are in use (the concurrency guard refused
+    fast). A subclass of BrowserToolUnavailable so existing callers still handle
+    it, but the tool layer catches it first to surface a 'retry shortly' message
+    rather than 'unavailable'."""
+
+
 @dataclass
 class BrowseScreenshot:
     """One captured frame. `png_bytes` is raw PNG; `caption` is a short human
@@ -67,6 +74,38 @@ class BrowseOutcome:
     visited_urls: list[str] = field(default_factory=list)
     steps: int = 0
     truncated: bool = False  # hit max_steps or the wall-clock timeout
+
+
+# ---------------------------------------------------------------------------
+# Concurrency guard
+# ---------------------------------------------------------------------------
+# A browse blocks its worker thread for up to CANVAS_BROWSER_TIMEOUT_SECONDS while
+# driving Chromium. Without a cap, a burst of browse calls could pin every web
+# (gthread) worker at once — stalling unrelated chat requests — and spawn unbounded
+# Chromium instances (memory). This semaphore bounds concurrent browses to
+# CANVAS_BROWSER_MAX_CONCURRENCY; excess calls are refused FAST (non-blocking) with
+# BrowserBusy so their thread frees immediately instead of queuing (queuing would
+# itself hold threads). Lazily built so the setting is read after Django configures.
+#
+# SCOPE: the semaphore is PER PROCESS. With N gunicorn workers the effective global
+# cap is N × CANVAS_BROWSER_MAX_CONCURRENCY — an accepted approximation (a true
+# cluster-wide limit would need a shared broker e.g. Redis). Size the setting with
+# your worker count in mind.
+_browse_semaphore: threading.BoundedSemaphore | None = None
+_browse_semaphore_lock = threading.Lock()
+
+
+def _browse_concurrency() -> int:
+    return max(1, settings.CANVAS_BROWSER_MAX_CONCURRENCY)
+
+
+def _get_browse_semaphore() -> threading.BoundedSemaphore:
+    global _browse_semaphore
+    if _browse_semaphore is None:
+        with _browse_semaphore_lock:
+            if _browse_semaphore is None:
+                _browse_semaphore = threading.BoundedSemaphore(_browse_concurrency())
+    return _browse_semaphore
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +148,15 @@ def run_browse(
             max_screenshots=max_screenshots,
         )
 
+    # Concurrency guard: refuse fast if all slots are busy (don't queue — that
+    # would hold the worker thread we're trying to protect). Acquired here and
+    # released in the finally so every return/raise path frees the slot.
+    sem = _get_browse_semaphore()
+    if not sem.acquire(blocking=False):
+        raise BrowserBusy(
+            f"all {_browse_concurrency()} browse slot(s) are in use; ask the user "
+            "to retry in a moment"
+        )
     try:
         return _run_coro_blocking(_make_coro, timeout_seconds)
     except BrowserToolUnavailable:
@@ -133,6 +181,8 @@ def run_browse(
                 f"{str(exc)[:200]}). Tell the user browsing failed; do not invent results."
             ),
         )
+    finally:
+        sem.release()
 
 
 # ---------------------------------------------------------------------------
