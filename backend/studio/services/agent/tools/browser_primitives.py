@@ -235,9 +235,20 @@ def browser_type(
     runtime: ToolRuntime[CanvasAgentContext] = None,
 ) -> str:
     """Type text into a field identified by ARIA role + accessible name (e.g.
-    role='textbox', name='Search'). Set submit=true to press Enter afterward."""
-    url = _run_op(runtime, _op_type, role, name, text, submit, action="type")
-    return f"Typed into {role} {name!r}. Now at {url}" if not str(url).startswith(REFUSED_PREFIX) else url
+    role='textbox', name='Search'). Set submit=true to press Enter afterward. NOTE:
+    submitting is a state-changing action, disabled unless the deployment enables it —
+    when disabled the field is filled but NOT submitted."""
+    do_submit = submit and settings.CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT
+    url = _run_op(runtime, _op_type, role, name, text, do_submit, action="type")
+    if str(url).startswith(REFUSED_PREFIX):
+        return url
+    if submit and not do_submit:
+        return (
+            f"Filled {role} {name!r} but did NOT submit — form submission is disabled "
+            "(read-only). Tell the user this task needs write access "
+            f"(CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT) enabled. Page still at {url}."
+        )
+    return f"Typed into {role} {name!r}. Now at {url}"
 
 
 @tool

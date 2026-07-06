@@ -228,6 +228,15 @@ CANVAS_BROWSER_SESSION_IDLE_TIMEOUT = int(os.getenv("CANVAS_BROWSER_SESSION_IDLE
 CANVAS_BROWSER_CHROMIUM_ARGS = [
     a.strip() for a in os.getenv("CANVAS_BROWSER_CHROMIUM_ARGS", "").split(",") if a.strip()
 ]
+# State-changing gate: form submission (browser_type submit=True → Enter) is the one
+# explicit write affordance the operator tools expose. OFF by default — the field is
+# still filled, but not submitted — so an injection-driven or confused turn can't
+# submit a form. Enable for deployments that need the operator to submit. (Broader
+# writes via button-click aren't caught here; the allowlist + read-only prompt +
+# absence of credentials remain the safety model. True interrupt() confirmation is a
+# poor fit — it needs a checkpointer and the per-turn browser session can't survive
+# an interrupt→resume request boundary.)
+CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT = _as_bool(os.getenv("CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT"), False)
 
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。
