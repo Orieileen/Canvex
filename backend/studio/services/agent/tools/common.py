@@ -154,6 +154,21 @@ def is_public_http_url(url: str) -> bool:
     )
 
 
+def is_gevent_patched() -> bool:
+    """True if this process has been gevent-monkeypatched (socket patched).
+
+    Blocking CPU work (rembg) and asyncio-driven work (the browse tool) both
+    freeze / deadlock the event loop under a --pool=gevent worker, so callers
+    check this and fail loud instead of hanging. Detection is shared here; each
+    caller keeps its own exception type + remediation message.
+    """
+    try:
+        from gevent.monkey import is_module_patched  # noqa: PLC0415 — runtime check
+    except Exception:  # gevent not installed in this process → not patched
+        return False
+    return is_module_patched("socket")
+
+
 def _public_media_base() -> str:
     """读 PUBLIC_MEDIA_BASE。优先 settings(meired 契约),回落 os.getenv。
 

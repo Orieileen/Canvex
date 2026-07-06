@@ -167,6 +167,43 @@ CANVAS_CHAT_MODEL = os.getenv("CANVAS_CHAT_MODEL", "gpt-4o-mini")
 CANVAS_AGENT_STORE_BACKEND = os.getenv("CANVAS_AGENT_STORE_BACKEND", "memory")
 CANVAS_AGENT_STORE_DSN = os.getenv("CANVAS_AGENT_STORE_DSN", "")
 
+# ── Agentic browser tool (`browse`) ───────────────────────────────────────────
+# OFF by default. When true, build_canvas_agent mounts a `browse` tool that runs
+# an autonomous browser-use loop (headless Chromium) to research / gather from the
+# web, persists screenshots to the scene canvas folder, and returns a text summary
+# to the agent so it can reason over the findings in the same turn. Requires the
+# optional deps (requirements-browser.txt) + `python -m playwright install chromium`.
+# The agent loop runs in the web process (gthread, NOT gevent), so the tool drives
+# browser-use synchronously on its own event loop in a bounded worker thread with a
+# hard timeout — see browser_runner.py.
+CANVAS_BROWSER_ENABLED = _as_bool(os.getenv("CANVAS_BROWSER_ENABLED"), False)
+
+# Browser LLM slot — falls back to the main chat model (CANVAS_CHAT_*). browser-use
+# is DOM-first and drives fine with the SAME OpenAI-compatible tool-calling model,
+# so no vision model is needed by default. Point these at a vision / computer-use
+# model only if you later enable pixel mode for pages with no usable DOM.
+CANVAS_BROWSER_API_KEY = os.getenv("CANVAS_BROWSER_API_KEY", "") or CANVAS_CHAT_API_KEY
+CANVAS_BROWSER_BASE_URL = os.getenv("CANVAS_BROWSER_BASE_URL", "") or CANVAS_CHAT_BASE_URL
+CANVAS_BROWSER_MODEL = os.getenv("CANVAS_BROWSER_MODEL", "") or CANVAS_CHAT_MODEL
+
+# Safety rails for autonomous navigation. ALLOWLIST = comma-separated host suffixes
+# the agent may visit; when NON-EMPTY it is enforced per-navigation by browser-use
+# (allowed_domains), and browse refuses to run if that enforcement is unavailable.
+# EMPTY = no app-layer host restriction (the agent may follow wherever it navigates)
+# — production should set an allowlist and/or restrict egress at the infra layer.
+# MAX_STEPS + TIMEOUT hard-bound each browse so a stuck / looping page can never hang
+# the chat turn (the exact failure we want to avoid). MAX_SCREENSHOTS caps how many
+# frames get persisted to the canvas.
+CANVAS_BROWSER_ALLOWLIST = [
+    h.strip().lower()
+    for h in os.getenv("CANVAS_BROWSER_ALLOWLIST", "").split(",")
+    if h.strip()
+]
+CANVAS_BROWSER_MAX_STEPS = int(os.getenv("CANVAS_BROWSER_MAX_STEPS", "25") or 25)
+CANVAS_BROWSER_TIMEOUT_SECONDS = int(os.getenv("CANVAS_BROWSER_TIMEOUT_SECONDS", "180") or 180)
+CANVAS_BROWSER_MAX_SCREENSHOTS = int(os.getenv("CANVAS_BROWSER_MAX_SCREENSHOTS", "4") or 4)
+CANVAS_BROWSER_HEADLESS = _as_bool(os.getenv("CANVAS_BROWSER_HEADLESS"), True)
+
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。
 CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")

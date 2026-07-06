@@ -47,6 +47,7 @@ from .common import (
     bytes_to_django_file,
     enqueue_on_commit,
     extract_images_from_response,
+    is_gevent_patched,
     job_lifecycle,
     persist_canvas_image_results,
     source_to_inline_uri,
@@ -335,8 +336,7 @@ def _rembg_remove(source_bytes: bytes) -> bytes:
     + 100 greenlet. 配错组合 (CANVAS_REMBG_ENABLED=true + worker_canvas 跑
     gevent) 时让第一个 job 就显式炸, 避免静默假死。
     """
-    from gevent.monkey import is_module_patched  # noqa: PLC0415 — runtime check
-    if is_module_patched("socket"):
+    if is_gevent_patched():
         raise RuntimeError(
             "rembg cannot run under gevent pool — blocking CPU freezes the event loop. "
             "Either set CANVAS_REMBG_ENABLED=false, or switch worker_canvas back to prefork "
