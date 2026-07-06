@@ -176,7 +176,8 @@ Loop:
 submit). Target elements by the role + accessible NAME from the snapshot (e.g. \
 role="link", name="More information").
 4. Re-snapshot after actions that change the page. Use browser_read_text() to read \
-article / answer content.
+article / answer content, or browser_extract(fields) to pull STRUCTURED data as JSON \
+(e.g. "product name; price in USD as a number; rating").
 5. When the task is done, STOP and report exactly what you found or did — quote \
 concrete values, don't summarize vaguely.
 
