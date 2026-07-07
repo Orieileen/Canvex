@@ -74,6 +74,32 @@ _MAX_LOG_LINES = 800
 # browser-use colourises its log messages with ANSI SGR escapes; strip them so
 # the on-canvas panel shows clean text, not literal "\x1b[32m…[0m" garbage.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+# The agent-brain lines browser-use logs each step — its structured reasoning:
+# 📍 Step (delimiter), 🧠 Memory / 🤖 AI Step (running state), Eval (assessment of
+# the last step), 🎯 Next goal / 🎯 Task (plan), ▶️ action (decision), 📄 Final
+# Result (answer). Keyed by stable TEXT markers, not just emoji: Eval uses
+# 👍/⚠️/❔ and ⚠️ is ALSO browser-use's framework-warning emoji, so we match the
+# "Eval:" text. When CANVAS_BROWSER_LOG_REASONING_ONLY is on, every other line
+# (telemetry, extension downloads, viewport, nav confirms, session lifecycle) is
+# dropped from the on-canvas log (still emitted to stdout / docker logs).
+_REASONING_MARKERS = (
+    "📍 Step",
+    "🧠 Memory:",
+    "🤖 AI Step:",
+    "🎯 Next goal:",
+    "🎯 Task:",
+    "▶️",
+    "Eval:",
+    "Final Result:",
+)
+
+
+def _is_reasoning_line(line: str) -> bool:
+    """True if the (ANSI-stripped) line is one of browser-use's agent-brain lines."""
+    stripped = line.lstrip()
+    return any(marker in stripped for marker in _REASONING_MARKERS)
+
+
 _log_sinks: dict[int, Callable[[str], None]] = {}
 _log_sinks_lock = threading.Lock()
 _log_handler_installed = False
@@ -98,6 +124,15 @@ class _ThreadRoutedLogHandler(logging.Handler):
             return
         line = _ANSI_SGR_RE.sub("", line).rstrip()
         if not line.strip():  # drop blank / whitespace-only spacer lines
+            return
+        # Keep only the agent's reasoning lines (default); framework/infra noise is
+        # dropped from the on-canvas log. Read the flag defensively — a logging
+        # handler must never raise if settings aren't configured yet.
+        try:
+            reasoning_only = settings.CANVAS_BROWSER_LOG_REASONING_ONLY
+        except Exception:  # noqa: BLE001
+            reasoning_only = True
+        if reasoning_only and not _is_reasoning_line(line):
             return
         try:
             sink(line[:_MAX_LOG_LINE_CHARS])

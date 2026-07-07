@@ -203,6 +203,12 @@ CANVAS_BROWSER_MAX_STEPS = int(os.getenv("CANVAS_BROWSER_MAX_STEPS", "25") or 25
 CANVAS_BROWSER_TIMEOUT_SECONDS = int(os.getenv("CANVAS_BROWSER_TIMEOUT_SECONDS", "180") or 180)
 CANVAS_BROWSER_MAX_SCREENSHOTS = int(os.getenv("CANVAS_BROWSER_MAX_SCREENSHOTS", "4") or 4)
 CANVAS_BROWSER_HEADLESS = _as_bool(os.getenv("CANVAS_BROWSER_HEADLESS"), True)
+# Browse-log frame content: keep ONLY the agent's per-step reasoning lines
+# (📍 Step / 🧠 Memory / 👍⚠️❔ Eval / 🎯 Next goal / ▶️ action / 📄 Final Result)
+# and drop browser-use's framework/infra noise (telemetry, extension downloads,
+# viewport setup, navigation confirms, session lifecycle). Default on; set false
+# to stream the full raw log. Dropped lines still go to stdout / docker logs.
+CANVAS_BROWSER_LOG_REASONING_ONLY = _as_bool(os.getenv("CANVAS_BROWSER_LOG_REASONING_ONLY"), True)
 # Max concurrent browses PER WORKER PROCESS. Each browse blocks its web (gthread)
 # worker for up to the timeout above while driving Chromium; this caps how many run
 # at once so a burst can't exhaust the thread pool or spawn unbounded Chromium.
