@@ -42,6 +42,13 @@ import {
   findBrowseLogFrames,
   serializeBrowseLog,
 } from "@/lib/canvas-browse-log-frame";
+import {
+  BROWSE_MONITOR_FRAME_HEIGHT,
+  BROWSE_MONITOR_FRAME_MARKER,
+  BROWSE_MONITOR_FRAME_WIDTH,
+  BROWSE_MONITOR_IMAGE_KEY,
+  findBrowseMonitorFrames,
+} from "@/lib/canvas-browse-monitor-frame";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -620,6 +627,14 @@ export interface UseCanvasPinning {
    *  the live transcript otherwise lives only in React state during the turn.
    *  No-op if the frame is gone. */
   persistBrowseLogText: (frameId: string, lines: string[]) => void;
+  /** Create a live browser-monitor frame to the RIGHT of the turn's browse-log
+   *  frame (falls back to the right of the chat frame when `logFrameId` is null /
+   *  gone). BrowseMonitorOverlay renders the streaming page screenshot in it.
+   *  Returns the new frame id, or null if the API isn't mounted / creation failed. */
+  createBrowseMonitorFrame: (logFrameId: string | null) => string | null;
+  /** Persist the final page-screenshot URL into a monitor frame's customData so a
+   *  reload shows the end-state view. No-op if the frame is gone. */
+  persistBrowseMonitorImage: (frameId: string, url: string) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1118,6 +1133,67 @@ export function useCanvasPinning(
         api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
       } catch (err) {
         console.error("persistBrowseLogText failed", err);
+      }
+    },
+    [apiRef],
+  );
+
+  /** Create a live browser-monitor frame to the RIGHT of this turn's log frame
+   *  (or the chat frame if there's no log frame yet), walking down if that band is
+   *  occupied. On creation, frame BOTH panels into view so the user watches the
+   *  log (why) beside the browser (what) side by side. */
+  const createBrowseMonitorFrame = useCallback(
+    (logFrameId: string | null): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const logFrame = logFrameId
+          ? elements.find((el) => el.id === logFrameId && !el.isDeleted) ?? null
+          : null;
+        const anchor = logFrame ?? findChatFrame(elements);
+        const startX = anchor ? anchor.x + anchor.width + PIN_GAP : PIN_ORIGIN_X;
+        const startY = anchor ? anchor.y : PIN_ORIGIN_Y;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          BROWSE_MONITOR_FRAME_WIDTH, BROWSE_MONITOR_FRAME_HEIGHT, PIN_GAP, "down",
+        );
+        const frame = buildFrameElement({
+          x, y, width: BROWSE_MONITOR_FRAME_WIDTH, height: BROWSE_MONITOR_FRAME_HEIGHT,
+          name: "Live browser",
+          customData: { aiChatType: BROWSE_MONITOR_FRAME_MARKER, [BROWSE_MONITOR_IMAGE_KEY]: "" },
+        });
+        if (!frame) return null;
+        api.updateScene({ elements: [...elements, frame] });
+        // Frame the pair (log + monitor) so both are visible while it streams.
+        api.scrollToContent(logFrame ? [logFrame, frame] : [frame], {
+          fitToViewport: true,
+          viewportZoomFactor: 0.9,
+          animate: true,
+        });
+        return frame.id;
+      } catch (err) {
+        console.error("createBrowseMonitorFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef],
+  );
+
+  const persistBrowseMonitorImage = useCallback(
+    (frameId: string, url: string): void => {
+      const api = apiRef.current;
+      if (!api) return;
+      try {
+        const elements = api.getSceneElements();
+        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
+        if (!frame) return;
+        const next = newElementWith(frame, {
+          customData: { ...(frame.customData ?? {}), [BROWSE_MONITOR_IMAGE_KEY]: url },
+        });
+        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
+      } catch (err) {
+        console.error("persistBrowseMonitorImage failed", err);
       }
     },
     [apiRef],
@@ -1687,6 +1763,8 @@ export function useCanvasPinning(
     ensureChatFrame,
     createBrowseLogFrame,
     persistBrowseLogText,
+    createBrowseMonitorFrame,
+    persistBrowseMonitorImage,
     pinImage,
     pinVideo,
     pinMergedImage,

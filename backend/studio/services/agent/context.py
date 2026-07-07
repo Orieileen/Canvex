@@ -40,3 +40,11 @@ class CanvasAgentContext:
     # live emission. MUST be thread-safe (browse runs in a daemon thread); the
     # callback stream_canvas_agent installs just does a thread-safe queue put.
     emit_browse_log: Callable[[str], None] | None = None
+    # Sibling of emit_browse_log for the live browser MONITOR: streams a screenshot
+    # per browser-use step to the SSE layer so the frontend can show the page as the
+    # agent drives it. Args: (image, final) — `image` is a JPEG data-URL for live
+    # frames or a persisted media URL for the final freeze frame; `final` flags the
+    # last one so the frontend persists it to the monitor frame's customData (for
+    # reload). None on the non-streaming path. Thread-safe (called from the browse
+    # worker thread); the installed callback just does a queue put.
+    emit_browse_frame: Callable[[str, bool], None] | None = None

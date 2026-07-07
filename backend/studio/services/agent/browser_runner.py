@@ -245,6 +245,7 @@ def run_browse(
     timeout_seconds: int | None = None,
     max_screenshots: int | None = None,
     on_log_line: Callable[[str], None] | None = None,
+    on_frame: Callable[[str], None] | None = None,
 ) -> BrowseOutcome:
     """Run one autonomous browsing task to completion and return the outcome.
 
@@ -257,6 +258,10 @@ def run_browse(
     happens (from the browse worker thread) — the SSE layer uses it to stream the
     browse's progress live. Bounded by `_MAX_LOG_LINES`; forwarding failures are
     swallowed so a wedged consumer can never affect the browse.
+
+    `on_frame`, if given, is called once per browser-use step with a lightweight
+    JPEG data-URL of the current page (the live browser monitor). Best-effort:
+    a step with no screenshot, or an encode/forward failure, is silently skipped.
     """
     _assert_not_gevent()
 
@@ -277,6 +282,7 @@ def run_browse(
             allowlist=allowlist,
             max_steps=max_steps,
             max_screenshots=max_screenshots,
+            on_frame=on_frame,
         )
 
     # Concurrency guard: refuse fast if all slots are busy (don't queue — that
@@ -413,6 +419,7 @@ async def _run_async(
     allowlist: list[str],
     max_steps: int,
     max_screenshots: int,
+    on_frame: Callable[[str], None] | None = None,
 ) -> BrowseOutcome:
     Agent, llm = _build_agent_deps()
 
@@ -421,7 +428,10 @@ async def _run_async(
     # versions. Try richer kwargs first, then progressively drop unknown ones so
     # a version mismatch degrades (no allowlist/headless enforcement) instead of
     # crashing. When the allowlist is empty we pass no allowed_domains at all.
-    agent = _construct_agent(Agent, task=task, llm=llm, allowlist=allowlist)
+    agent = _construct_agent(
+        Agent, task=task, llm=llm, allowlist=allowlist,
+        register_step=_make_step_callback(on_frame),
+    )
 
     history = await agent.run(max_steps=max_steps)
 
@@ -485,7 +495,7 @@ def _build_agent_deps():
     return Agent, LCChatOpenAI(max_retries=3, timeout=60, **kwargs)
 
 
-def _construct_agent(Agent, *, task: str, llm, allowlist: list[str]):
+def _construct_agent(Agent, *, task: str, llm, allowlist: list[str], register_step=None):
     """Construct browser-use Agent, threading headless + allowed_domains through
     whatever kwarg the installed version accepts. Progressive fallback: each
     attempt drops the kwargs the version rejected, ending at the minimal
@@ -493,9 +503,17 @@ def _construct_agent(Agent, *, task: str, llm, allowlist: list[str]):
 
     An explicitly-configured allowlist is a SECURITY control: if the operator
     set a non-empty CANVAS_BROWSER_ALLOWLIST but this browser-use version can't
-    enforce allowed_domains, we refuse rather than silently browse without it."""
+    enforce allowed_domains, we refuse rather than silently browse without it.
+
+    `register_step` (browser-use `register_new_step_callback`) drives the live
+    monitor; it's a stable kwarg across versions, so it's included in every attempt
+    (None → no callback)."""
     headless = settings.CANVAS_BROWSER_HEADLESS
     domains = list(allowlist) if allowlist else None
+    # Only pass the kwarg when set, so a hypothetical version without it still
+    # constructs (defensive — it's been stable, but the whole point of this
+    # function is version resilience).
+    step_kw = {"register_new_step_callback": register_step} if register_step else {}
 
     try:
         from browser_use import BrowserProfile  # noqa: PLC0415
@@ -506,7 +524,7 @@ def _construct_agent(Agent, *, task: str, llm, allowlist: list[str]):
     if BrowserProfile is not None and domains is not None:
         try:
             profile = BrowserProfile(headless=headless, allowed_domains=domains)
-            return Agent(task=task, llm=llm, browser_profile=profile)
+            return Agent(task=task, llm=llm, browser_profile=profile, **step_kw)
         except Exception as exc:  # noqa: BLE001
             raise BrowserToolUnavailable(
                 "CANVAS_BROWSER_ALLOWLIST is set but this browser-use version does "
@@ -517,14 +535,69 @@ def _construct_agent(Agent, *, task: str, llm, allowlist: list[str]):
     # Attempt 2: headless via profile, no allowlist configured.
     if BrowserProfile is not None:
         try:
-            return Agent(task=task, llm=llm, browser_profile=BrowserProfile(headless=headless))
+            return Agent(task=task, llm=llm, browser_profile=BrowserProfile(headless=headless), **step_kw)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "browse: browser_profile unsupported in this browser-use version; "
                 "falling back to a bare Agent (headless not enforced)."
             )
     # Attempt 3: minimal form (headless governed by browser-use default / env).
-    return Agent(task=task, llm=llm)
+    return Agent(task=task, llm=llm, **step_kw)
+
+
+# --- live monitor: per-step screenshot → lightweight JPEG data-URL ----------
+
+# The monitor is a live preview, not an archive, so frames are downscaled hard to
+# keep the SSE stream light: a full 1920×1080 PNG can be ~1 MB, and a browse runs
+# ~25 steps. Capping the longest side + JPEG re-encode brings each to tens of KB.
+_MONITOR_MAX_DIM = 1024
+_MONITOR_JPEG_QUALITY = 70
+
+
+def _make_step_callback(on_frame: Callable[[str], None] | None):
+    """Wrap `on_frame` into a browser-use `register_new_step_callback`. Fires per
+    step with (BrowserStateSummary, AgentOutput, step_number); we pull the current
+    screenshot, downscale it, and forward a JPEG data-URL. Returns None (no
+    callback) when there's no consumer. Best-effort + never raises — a callback
+    that throws would abort the browse step."""
+    if on_frame is None:
+        return None
+
+    def _cb(browser_state_summary, agent_output, step_number):  # noqa: ANN001
+        try:
+            b64 = getattr(browser_state_summary, "screenshot", None)
+            if not b64:
+                getter = getattr(browser_state_summary, "get_screenshot", None)
+                b64 = getter() if callable(getter) else None
+            if not b64:
+                return
+            data_url = _to_preview_data_url(b64)
+            if data_url:
+                on_frame(data_url)
+        except Exception:  # noqa: BLE001 — a raising callback must not break the step
+            logger.debug("browse monitor: step frame skipped", exc_info=True)
+
+    return _cb
+
+
+def _to_preview_data_url(b64_png: str) -> str | None:
+    """Decode a base64 PNG screenshot, downscale + JPEG-encode it, return a
+    `data:image/jpeg;base64,...` URL. None on any failure (frame is dropped)."""
+    try:
+        import io  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        if b64_png.startswith("data:"):
+            b64_png = b64_png.split(",", 1)[-1]
+        raw = base64.b64decode(b64_png, validate=False)
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        img.thumbnail((_MONITOR_MAX_DIM, _MONITOR_MAX_DIM))
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=_MONITOR_JPEG_QUALITY)
+        return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --- best-effort extraction from the history object (all wrapped) -----------

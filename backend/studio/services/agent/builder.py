@@ -242,6 +242,11 @@ class StreamEvent:
     # One live browser-use step-log line while a `browse` tool runs. The frontend
     # renders these in a per-turn log frame below the chat frame. Carries {line}.
     BROWSE_LOG = "browse_log"
+    # One live browser MONITOR frame while a `browse` tool runs — the current page
+    # screenshot as the agent drives it. Carries {image, final}: `image` is a JPEG
+    # data-URL (live) or a persisted media URL (the final freeze frame, final=True,
+    # which the frontend saves to the monitor frame's customData for reload).
+    BROWSE_FRAME = "browse_frame"
     ERROR = "error"
     DONE = "done"
 
@@ -659,6 +664,9 @@ def stream_canvas_agent(
       streamed text with this.
     - `{"event": "browse_log", "line": str}` — a live browser-use step-log line,
       emitted while a `browse` tool call runs (see the concurrency note below).
+    - `{"event": "browse_frame", "image": str, "final": bool}` — a live browser
+      monitor frame (the current page screenshot) per browse step; `final` marks
+      the persisted freeze frame.
 
     Wraps LLM / tool / graph errors in CanvasAgentInvocationError; programming
     bugs (AttributeError etc.) still propagate uncaught.
@@ -705,6 +713,12 @@ def stream_canvas_agent(
         if not aborted.is_set():
             frames.put({"event": StreamEvent.BROWSE_LOG, "line": line})
     ctx.emit_browse_log = _emit_browse_log
+
+    def _emit_browse_frame(image: str, final: bool = False) -> None:
+        # Live browser monitor frames (per-step screenshots), same aborted guard.
+        if not aborted.is_set():
+            frames.put({"event": StreamEvent.BROWSE_FRAME, "image": image, "final": final})
+    ctx.emit_browse_frame = _emit_browse_frame
 
     def _pump():
         emitted_tool_ids: set[str] = set()
@@ -847,5 +861,6 @@ def stream_canvas_agent(
         # pump owns close_session, so there's nothing to tear down here.
         aborted.set()
         ctx.emit_browse_log = None
+        ctx.emit_browse_frame = None
 
     yield {"event": StreamEvent.ASSISTANT_FINAL, "content": pump_result.get("final", "")}

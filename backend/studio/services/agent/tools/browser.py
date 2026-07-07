@@ -95,10 +95,15 @@ def browse(
         )
 
     logger.info("browse: scene=%s task=%r", ctx.scene_id, task[:160])
+    # ctx.emit_browse_frame (set by stream_canvas_agent; None on the non-streaming
+    # path) drives the live browser monitor. Capture it once so the per-step
+    # callback has a stable reference (the closure self-guards on client abort).
+    emit_frame = ctx.emit_browse_frame
+    on_frame = (lambda img: emit_frame(img, False)) if emit_frame else None
     try:
         # ctx.emit_browse_log (set by stream_canvas_agent) streams each browser-use
         # step-log line to the frontend live; None on the non-streaming path.
-        outcome = run_browse(task, on_log_line=ctx.emit_browse_log)
+        outcome = run_browse(task, on_log_line=ctx.emit_browse_log, on_frame=on_frame)
     except BrowserBusy as exc:
         # Subclass of BrowserToolUnavailable — must be caught first. Transient, so
         # tell the user to retry rather than reporting the feature as unavailable.
@@ -122,6 +127,11 @@ def browse(
     # the board. Structured {url,width,height} — not parsed from the clamped
     # tool_result text — so long summaries can't truncate the URLs.
     ctx.produced_assets.extend(assets)
+    # Freeze the live monitor on the final page: emit the last persisted screenshot
+    # as the final frame (a real media URL, not base64) so the frontend saves it to
+    # the monitor frame's customData and reload shows the end state.
+    if emit_frame and assets:
+        emit_frame(assets[-1]["url"], True)
     return _format_result(outcome, [a["url"] for a in assets])
 
 

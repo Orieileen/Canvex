@@ -185,5 +185,9 @@ export type CanvasChatStreamEvent =
   // One live browser-use step-log line while a `browse` tool runs — the client
   // appends it to a per-turn log frame below the chat frame.
   | { event: "browse_log"; line: string }
+  // One live browser MONITOR frame (current-page screenshot) while a `browse`
+  // tool runs — `image` is a JPEG data-URL (live) or a media URL (final=true,
+  // which the client persists to the monitor frame's customData for reload).
+  | { event: "browse_frame"; image: string; final: boolean }
   | { event: "error"; detail: string }
   | { event: "done" };

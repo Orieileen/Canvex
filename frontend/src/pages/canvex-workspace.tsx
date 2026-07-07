@@ -14,6 +14,7 @@ import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
+import { BrowseMonitorOverlay, type BrowseMonitorLive } from "@/components/canvas/BrowseMonitorOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -345,6 +346,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // ran a `browse` tool. BrowseLogOverlay renders these into the on-canvas log
   // frames; frames absent here fall back to their persisted customData (reload).
   const [browseLogs, setBrowseLogs] = useState<Record<string, BrowseLogLive>>({});
+  // Live browser-monitor frames (latest screenshot) keyed by monitor frame id —
+  // the visual sibling of browseLogs. BrowseMonitorOverlay renders these; frames
+  // absent here fall back to their persisted final-frame URL (reload).
+  const [browseMonitors, setBrowseMonitors] = useState<Record<string, BrowseMonitorLive>>({});
 
   const latestDataRef = useRef<CanvasSceneData>({});
   // Content hash `length:versionSum:fileCount` —— element.version 只在真实改动
@@ -401,6 +406,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     ensureChatFrame,
     createBrowseLogFrame,
     persistBrowseLogText,
+    createBrowseMonitorFrame,
+    persistBrowseMonitorImage,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -907,6 +914,19 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         attempted: false,
         lines: [],
       };
+      // Live browser-monitor bookkeeping, same stream-local shape. `frameId` is the
+      // monitor frame created on this turn's first browse_frame; `finalized` is set
+      // once the backend's final (persisted media-URL) frame lands; `lastImage` is
+      // the most recent LIVE frame (a data-URL) — the finally persists it as a
+      // fallback freeze frame when no final arrived (timeout / error / Stop / a
+      // browse that produced no persisted screenshot), so reload never shows a
+      // stuck "waiting" panel. Anchored to the RIGHT of browseLog.frameId.
+      const browseMonitor: {
+        frameId: string | null;
+        attempted: boolean;
+        finalized: boolean;
+        lastImage: string | null;
+      } = { frameId: null, attempted: false, finalized: false, lastImage: null };
 
       setIsStreaming(true);
       setChatStatus(null);
@@ -1068,6 +1088,35 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               }
               break;
             }
+            case "browse_frame": {
+              // Live browser monitor. Spin up the panel (right of this turn's log
+              // frame) on the first frame; then either stream a live data-URL into
+              // React state, or — on the final frame — persist its media URL to the
+              // frame's customData (survives reload) and drop the live entry so the
+              // overlay renders identically from the persisted URL.
+              if (!browseMonitor.attempted) {
+                browseMonitor.attempted = true;
+                browseMonitor.frameId = createBrowseMonitorFrame(browseLog.frameId);
+              }
+              const mfid = browseMonitor.frameId;
+              if (mfid) {
+                if (event.final) {
+                  browseMonitor.finalized = true;
+                  persistBrowseMonitorImage(mfid, event.image);
+                  setBrowseMonitors((prev) => {
+                    if (!(mfid in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[mfid];
+                    return next;
+                  });
+                } else {
+                  const image = event.image;
+                  browseMonitor.lastImage = image;
+                  setBrowseMonitors((prev) => ({ ...prev, [mfid]: { image } }));
+                }
+              }
+              break;
+            }
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);
@@ -1132,6 +1181,21 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             return next;
           });
         }
+        // Monitor: if it was never finalized (no persisted final frame — the browse
+        // timed out / errored / was Stopped, so the aborted-guard or the empty-
+        // screenshots gate suppressed the backend's final emit), freeze it on the
+        // last live frame (a data-URL) so reload shows the end state instead of a
+        // stuck "waiting" placeholder, and drop the redundant live state entry.
+        if (browseMonitor.frameId && !browseMonitor.finalized) {
+          const mfid = browseMonitor.frameId;
+          if (browseMonitor.lastImage) persistBrowseMonitorImage(mfid, browseMonitor.lastImage);
+          setBrowseMonitors((prev) => {
+            if (!(mfid in prev)) return prev;
+            const next = { ...prev };
+            delete next[mfid];
+            return next;
+          });
+        }
         // Only the CURRENT turn owns the shared streaming UI state. A turn that
         // was superseded by a fast re-submit (its `abort` !== the current ref)
         // must NOT reset isStreaming / badges / the streaming buffer — that would
@@ -1156,6 +1220,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       ensureChatFrame,
       createBrowseLogFrame,
       persistBrowseLogText,
+      createBrowseMonitorFrame,
+      persistBrowseMonitorImage,
       pollAndPinJob,
       resetPackRow,
       resetStream,
@@ -1301,6 +1367,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         excalidrawApiRef={excalidrawApiRef}
         tick={excalidrawTick}
         liveLogs={browseLogs}
+      />
+      <BrowseMonitorOverlay
+        excalidrawApiRef={excalidrawApiRef}
+        tick={excalidrawTick}
+        liveFrames={browseMonitors}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
