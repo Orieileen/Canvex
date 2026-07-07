@@ -77,27 +77,27 @@ _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 # The agent-brain lines browser-use logs each step — its structured reasoning:
 # 📍 Step (delimiter), 🧠 Memory / 🤖 AI Step (running state), Eval (assessment of
 # the last step), 🎯 Next goal / 🎯 Task (plan), ▶️ action (decision), 📄 Final
-# Result (answer). Keyed by stable TEXT markers, not just emoji: Eval uses
-# 👍/⚠️/❔ and ⚠️ is ALSO browser-use's framework-warning emoji, so we match the
-# "Eval:" text. When CANVAS_BROWSER_LOG_REASONING_ONLY is on, every other line
-# (telemetry, extension downloads, viewport, nav confirms, session lifecycle) is
-# dropped from the on-canvas log (still emitted to stdout / docker logs).
+# Result (answer). Matched by EMOJI where the emoji is unambiguous, and by TEXT
+# for the only two that collide: "Eval:" (its emoji is 👍/⚠️/❔ and ⚠️ is also
+# browser-use's framework-warning glyph) and "Final Result:" (📄 is also used for
+# "📄 New file available"). When CANVAS_BROWSER_LOG_REASONING_ONLY is on, every
+# other line (telemetry, extension downloads, viewport, nav confirms, session
+# lifecycle) is dropped from the on-canvas log (still emitted to stdout / docker).
 _REASONING_MARKERS = (
-    "📍 Step",
-    "🧠 Memory:",
-    "🤖 AI Step:",
-    "🎯 Next goal:",
-    "🎯 Task:",
-    "▶️",
-    "Eval:",
-    "Final Result:",
+    "📍",  # Step
+    "🧠",  # Memory
+    "🤖",  # AI Step
+    "🎯",  # Next goal / Task
+    "▶️",  # action
+    "Eval:",         # collides on ⚠️ → match text
+    "Final Result:",  # collides on 📄 → match text
 )
 
 
 def _is_reasoning_line(line: str) -> bool:
-    """True if the (ANSI-stripped) line is one of browser-use's agent-brain lines."""
-    stripped = line.lstrip()
-    return any(marker in stripped for marker in _REASONING_MARKERS)
+    """True if the (ANSI-stripped) line is one of browser-use's agent-brain lines.
+    (Substring match — no need to strip leading whitespace first.)"""
+    return any(marker in line for marker in _REASONING_MARKERS)
 
 
 _log_sinks: dict[int, Callable[[str], None]] = {}

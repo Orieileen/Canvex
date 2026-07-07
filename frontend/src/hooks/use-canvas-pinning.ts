@@ -1079,6 +1079,28 @@ export function useCanvasPinning(
     }
   }, [apiRef]);
 
+  /** Shallow-merge `patch` into one frame's customData (found by id). The single
+   *  write path shared by the browse-log / monitor persisters and the ensure*
+   *  reuse-branches. No-op if the API isn't mounted or the frame is gone. */
+  const patchFrameCustomData = useCallback(
+    (frameId: string, patch: Record<string, unknown>): void => {
+      const api = apiRef.current;
+      if (!api) return;
+      try {
+        const elements = api.getSceneElements();
+        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
+        if (!frame) return;
+        const next = newElementWith(frame, {
+          customData: { ...(frame.customData ?? {}), ...patch },
+        });
+        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
+      } catch (err) {
+        console.error("patchFrameCustomData failed", err);
+      }
+    },
+    [apiRef],
+  );
+
   /** Find-or-create the scene's SINGLE browse-log frame (like ensureChatFrame),
    *  reusing it across browse turns instead of stacking a new one each time. On
    *  reuse it retitles to this turn's message and clears the old transcript so the
@@ -1094,14 +1116,10 @@ export function useCanvasPinning(
         if (existing) {
           // Reuse the singleton: retitle + clear so the panel shows this browse
           // (live state fills it while streaming; persist overwrites at settle).
-          const next = newElementWith(existing, {
-            customData: {
-              ...(existing.customData ?? {}),
-              [BROWSE_LOG_TITLE_KEY]: title,
-              [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
-            },
+          patchFrameCustomData(existing.id, {
+            [BROWSE_LOG_TITLE_KEY]: title,
+            [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
           });
-          api.updateScene({ elements: elements.map((el) => (el.id === existing.id ? next : el)) });
           return existing.id;
         }
         // First time in this scene: place it below the chat frame, walking down
@@ -1131,26 +1149,14 @@ export function useCanvasPinning(
         return null;
       }
     },
-    [apiRef],
+    [apiRef, patchFrameCustomData],
   );
 
   const persistBrowseLogText = useCallback(
     (frameId: string, lines: string[]): void => {
-      const api = apiRef.current;
-      if (!api) return;
-      try {
-        const elements = api.getSceneElements();
-        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
-        if (!frame) return;
-        const next = newElementWith(frame, {
-          customData: { ...(frame.customData ?? {}), [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog(lines) },
-        });
-        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
-      } catch (err) {
-        console.error("persistBrowseLogText failed", err);
-      }
+      patchFrameCustomData(frameId, { [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog(lines) });
     },
-    [apiRef],
+    [patchFrameCustomData],
   );
 
   /** Find-or-create the scene's SINGLE live-browser monitor frame, reusing it
@@ -1167,10 +1173,7 @@ export function useCanvasPinning(
         if (existing) {
           // Reuse the singleton in place; clear the stale image (live state takes
           // over immediately, persist/finally overwrites for reload).
-          const next = newElementWith(existing, {
-            customData: { ...(existing.customData ?? {}), [BROWSE_MONITOR_IMAGE_KEY]: "" },
-          });
-          api.updateScene({ elements: elements.map((el) => (el.id === existing.id ? next : el)) });
+          patchFrameCustomData(existing.id, { [BROWSE_MONITOR_IMAGE_KEY]: "" });
           return existing.id;
         }
         const logFrame = logFrameId
@@ -1202,26 +1205,14 @@ export function useCanvasPinning(
         return null;
       }
     },
-    [apiRef],
+    [apiRef, patchFrameCustomData],
   );
 
   const persistBrowseMonitorImage = useCallback(
     (frameId: string, url: string): void => {
-      const api = apiRef.current;
-      if (!api) return;
-      try {
-        const elements = api.getSceneElements();
-        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
-        if (!frame) return;
-        const next = newElementWith(frame, {
-          customData: { ...(frame.customData ?? {}), [BROWSE_MONITOR_IMAGE_KEY]: url },
-        });
-        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
-      } catch (err) {
-        console.error("persistBrowseMonitorImage failed", err);
-      }
+      patchFrameCustomData(frameId, { [BROWSE_MONITOR_IMAGE_KEY]: url });
     },
-    [apiRef],
+    [patchFrameCustomData],
   );
 
   const commitImagePin = useCallback(

@@ -1,4 +1,4 @@
-import { type RefObject } from "react";
+import { useMemo, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -66,7 +66,9 @@ function BrowseMonitorPanel({
 }) {
   const { t } = useTranslation("canvasUi");
   // Live streamed frame wins (this session's turn); else the persisted final URL.
-  const image = live?.image || getBrowseMonitorImage(frame);
+  // Memoized so a 60fps pan (which re-renders the panel to re-project) doesn't
+  // re-read customData every tick — mirrors BrowseLogPanel.
+  const image = useMemo(() => live?.image || getBrowseMonitorImage(frame), [live, frame]);
   const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
     frame,
     excalidrawApiRef,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { AnimatePresence, motion } from "framer-motion";
@@ -165,6 +165,22 @@ function appendUniqueMessage(
   message: CanvasChatMessage,
 ): CanvasChatMessage[] {
   return prev.some((m) => m.id === message.id) ? prev : [...prev, message];
+}
+
+/** Immutably drop one key from a Record-state via its setter — used to evict a
+ *  browse turn's live entry (browseLogs / browseMonitors) once it's persisted to
+ *  the frame's customData, so the overlay renders identically from persisted data
+ *  and the state doesn't accumulate one entry per turn. */
+function dropLiveEntry<T>(
+  setter: Dispatch<SetStateAction<Record<string, T>>>,
+  key: string,
+): void {
+  setter((prev) => {
+    if (!(key in prev)) return prev;
+    const next = { ...prev };
+    delete next[key];
+    return next;
+  });
 }
 
 /**
@@ -1103,12 +1119,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
                 if (event.final) {
                   browseMonitor.finalized = true;
                   persistBrowseMonitorImage(mfid, event.image);
-                  setBrowseMonitors((prev) => {
-                    if (!(mfid in prev)) return prev;
-                    const next = { ...prev };
-                    delete next[mfid];
-                    return next;
-                  });
+                  dropLiveEntry(setBrowseMonitors, mfid);
                 } else {
                   const image = event.image;
                   browseMonitor.lastImage = image;
@@ -1174,12 +1185,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           // Drop the now-redundant live entry: BrowseLogOverlay renders identically
           // from the frame's persisted customData, so keeping the buffer in state
           // just leaks one array per browse turn for the scene's lifetime.
-          setBrowseLogs((prev) => {
-            if (!(fid in prev)) return prev;
-            const next = { ...prev };
-            delete next[fid];
-            return next;
-          });
+          dropLiveEntry(setBrowseLogs, fid);
         }
         // Monitor: if it was never finalized (no persisted final frame — the browse
         // timed out / errored / was Stopped, so the aborted-guard or the empty-
@@ -1189,12 +1195,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         if (browseMonitor.frameId && !browseMonitor.finalized) {
           const mfid = browseMonitor.frameId;
           if (browseMonitor.lastImage) persistBrowseMonitorImage(mfid, browseMonitor.lastImage);
-          setBrowseMonitors((prev) => {
-            if (!(mfid in prev)) return prev;
-            const next = { ...prev };
-            delete next[mfid];
-            return next;
-          });
+          dropLiveEntry(setBrowseMonitors, mfid);
         }
         // Only the CURRENT turn owns the shared streaming UI state. A turn that
         // was superseded by a fast re-submit (its `abort` !== the current ref)
