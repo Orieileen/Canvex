@@ -635,6 +635,11 @@ export interface UseCanvasPinning {
   /** Persist the final page-screenshot URL into a monitor frame's customData so a
    *  reload shows the end-state view. No-op if the frame is gone. */
   persistBrowseMonitorImage: (frameId: string, url: string) => void;
+  /** Clear the singleton monitor frame's persisted image (no-op if none); returns
+   *  its id so the caller can also evict a stale live-state entry. Call when a new
+   *  browse starts so the monitor doesn't keep a prior browse's screenshot on a
+   *  turn that logs but never screenshots. */
+  clearBrowseMonitorImage: () => string | null;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1215,6 +1220,21 @@ export function useCanvasPinning(
     [patchFrameCustomData],
   );
 
+  /** Clear the singleton monitor frame's persisted image (no-op if none exists),
+   *  and RETURN its id so the caller can also drop any stale live-state entry.
+   *  Called when a NEW browse starts so the monitor doesn't keep showing the
+   *  previous browse's screenshot on a turn that logs but never screenshots (the
+   *  log frame is retitled/cleared on its own first line; this keeps the two panels
+   *  in sync). A browse that does screenshot refills it from its first live frame. */
+  const clearBrowseMonitorImage = useCallback((): string | null => {
+    const api = apiRef.current;
+    if (!api) return null;
+    const existing = findBrowseMonitorFrame(api.getSceneElements());
+    if (!existing) return null;
+    patchFrameCustomData(existing.id, { [BROWSE_MONITOR_IMAGE_KEY]: "" });
+    return existing.id;
+  }, [apiRef, patchFrameCustomData]);
+
   const commitImagePin = useCallback(
     async ({ dataURL, mimeType, customData, startAt }: {
       dataURL: string;
@@ -1781,6 +1801,7 @@ export function useCanvasPinning(
     persistBrowseLogText,
     ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
+    clearBrowseMonitorImage,
     pinImage,
     pinVideo,
     pinMergedImage,

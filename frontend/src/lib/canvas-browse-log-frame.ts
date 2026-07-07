@@ -22,9 +22,10 @@ export const BROWSE_LOG_FRAME_MARKER = "browse-log-frame";
 export const BROWSE_LOG_TITLE_KEY = "browseTitle";
 export const BROWSE_LOG_TEXT_KEY = "browseLog";
 
-/** 与主聊天框同宽 —— createBrowseLogFrame 把日志框对齐到聊天框的 x 并摞在其下方,
- *  等宽才对齐;直接引用 CHAT_FRAME_WIDTH (而非再写一个 2048 字面量) 让这个不变量
- *  在聊天框改宽时自动跟随。高度矮一些:日志是流水,面板自己滚动。 */
+/** 与主聊天框同宽 —— ensureBrowseLogFrame 首次创建时把日志框对齐到聊天框的 x 放在
+ *  其下方 (之后按单例复用同一个框,不再每轮新开),等宽才对齐;直接引用 CHAT_FRAME_WIDTH
+ *  (而非再写一个 2048 字面量) 让这个不变量在聊天框改宽时自动跟随。高度矮一些:日志是
+ *  流水,面板自己滚动。 */
 export const BROWSE_LOG_FRAME_WIDTH = CHAT_FRAME_WIDTH;
 export const BROWSE_LOG_FRAME_HEIGHT = 1024;
 

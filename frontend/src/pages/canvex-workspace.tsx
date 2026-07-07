@@ -424,6 +424,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     persistBrowseLogText,
     ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
+    clearBrowseMonitorImage,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -1092,6 +1093,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               if (!browseLog.attempted) {
                 browseLog.attempted = true;
                 browseLog.frameId = ensureBrowseLogFrame(content);
+                // A new browse started — clear the singleton monitor's stale image
+                // (persisted + any lingering live entry) so a log-only browse doesn't
+                // leave the previous browse's page up beside this turn's fresh log.
+                // Screenshots, if any, refill it from the first browse_frame.
+                const staleMonitorId = clearBrowseMonitorImage();
+                if (staleMonitorId) dropLiveEntry(setBrowseMonitors, staleMonitorId);
               }
               const fid = browseLog.frameId;
               if (fid) {
@@ -1174,33 +1181,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for (const { placeholders } of pendingCalls.values()) {
           markPlaceholdersFailed(placeholders, t("workspace.tombstone.streamEnded"));
         }
-        // Persist THIS turn's browse log into its frame's customData so it
-        // survives a reload (live lines otherwise live only in React state).
-        // Stream-local — NOT inside the current-turn guard below — so a fast
-        // re-submit (which repoints streamAbortRef) can't skip persisting the
-        // superseded turn's transcript. Runs on abort/error too (partial log).
-        if (browseLog.frameId && browseLog.lines.length) {
-          const fid = browseLog.frameId;
-          persistBrowseLogText(fid, browseLog.lines);
-          // Drop the now-redundant live entry: BrowseLogOverlay renders identically
-          // from the frame's persisted customData, so keeping the buffer in state
-          // just leaks one array per browse turn for the scene's lifetime.
-          dropLiveEntry(setBrowseLogs, fid);
-        }
-        // Monitor: if it was never finalized (no persisted final frame — the browse
-        // timed out / errored / was Stopped, so the aborted-guard or the empty-
-        // screenshots gate suppressed the backend's final emit), freeze it on the
-        // last live frame (a data-URL) so reload shows the end state instead of a
-        // stuck "waiting" placeholder, and drop the redundant live state entry.
-        if (browseMonitor.frameId && !browseMonitor.finalized) {
-          const mfid = browseMonitor.frameId;
-          if (browseMonitor.lastImage) persistBrowseMonitorImage(mfid, browseMonitor.lastImage);
-          dropLiveEntry(setBrowseMonitors, mfid);
-        }
-        // Only the CURRENT turn owns the shared streaming UI state. A turn that
-        // was superseded by a fast re-submit (its `abort` !== the current ref)
-        // must NOT reset isStreaming / badges / the streaming buffer — that would
-        // clobber the new turn that just started.
+        // Only the CURRENT turn owns the shared streaming UI state AND the singleton
+        // browse-log / monitor frames. A turn superseded by a fast re-submit (its
+        // `abort` !== the current ref) must NOT touch them: the new turn already
+        // reuses the same singleton frames, so a superseded turn persisting its
+        // stale transcript / dropping the live entry would clobber the new turn's
+        // in-flight stream. Losing the superseded turn's content is correct here —
+        // the singleton frame shows only the latest browse, and the new turn
+        // persists its own at its settle.
         if (streamAbortRef.current === abort) {
           streamAbortRef.current = null;
           setIsStreaming(false);
@@ -1210,6 +1198,22 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           // settles via handleStreamSettled. Only drop the partial text when
           // there was no reply to finalize (error / abort / empty).
           if (!pendingAssistantRef.current) resetStream(false);
+          // Persist THIS turn's browse log to its frame's customData (survives
+          // reload; live lines otherwise live only in React state) + drop the
+          // now-redundant live entry. Runs on a normal end / user Stop / error too.
+          if (browseLog.frameId && browseLog.lines.length) {
+            const fid = browseLog.frameId;
+            persistBrowseLogText(fid, browseLog.lines);
+            dropLiveEntry(setBrowseLogs, fid);
+          }
+          // Monitor: if never finalized (timeout / error / Stop / no screenshot),
+          // freeze it on the last live frame so reload shows the end state instead
+          // of a stuck "waiting" placeholder, and drop the live entry.
+          if (browseMonitor.frameId && !browseMonitor.finalized) {
+            const mfid = browseMonitor.frameId;
+            if (browseMonitor.lastImage) persistBrowseMonitorImage(mfid, browseMonitor.lastImage);
+            dropLiveEntry(setBrowseMonitors, mfid);
+          }
         }
       }
     },
@@ -1223,6 +1227,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       persistBrowseLogText,
       ensureBrowseMonitorFrame,
       persistBrowseMonitorImage,
+      clearBrowseMonitorImage,
       pollAndPinJob,
       resetPackRow,
       resetStream,
