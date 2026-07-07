@@ -26,11 +26,20 @@ export function isBrowseMonitorFrame(el: ExcalidrawElement): boolean {
   );
 }
 
-/** 当前 scene 的所有浏览器画面框 (按场景顺序)。 */
+/** 当前 scene 的所有浏览器画面框 (按场景顺序)。BrowseMonitorOverlay 用它渲染
+ *  (单例模型下通常 0/1 个;老场景可能残留多个历史框)。 */
 export function findBrowseMonitorFrames(
   elements: readonly ExcalidrawElement[],
 ): ExcalidrawElement[] {
   return elements.filter(isBrowseMonitorFrame);
+}
+
+/** 单例:当前 scene 的浏览器画面框 (第一个),没有则 null。ensureBrowseMonitorFrame
+ *  用它复用同一个框,而不是每轮 browse 新开一个。 */
+export function findBrowseMonitorFrame(
+  elements: readonly ExcalidrawElement[],
+): ExcalidrawElement | null {
+  return elements.find(isBrowseMonitorFrame) ?? null;
 }
 
 /** 读出一个画面框已持久化的末态画面 URL (customData),没有则空串。 */

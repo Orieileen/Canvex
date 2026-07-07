@@ -40,11 +40,20 @@ export function serializeBrowseLog(lines: string[]): string {
   return JSON.stringify(lines);
 }
 
-/** 当前 scene 的所有浏览日志框 (按场景顺序)。 */
+/** 当前 scene 的所有浏览日志框 (按场景顺序)。BrowseLogOverlay 用它渲染
+ *  (单例模型下通常 0/1 个;老场景可能残留多个历史框,一并渲染其持久化内容)。 */
 export function findBrowseLogFrames(
   elements: readonly ExcalidrawElement[],
 ): ExcalidrawElement[] {
   return elements.filter(isBrowseLogFrame);
+}
+
+/** 单例:当前 scene 的浏览日志框 (第一个),没有则 null。ensureBrowseLogFrame
+ *  用它复用同一个框,而不是每轮 browse 新开一个 (跟 findChatFrame 一个路子)。 */
+export function findBrowseLogFrame(
+  elements: readonly ExcalidrawElement[],
+): ExcalidrawElement | null {
+  return elements.find(isBrowseLogFrame) ?? null;
 }
 
 /** 从一个浏览日志框读出标题 + 已持久化的日志行 (customData)。日志优先按 JSON

@@ -404,9 +404,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
     ensureChatFrame,
-    createBrowseLogFrame,
+    ensureBrowseLogFrame,
     persistBrowseLogText,
-    createBrowseMonitorFrame,
+    ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
     pinImage,
     pinVideo,
@@ -1075,7 +1075,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               // persistence).
               if (!browseLog.attempted) {
                 browseLog.attempted = true;
-                browseLog.frameId = createBrowseLogFrame(content);
+                browseLog.frameId = ensureBrowseLogFrame(content);
               }
               const fid = browseLog.frameId;
               if (fid) {
@@ -1096,7 +1096,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               // overlay renders identically from the persisted URL.
               if (!browseMonitor.attempted) {
                 browseMonitor.attempted = true;
-                browseMonitor.frameId = createBrowseMonitorFrame(browseLog.frameId);
+                browseMonitor.frameId = ensureBrowseMonitorFrame(browseLog.frameId);
               }
               const mfid = browseMonitor.frameId;
               if (mfid) {
@@ -1218,9 +1218,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
-      createBrowseLogFrame,
+      ensureBrowseLogFrame,
       persistBrowseLogText,
-      createBrowseMonitorFrame,
+      ensureBrowseMonitorFrame,
       persistBrowseMonitorImage,
       pollAndPinJob,
       resetPackRow,

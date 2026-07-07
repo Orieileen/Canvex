@@ -39,7 +39,7 @@ import {
   BROWSE_LOG_FRAME_WIDTH,
   BROWSE_LOG_TEXT_KEY,
   BROWSE_LOG_TITLE_KEY,
-  findBrowseLogFrames,
+  findBrowseLogFrame,
   serializeBrowseLog,
 } from "@/lib/canvas-browse-log-frame";
 import {
@@ -47,7 +47,7 @@ import {
   BROWSE_MONITOR_FRAME_MARKER,
   BROWSE_MONITOR_FRAME_WIDTH,
   BROWSE_MONITOR_IMAGE_KEY,
-  findBrowseMonitorFrames,
+  findBrowseMonitorFrame,
 } from "@/lib/canvas-browse-monitor-frame";
 
 /**
@@ -617,21 +617,21 @@ export interface UseCanvasPinning {
   /** Find or create the scene's chat frame (native Excalidraw frame the
    *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
   ensureChatFrame: () => string | null;
-  /** Create a fresh "browse log" frame stacked below the chat frame (and below
-   *  any existing browse-log frames), titled with the triggering user message.
-   *  BrowseLogOverlay anchors a scrollable log panel to it. Returns the new
-   *  frame id, or null if the API isn't mounted / creation failed. */
-  createBrowseLogFrame: (title: string) => string | null;
+  /** Find-or-create the scene's SINGLE "browse log" frame (like ensureChatFrame),
+   *  reused across browse turns: on reuse it retitles to the triggering message
+   *  and clears the old transcript; a fresh one is placed below the chat frame.
+   *  Returns its id, or null if the API isn't mounted / creation failed. */
+  ensureBrowseLogFrame: (title: string) => string | null;
   /** Persist the accumulated log lines into a browse-log frame's customData (as
    *  a JSON array — faithful per-line round-trip) so they survive a scene reload;
    *  the live transcript otherwise lives only in React state during the turn.
    *  No-op if the frame is gone. */
   persistBrowseLogText: (frameId: string, lines: string[]) => void;
-  /** Create a live browser-monitor frame to the RIGHT of the turn's browse-log
-   *  frame (falls back to the right of the chat frame when `logFrameId` is null /
-   *  gone). BrowseMonitorOverlay renders the streaming page screenshot in it.
-   *  Returns the new frame id, or null if the API isn't mounted / creation failed. */
-  createBrowseMonitorFrame: (logFrameId: string | null) => string | null;
+  /** Find-or-create the scene's SINGLE live-browser monitor frame, reused across
+   *  browse turns (clears the old image on reuse). A fresh one is placed to the
+   *  RIGHT of the log frame (or the chat frame when `logFrameId` is null / gone).
+   *  Returns its id, or null if the API isn't mounted / creation failed. */
+  ensureBrowseMonitorFrame: (logFrameId: string | null) => string | null;
   /** Persist the final page-screenshot URL into a monitor frame's customData so a
    *  reload shows the end-state view. No-op if the frame is gone. */
   persistBrowseMonitorImage: (frameId: string, url: string) => void;
@@ -1079,25 +1079,40 @@ export function useCanvasPinning(
     }
   }, [apiRef]);
 
-  /** Create a browse-log frame below the chat frame (and below any existing
-   *  browse-log frames), aligned to the chat frame's x. Falls back to the pin
-   *  origin when there's no chat frame yet. Wrapped in try — a placement failure
-   *  must never break the chat turn (caller is outside try). */
-  const createBrowseLogFrame = useCallback(
+  /** Find-or-create the scene's SINGLE browse-log frame (like ensureChatFrame),
+   *  reusing it across browse turns instead of stacking a new one each time. On
+   *  reuse it retitles to this turn's message and clears the old transcript so the
+   *  frame reflects the CURRENT browse; a fresh frame is placed below the chat
+   *  frame. Wrapped in try — a placement failure must never break the chat turn. */
+  const ensureBrowseLogFrame = useCallback(
     (title: string): string | null => {
       const api = apiRef.current;
       if (!api) return null;
       try {
         const elements = api.getSceneElements();
-        const chat = findChatFrame(elements);
-        // Stack below the lowest of {chat frame, existing browse-log frames} so
-        // repeat browses in one scene queue downward instead of overlapping.
-        let below = chat ? chat.y + chat.height : PIN_ORIGIN_Y;
-        for (const f of findBrowseLogFrames(elements)) {
-          below = Math.max(below, f.y + f.height);
+        const existing = findBrowseLogFrame(elements);
+        if (existing) {
+          // Reuse the singleton: retitle + clear so the panel shows this browse
+          // (live state fills it while streaming; persist overwrites at settle).
+          const next = newElementWith(existing, {
+            customData: {
+              ...(existing.customData ?? {}),
+              [BROWSE_LOG_TITLE_KEY]: title,
+              [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
+            },
+          });
+          api.updateScene({ elements: elements.map((el) => (el.id === existing.id ? next : el)) });
+          return existing.id;
         }
-        const x = chat ? chat.x : PIN_ORIGIN_X;
-        const y = below + PIN_GAP;
+        // First time in this scene: place it below the chat frame, walking down
+        // past any existing content in that band.
+        const chat = findChatFrame(elements);
+        const startX = chat ? chat.x : PIN_ORIGIN_X;
+        const startY = (chat ? chat.y + chat.height : PIN_ORIGIN_Y) + PIN_GAP;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          BROWSE_LOG_FRAME_WIDTH, BROWSE_LOG_FRAME_HEIGHT, PIN_GAP, "down",
+        );
         const frame = buildFrameElement({
           x, y, width: BROWSE_LOG_FRAME_WIDTH, height: BROWSE_LOG_FRAME_HEIGHT,
           name: "Browse log",
@@ -1112,7 +1127,7 @@ export function useCanvasPinning(
         api.scrollToContent([frame], { fitToViewport: false, animate: true });
         return frame.id;
       } catch (err) {
-        console.error("createBrowseLogFrame failed", err);
+        console.error("ensureBrowseLogFrame failed", err);
         return null;
       }
     },
@@ -1138,16 +1153,26 @@ export function useCanvasPinning(
     [apiRef],
   );
 
-  /** Create a live browser-monitor frame to the RIGHT of this turn's log frame
-   *  (or the chat frame if there's no log frame yet), walking down if that band is
-   *  occupied. On creation, frame BOTH panels into view so the user watches the
-   *  log (why) beside the browser (what) side by side. */
-  const createBrowseMonitorFrame = useCallback(
+  /** Find-or-create the scene's SINGLE live-browser monitor frame, reusing it
+   *  across browse turns. On reuse it clears the old image so the panel reflects
+   *  the CURRENT browse (live frames fill it immediately). A fresh frame is placed
+   *  to the RIGHT of the log frame and both panels are framed into view. */
+  const ensureBrowseMonitorFrame = useCallback(
     (logFrameId: string | null): string | null => {
       const api = apiRef.current;
       if (!api) return null;
       try {
         const elements = api.getSceneElements();
+        const existing = findBrowseMonitorFrame(elements);
+        if (existing) {
+          // Reuse the singleton in place; clear the stale image (live state takes
+          // over immediately, persist/finally overwrites for reload).
+          const next = newElementWith(existing, {
+            customData: { ...(existing.customData ?? {}), [BROWSE_MONITOR_IMAGE_KEY]: "" },
+          });
+          api.updateScene({ elements: elements.map((el) => (el.id === existing.id ? next : el)) });
+          return existing.id;
+        }
         const logFrame = logFrameId
           ? elements.find((el) => el.id === logFrameId && !el.isDeleted) ?? null
           : null;
@@ -1173,7 +1198,7 @@ export function useCanvasPinning(
         });
         return frame.id;
       } catch (err) {
-        console.error("createBrowseMonitorFrame failed", err);
+        console.error("ensureBrowseMonitorFrame failed", err);
         return null;
       }
     },
@@ -1761,9 +1786,9 @@ export function useCanvasPinning(
 
   return {
     ensureChatFrame,
-    createBrowseLogFrame,
+    ensureBrowseLogFrame,
     persistBrowseLogText,
-    createBrowseMonitorFrame,
+    ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
     pinImage,
     pinVideo,
