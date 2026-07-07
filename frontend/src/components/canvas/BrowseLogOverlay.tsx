@@ -1,14 +1,17 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useMemo, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 
-import { elementScreenRect } from "@/lib/excalidraw-bounds";
-import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
+import { useFrameAnchoredPanel } from "@/hooks/use-frame-anchored-panel";
 import {
   findBrowseLogFrames,
   getBrowseLogFrameData,
 } from "@/lib/canvas-browse-log-frame";
+
+/** Stable empty-lines reference so the memo below doesn't recompute when there's
+ *  no content (a fresh [] each render would be a new reference every tick). */
+const EMPTY_LINES: string[] = [];
 
 /** Live per-turn transcript for a browse-log frame, keyed by frame id. Present
  *  while (and after) the turn that created the frame runs in THIS session;
@@ -71,59 +74,35 @@ function BrowseLogPanel({
   live?: BrowseLogLive;
 }) {
   const { t } = useTranslation("canvasUi");
-  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const api = excalidrawApiRef.current;
-  const app = api?.getAppState();
-  const zoom = app?.zoom?.value ?? 1;
-  const rect =
-    app
-      ? elementScreenRect(frame, {
-          zoom,
-          scrollX: app.scrollX ?? 0,
-          scrollY: app.scrollY ?? 0,
-        })
-      : null;
+  // Live transcript wins (this session's turn); else parse the lines persisted in
+  // customData (survived a reload). Memoized so a 60fps pan — which re-renders the
+  // panel to re-project — doesn't re-parse the JSON or rebuild the line vdom every
+  // tick; both recompute only when `live` / the frame / the lines actually change.
+  const persisted = useMemo(
+    () => (live ? null : getBrowseLogFrameData(frame)),
+    [live, frame],
+  );
+  const title = live?.title || persisted?.title || "";
+  const lines = live?.lines ?? persisted?.lines ?? EMPTY_LINES;
 
-  // Live transcript wins (this session's turn); else fall back to the lines
-  // persisted in customData (survived a reload).
-  const persisted = getBrowseLogFrameData(frame);
-  const title = live?.title || persisted.title;
-  const lines = live?.lines ?? persisted.lines;
+  const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
+    frame,
+    excalidrawApiRef,
+    lines.length,
+  );
 
-  // Stick to the bottom as lines stream in.
-  const lineCount = lines.length;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lineCount]);
-
-  // Wheel routing gated on selection (mirrors ChatFrameOverlay):
-  //   frame SELECTED → wheel scrolls the log; NOT selected → forwarded to canvas
-  //   (pan); a zoom gesture (ctrl/⌘+wheel) always drives canvas zoom.
-  const frameId = frame.id;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      const isZoom = e.ctrlKey || e.metaKey;
-      const api = excalidrawApiRef.current;
-      const selected = !!api?.getAppState().selectedElementIds?.[frameId];
-      if (selected && !isZoom) {
-        e.stopPropagation();
-        return;
-      }
-      e.preventDefault();
-      e.stopPropagation();
-      forwardWheelToExcalidrawCanvas(e);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [frameId, excalidrawApiRef]);
+  const lineEls = useMemo(
+    () =>
+      lines.map((line, i) => (
+        <div key={i} className="whitespace-pre-wrap break-words">
+          {line}
+        </div>
+      )),
+    [lines],
+  );
 
   if (!rect) return null;
-  const width = frame.width;
-  const height = frame.height;
 
   return (
     <div
@@ -155,11 +134,7 @@ function BrowseLogPanel({
         {lines.length === 0 ? (
           <p className="text-white/40">{t("browseLog.waiting")}</p>
         ) : (
-          lines.map((line, i) => (
-            <div key={i} className="whitespace-pre-wrap break-words">
-              {line}
-            </div>
-          ))
+          lineEls
         )}
       </div>
     </div>

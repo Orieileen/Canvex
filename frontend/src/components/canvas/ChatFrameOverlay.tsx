@@ -3,9 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
-import { elementScreenRect } from "@/lib/excalidraw-bounds";
-import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
 import { findChatFrame } from "@/lib/canvas-chat-frame";
+import { useFrameAnchoredPanel } from "@/hooks/use-frame-anchored-panel";
 import { cn } from "@/lib/utils";
 import type { CanvasChatMessage } from "@/types/canvex";
 
@@ -47,66 +46,21 @@ export function ChatFrameOverlay({
 }: ChatFrameOverlayProps) {
   const { t } = useTranslation("canvasUi");
   void tick; // re-render trigger; live state read fresh below
-  const scrollRef = useRef<HTMLDivElement>(null);
-
   const api = excalidrawApiRef.current;
   const frame = api ? findChatFrame(api.getSceneElements()) : null;
-  const app = api?.getAppState();
-  const zoom = app?.zoom?.value ?? 1;
-  const rect =
-    frame && app
-      ? elementScreenRect(frame, {
-          zoom,
-          scrollX: app.scrollX ?? 0,
-          scrollY: app.scrollY ?? 0,
-        })
-      : null;
-  // 「像图片一样」: 内容按 frame 的世界宽高一次性渲染成固定像素 (text 也是固定 px,
-  // 不重排), 再整体 transform: scale(zoom) —— 文字和气泡随缩放等比放大/缩小, 跟
-  // 一张图被缩放完全一样, 永不 reflow。scale 以左上角为原点 + 定位在 frame 屏幕
-  // 左上角, 所以缩放后正好铺满 frame 屏幕框 (width*zoom × height*zoom)。
-  const width = frame?.width ?? 0;
-  const height = frame?.height ?? 0;
 
-  // Stick to the bottom as messages arrive / the panel resizes.
+  // Projection + wheel routing + stick-to-bottom live in the shared hook (see
+  // useFrameAnchoredPanel — same shell as BrowseLogOverlay). The panel renders
+  // content at the frame's world width/height then transform: scale(zoom), so
+  // text scales like an image instead of reflowing. Stick key: a new message id
+  // or a streaming-state flip (StreamingBubble pins itself while typing, so the
+  // live token text isn't part of the key).
   const lastId = messages.length ? messages[messages.length - 1].id : "";
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-    // StreamingBubble pins per-frame while typing, so streamingText isn't a dep here.
-  }, [lastId, streaming, height]);
-
-  // Wheel routing gated on selection:
-  //   - Chat frame SELECTED → plain wheel scrolls the chat content, canvas停住。
-  //   - NOT selected → wheel is forwarded to the Excalidraw canvas, so it pans
-  //     the whole canvas (上下滚动整个画布) even with the cursor over the panel.
-  //   - A zoom gesture (ctrl/⌘ + wheel) always drives the canvas zoom either way.
-  // Native listener (not React onWheel) because forwarding needs preventDefault,
-  // which a passive React handler can't do. Re-attached when the frame appears.
-  const frameId = frame?.id ?? null;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      const isZoom = e.ctrlKey || e.metaKey;
-      const api = excalidrawApiRef.current;
-      const selected =
-        !!frameId && !!api?.getAppState().selectedElementIds?.[frameId];
-      if (selected && !isZoom) {
-        // 选中时: 滚轮滚动聊天内容 (原生滚动), 不动画布。
-        e.stopPropagation();
-        return;
-      }
-      // 未选中 (或缩放手势) → 转发给画布, 平移/缩放整个画布。preventDefault 压住
-      // 面板自身的原生滚动, 避免画布动的同时聊天也跟着滚 (需非 passive 监听)。
-      e.preventDefault();
-      e.stopPropagation();
-      forwardWheelToExcalidrawCanvas(e);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [frameId, excalidrawApiRef]);
-
+  const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
+    frame,
+    excalidrawApiRef,
+    `${lastId}:${streaming ? 1 : 0}`,
+  );
   if (!rect) return null;
 
   return (

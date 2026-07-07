@@ -1,5 +1,6 @@
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 
+import { CHAT_FRAME_WIDTH } from "@/lib/canvas-chat-frame";
 import { getAiChatType } from "@/lib/excalidraw-custom-data";
 
 /**
@@ -21,8 +22,10 @@ export const BROWSE_LOG_FRAME_MARKER = "browse-log-frame";
 export const BROWSE_LOG_TITLE_KEY = "browseTitle";
 export const BROWSE_LOG_TEXT_KEY = "browseLog";
 
-/** 与主聊天框同宽 (对齐视觉)，但矮一些 —— 日志是流水，面板自己滚动。 */
-export const BROWSE_LOG_FRAME_WIDTH = 2048;
+/** 与主聊天框同宽 —— createBrowseLogFrame 把日志框对齐到聊天框的 x 并摞在其下方,
+ *  等宽才对齐;直接引用 CHAT_FRAME_WIDTH (而非再写一个 2048 字面量) 让这个不变量
+ *  在聊天框改宽时自动跟随。高度矮一些:日志是流水,面板自己滚动。 */
+export const BROWSE_LOG_FRAME_WIDTH = CHAT_FRAME_WIDTH;
 export const BROWSE_LOG_FRAME_HEIGHT = 1024;
 
 export function isBrowseLogFrame(el: ExcalidrawElement): boolean {
@@ -57,11 +60,10 @@ export function getBrowseLogFrameData(el: ExcalidrawElement): {
   if (typeof raw === "string" && raw) {
     try {
       const parsed = JSON.parse(raw);
-      lines = Array.isArray(parsed)
-        ? parsed.filter((x): x is string => typeof x === "string")
-        : raw.split("\n");
+      if (Array.isArray(parsed)) lines = parsed.filter((x): x is string => typeof x === "string");
     } catch {
-      lines = raw.split("\n"); // 旧的换行拼接值 / 非 JSON —— 尽量还原
+      // 极早期(JSON 化之前)写入的换行拼接值 —— 按 \n 尽量还原成行。
+      lines = raw.split("\n");
     }
   }
   return { title, lines };
