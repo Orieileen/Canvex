@@ -61,10 +61,11 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from .context import CanvasAgentContext
-from .playwright_session import VIEWPORT_HEIGHT, VIEWPORT_WIDTH, close_session
+from .playwright_session import close_session
 from .tools.browser import browse
 from .tools.browser_primitives import WEB_OPERATOR_TOOLS
 from .tools.image import generate_image
+from .tools.robot_authoring import author_robot
 from .tools.video import generate_video
 
 # All SKILL.md files live under this dir, one subdir per skill. Layout matches
@@ -208,6 +209,18 @@ specific flow, or reading one specific page — delegate to the `web_operator` \
 subagent via the task tool with one clear, self-contained instruction. Prefer the \
 `browse` tool for open-ended research (it returns a summary); use `web_operator` \
 when you need precise control over each click / field."""
+
+
+RPA_SYSTEM_PROMPT_SECTION = """
+
+## Browser automation authoring (影刀-style RPA)
+When the user wants to BUILD or RECORD a repeatable browser automation ("每天…", \
+"自动…", "做个机器人/脚本" that clicks or fills a site), call the `author_robot` tool \
+with their task and the site's start URL. It opens a browser ON THE CANVAS the user can \
+point at: they switch it to Pick mode and CLICK the target elements, which is far more \
+reliable than you guessing selectors. Ask for the start URL if they didn't give one; \
+never guess it. This is for building REUSABLE robots — for one-off research use \
+`browse`, for a single precise flow use `web_operator`."""
 
 
 # Module-level caches — populate on first call, never mutate after.
@@ -438,6 +451,10 @@ def build_canvas_agent():
                 "canvas agent: web_operator subagent enabled (model=%s)",
                 settings.CANVAS_BROWSER_MODEL,
             )
+        if settings.CANVAS_RPA_ENABLED:
+            tools.append(author_robot)
+            system_prompt += RPA_SYSTEM_PROMPT_SECTION
+            logger.info("canvas agent: RPA authoring (author_robot) enabled")
 
         _agent = create_deep_agent(
             model=model,
@@ -724,18 +741,19 @@ def stream_canvas_agent(
             frames.put({"event": StreamEvent.BROWSE_FRAME, "image": image, "final": final})
     ctx.emit_browse_frame = _emit_browse_frame
 
+    def _emit_flow_session(token: str, viewport: dict) -> None:
+        # RPA authoring: author_robot calls this AFTER it opens a live browser session,
+        # so the token the client picks with always backs a live session. (Emitting at
+        # pump start handed out a token on EVERY rpa-enabled turn — including ones where
+        # the agent opened no browser — so picks 409'd against a session-less token.)
+        if not aborted.is_set():
+            frames.put({"event": StreamEvent.FLOW_SESSION, "token": token, "viewport": viewport})
+    ctx.emit_flow_session = _emit_flow_session
+
     def _pump():
         emitted_tool_ids: set[str] = set()
         emitted_assets = 0
         last_ai_text = ""
-        # RPA authoring: hand the client this turn's browser-session token + viewport up
-        # front so a separate element-pick request can reach THIS turn's live page.
-        if settings.CANVAS_RPA_ENABLED:
-            frames.put({
-                "event": StreamEvent.FLOW_SESSION,
-                "token": ctx.session_token,
-                "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-            })
 
         def drain_new_canvas_assets():
             # Canvas assets tools produce mid-turn (browse screenshots) are drained

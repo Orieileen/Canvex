@@ -16,6 +16,7 @@ import type {
   CanvasSkill,
   CanvasVideoJob,
   ChatAttachment,
+  FlowPickResult,
 } from "@/types/canvex";
 
 // NDJSON 流式 (fetch) 的 base —— 复用 canvas-media-url 的同一 api base
@@ -278,6 +279,34 @@ export interface AngleCreatePayload {
   zoom: number;
 }
 
+/** RPA element pick: POST a page-viewport coordinate to the live authoring browser and
+ *  get back the resolved rich locator + a fresh screenshot. Throws Error with
+ *  `code: "session_gone"` on 409 (the authoring browser is gone → the caller re-arms). */
+export async function postFlowPick(
+  sceneId: string,
+  body: { token: string; x: number; y: number },
+): Promise<FlowPickResult> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/pick/`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (resp.status === 409) {
+    const err = new Error("authoring browser session gone") as Error & { code?: string };
+    err.code = "session_gone";
+    throw err;
+  }
+  if (!resp.ok) throw new Error(`flow pick failed: HTTP ${resp.status}`);
+  return (await resp.json()) as FlowPickResult;
+}
+
+
 export const canvasService = {
   // ── Scene CRUD ────────────────────────────────────────────────────────────
   listScenes: () => request.get<CanvasSceneListItem[]>(SCENES),
@@ -293,6 +322,8 @@ export const canvasService = {
     }),
   // POST 返 SSE 流 —— 见顶部 postChatStream 函数 (async generator)
   postChatStream,
+  // RPA 元素拾取: POST 坐标 → 富定位 + 新截图 (见顶部 postFlowPick)
+  postFlowPick,
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜

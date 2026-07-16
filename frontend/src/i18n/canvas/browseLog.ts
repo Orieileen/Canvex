@@ -4,6 +4,11 @@ export const browseLog = {
     waiting: "Starting browser…",
     monitorHeader: "Live browser",
     monitorWaiting: "Waiting for the browser…",
+    modeWatch: "Watch",
+    modePick: "Pick",
+    pickHint: "Click an element to target it",
+    pickRearm: "Browser session ended — start authoring again",
+    pickNothing: "Nothing selectable there — try again",
   },
   zh: {
     header: "浏览日志",

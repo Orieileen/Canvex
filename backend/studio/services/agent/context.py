@@ -64,3 +64,8 @@ class CanvasAgentContext:
     # reload). None on the non-streaming path. Thread-safe (called from the browse
     # worker thread); the installed callback just does a queue put.
     emit_browse_frame: Callable[[str, bool], None] | None = None
+    # RPA authoring: set by stream_canvas_agent; author_robot calls it AFTER opening a
+    # live browser session to hand the client this turn's session_token + page viewport
+    # for element picking. Emitting only on a real open keeps the token backed by a live
+    # session (emitting every turn would 409 picks on turns that opened no browser).
+    emit_flow_session: Callable[[str, dict], None] | None = None

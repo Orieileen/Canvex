@@ -189,5 +189,30 @@ export type CanvasChatStreamEvent =
   // tool runs — `image` is a JPEG data-URL (live) or a media URL (final=true,
   // which the client persists to the monitor frame's customData for reload).
   | { event: "browse_frame"; image: string; final: boolean }
+  // RPA authoring: this turn's browser-session token + page viewport, emitted once at
+  // turn start (when CANVAS_RPA_ENABLED). The client echoes the token in a separate
+  // element-pick POST (/flow/pick/) so the pick reaches this turn's live page.
+  | { event: "flow_session"; token: string; viewport: { width: number; height: number } }
   | { event: "error"; detail: string }
   | { event: "done" };
+
+/** A rich element locator resolved by an RPA element pick (FlowPickView). Sourced by a
+ *  user click on the live DOM; the same shape drives run-time resolution + self-heal. */
+export interface FlowLocator {
+  tag: string;
+  role: string;
+  name: string;
+  text: string;
+  css: string;
+  nth: number;
+  /** [x, y, width, height] in page CSS-viewport pixels. */
+  bbox: [number, number, number, number];
+  isPassword: boolean;
+}
+
+/** POST /flow/pick/ response. `locator` is null if nothing actionable was at the point;
+ *  `image` is a fresh JPEG data-URL of the page (confirm against ground truth). */
+export interface FlowPickResult {
+  locator: FlowLocator | null;
+  image: string;
+}

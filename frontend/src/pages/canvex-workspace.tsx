@@ -14,7 +14,7 @@ import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
-import { BrowseMonitorOverlay, type BrowseMonitorLive } from "@/components/canvas/BrowseMonitorOverlay";
+import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode } from "@/components/canvas/BrowseMonitorOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,7 @@ import type {
   CanvasSceneData,
   CanvasSkill,
   ChatAttachment,
+  FlowLocator,
 } from "@/types/canvex";
 
 import "@excalidraw/excalidraw/index.css";
@@ -366,6 +367,45 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the visual sibling of browseLogs. BrowseMonitorOverlay renders these; frames
   // absent here fall back to their persisted final-frame URL (reload).
   const [browseMonitors, setBrowseMonitors] = useState<Record<string, BrowseMonitorLive>>({});
+  // RPA authoring: this turn's live browser-session token + page viewport (from the
+  // flow_session SSE frame). Present => an authoring browser is live and the monitor
+  // frame can be switched to Pick mode. Survives past the streaming turn (the backend
+  // keeps the session alive) until a pick 409s or a new session arrives.
+  const [flowSession, setFlowSession] = useState<{
+    token: string;
+    viewport: { width: number; height: number };
+  } | null>(null);
+  const [browserMode, setBrowserMode] = useState<BrowserMode>("watch");
+  // The last element resolved by a pick — drives the highlight + label on the monitor.
+  const [pickedLocator, setPickedLocator] = useState<FlowLocator | null>(null);
+
+  // Element pick: POST the clicked page-viewport coord to the live authoring browser,
+  // then show the fresh screenshot + highlight the resolved element. On 409 the session
+  // is gone (turn ended / reaped) — drop it so the UI stops offering Pick.
+  const handlePick = useCallback(
+    async (frameId: string, vx: number, vy: number) => {
+      if (!flowSession) return;
+      try {
+        const res = await canvasService.postFlowPick(activeSceneId, {
+          token: flowSession.token,
+          x: vx,
+          y: vy,
+        });
+        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
+        if (res.locator) setPickedLocator(res.locator);
+        else toast.info(t("browseLog.pickNothing"));
+      } catch (err) {
+        if ((err as { code?: string }).code === "session_gone") {
+          setFlowSession(null);
+          setBrowserMode("watch");
+          toast.error(t("browseLog.pickRearm"));
+        } else {
+          toast.error(extractApiError(err, "pick failed"));
+        }
+      }
+    },
+    [flowSession, activeSceneId, t],
+  );
 
   const latestDataRef = useRef<CanvasSceneData>({});
   // Content hash `length:versionSum:fileCount` —— element.version 只在真实改动
@@ -1135,6 +1175,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               }
               break;
             }
+            case "flow_session":
+              // A live authoring browser opened this turn — remember its token +
+              // viewport so the monitor frame can be switched to Pick mode. (Emitted
+              // only when CANVAS_RPA_ENABLED.)
+              setFlowSession({ token: event.token, viewport: event.viewport });
+              break;
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);
@@ -1378,6 +1424,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         excalidrawApiRef={excalidrawApiRef}
         tick={excalidrawTick}
         liveFrames={browseMonitors}
+        mode={browserMode}
+        onModeChange={setBrowserMode}
+        onPick={handlePick}
+        viewport={flowSession?.viewport ?? null}
+        picked={pickedLocator}
+        pickable={!!flowSession}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
