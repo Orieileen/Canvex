@@ -1143,6 +1143,10 @@ export function useCanvasPinning(
             [BROWSE_LOG_TITLE_KEY]: title,
             [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
           });
+          // Scroll to it like a fresh one — the singleton may be off-screen if the
+          // user panned away since the last browse, and a silent off-screen update
+          // reads as "nothing happened".
+          api.scrollToContent([existing], { fitToViewport: false, animate: true });
           return existing.id;
         }
         // First time in this scene: place it below the chat frame, walking down
@@ -1192,16 +1196,26 @@ export function useCanvasPinning(
       if (!api) return null;
       try {
         const elements = api.getSceneElements();
+        const logFrame = logFrameId
+          ? elements.find((el) => el.id === logFrameId && !el.isDeleted) ?? null
+          : null;
+        // Frame the pair (log + monitor) so both are visible — used by BOTH the
+        // create and reuse paths so a reused, panned-away monitor is brought back
+        // into view exactly like a fresh one.
+        const frameIntoView = (monitor: ExcalidrawElement) =>
+          api.scrollToContent(logFrame ? [logFrame, monitor] : [monitor], {
+            fitToViewport: true,
+            viewportZoomFactor: 0.9,
+            animate: true,
+          });
         const existing = findBrowseMonitorFrame(elements);
         if (existing) {
           // Reuse the singleton in place; clear the stale image (live state takes
           // over immediately, persist/finally overwrites for reload).
           patchFrameCustomData(existing.id, { [BROWSE_MONITOR_IMAGE_KEY]: "" });
+          frameIntoView(existing);
           return existing.id;
         }
-        const logFrame = logFrameId
-          ? elements.find((el) => el.id === logFrameId && !el.isDeleted) ?? null
-          : null;
         const anchor = logFrame ?? findChatFrame(elements);
         const startX = anchor ? anchor.x + anchor.width + PIN_GAP : PIN_ORIGIN_X;
         const startY = anchor ? anchor.y : PIN_ORIGIN_Y;
@@ -1216,12 +1230,7 @@ export function useCanvasPinning(
         });
         if (!frame) return null;
         api.updateScene({ elements: [...elements, frame] });
-        // Frame the pair (log + monitor) so both are visible while it streams.
-        api.scrollToContent(logFrame ? [logFrame, frame] : [frame], {
-          fitToViewport: true,
-          viewportZoomFactor: 0.9,
-          animate: true,
-        });
+        frameIntoView(frame);
         return frame.id;
       } catch (err) {
         console.error("ensureBrowseMonitorFrame failed", err);
@@ -1249,6 +1258,10 @@ export function useCanvasPinning(
         const elements = api.getSceneElements();
         const existing = findRobotStepsFrame(elements);
         if (existing) {
+          // Deliberately NO scroll-into-view here (unlike the log / monitor frames):
+          // this reuse path runs on EVERY pick, and the user is clicking on the
+          // monitor frame — scrolling to the steps frame would yank them away from the
+          // element they're picking. The steps frame is framed once, on create.
           if (title) patchFrameCustomData(existing.id, { [ROBOT_STEPS_TITLE_KEY]: title });
           return existing.id;
         }
