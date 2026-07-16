@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 from itertools import chain
@@ -48,6 +49,8 @@ from .services.agent.builder import (
     StreamEvent,
     stream_canvas_agent,
 )
+from .services.agent.playwright_session import PlaywrightSessionClosed, get_session
+from .services.agent.tools.browser_primitives import pick_on_session
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
@@ -317,6 +320,64 @@ class SceneChatView(APIView):
         response["X-Accel-Buffering"] = "no"
         response["Cache-Control"] = "no-cache"
         return response
+
+
+def _jpeg_data_url(raw: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+
+
+class FlowPickView(APIView):
+    """RPA element pick — resolve the actionable element at a page coordinate on the
+    LIVE authoring browser and return a rich locator + a FRESH screenshot.
+
+    A SEPARATE request from the chat SSE turn that opened the browser, so it finds the
+    session by the session_token the stream emitted (flow_session event). That token is
+    an unguessable per-turn value — the auth boundary for v1 (this app is single-
+    workspace / AllowAny like every other view). Pick is RESOLVE-ONLY: it never
+    dispatches input and never CREATES a browser — get_session returns None if the
+    authoring session is gone, and the client re-arms. (Input dispatch for login is a
+    separate /flow/drive endpoint, added with the frontend.)"""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scene_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        token = (request.data.get("token") or "").strip()
+        if not token:
+            raise ValidationError("token is required")
+        try:
+            x = float(request.data["x"])
+            y = float(request.data["y"])
+        except (KeyError, TypeError, ValueError):
+            raise ValidationError("x and y (page viewport px) are required numbers")
+
+        session = get_session(token)
+        if session is None:
+            # Authoring browser gone (turn ended w/o keep-alive, idle-reaped, or a
+            # different worker). Tell the client to re-arm, never a silent no-op.
+            return Response(
+                {"detail": "authoring browser session unavailable — re-arm the pick",
+                 "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            result = pick_on_session(session, x, y)
+        except PlaywrightSessionClosed:
+            return Response(
+                {"detail": "authoring browser session expired — re-arm the pick",
+                 "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except Exception as exc:  # noqa: BLE001 — Playwright/eval error → 502, not 500
+            logger.exception("flow pick failed: scene=%s", scene_id)
+            return Response(
+                {"detail": f"pick failed: {type(exc).__name__}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({
+            "locator": result["locator"],           # None if nothing actionable there
+            "image": _jpeg_data_url(result["image"]),
+        })
 
 
 def _build_history_payload(scene) -> list[dict]:

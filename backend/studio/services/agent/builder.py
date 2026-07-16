@@ -61,7 +61,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from .context import CanvasAgentContext
-from .playwright_session import close_session
+from .playwright_session import VIEWPORT_HEIGHT, VIEWPORT_WIDTH, close_session
 from .tools.browser import browse
 from .tools.browser_primitives import WEB_OPERATOR_TOOLS
 from .tools.image import generate_image
@@ -247,6 +247,10 @@ class StreamEvent:
     # data-URL (live) or a persisted media URL (the final freeze frame, final=True,
     # which the frontend saves to the monitor frame's customData for reload).
     BROWSE_FRAME = "browse_frame"
+    # RPA authoring: emitted once at turn start (when CANVAS_RPA_ENABLED) with this
+    # turn's browser-session {token, viewport}. The client echoes the token in a
+    # separate element-pick POST so the pick reaches THIS turn's live page.
+    FLOW_SESSION = "flow_session"
     ERROR = "error"
     DONE = "done"
 
@@ -724,6 +728,14 @@ def stream_canvas_agent(
         emitted_tool_ids: set[str] = set()
         emitted_assets = 0
         last_ai_text = ""
+        # RPA authoring: hand the client this turn's browser-session token + viewport up
+        # front so a separate element-pick request can reach THIS turn's live page.
+        if settings.CANVAS_RPA_ENABLED:
+            frames.put({
+                "event": StreamEvent.FLOW_SESSION,
+                "token": ctx.session_token,
+                "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+            })
 
         def drain_new_canvas_assets():
             # Canvas assets tools produce mid-turn (browse screenshots) are drained
@@ -830,7 +842,10 @@ def stream_canvas_agent(
             # thread could. Guarded so a teardown error can't strand the consumer
             # on frames.get(); the sentinel is ALWAYS posted last.
             try:
-                close_session(ctx.session_token)
+                # RPA authoring keeps its session alive past the turn (picks are
+                # separate requests) — the idle self-reap + explicit close bound it.
+                if not ctx.keep_browser_session:
+                    close_session(ctx.session_token)
             except Exception:  # noqa: BLE001
                 logger.exception("stream_canvas_agent: close_session failed")
             # The graph ran on THIS thread, so any ORM work its tools did (e.g.

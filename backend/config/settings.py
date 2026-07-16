@@ -244,6 +244,11 @@ CANVAS_BROWSER_CHROMIUM_ARGS = [
 # an interrupt→resume request boundary.)
 CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT = _as_bool(os.getenv("CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT"), False)
 
+# AI-RPA (影刀式) authoring feature: natural language → deterministic step-DSL, live-DOM
+# element pick, reusable "robots". OFF by default; builds on the CANVAS_BROWSER_*
+# operator deps. Gates the author_robot tool + the flow_session/pick channel.
+CANVAS_RPA_ENABLED = _as_bool(os.getenv("CANVAS_RPA_ENABLED"), False)
+
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。
 CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")

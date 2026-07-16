@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AngleJobRetrieveView,
+    FlowPickView,
     ImageEditJobRetrieveView,
     MediaLibraryFolderItemsView,
     MediaLibraryFoldersView,
@@ -44,6 +45,11 @@ urlpatterns = router.urls + [
         "scenes/<uuid:scene_id>/chat/",
         SceneChatView.as_view(),
         name="canvas-scene-chat",
+    ),
+    path(
+        "scenes/<uuid:scene_id>/flow/pick/",
+        FlowPickView.as_view(),
+        name="canvas-scene-flow-pick",
     ),
     path(
         "scenes/<uuid:scene_id>/image-edit/",

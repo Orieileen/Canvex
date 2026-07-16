@@ -55,6 +55,12 @@ _SHUTDOWN = object()
 # a second or two.
 _LAUNCH_TIMEOUT = 60
 
+# Fixed viewport so the frontend's frame-pixel → page-coordinate inverse projection is
+# stable and DPR-independent (device_scale_factor=1). Emitted to the client in the
+# flow_session event; the RPA pick sends coordinates in this CSS-viewport space.
+VIEWPORT_WIDTH = 1280
+VIEWPORT_HEIGHT = 720
+
 
 class PlaywrightSession:
     """Owns a headless Chromium page in a dedicated daemon thread. Submit ops with
@@ -99,7 +105,10 @@ class PlaywrightSession:
                 headless=settings.CANVAS_BROWSER_HEADLESS,
                 args=list(settings.CANVAS_BROWSER_CHROMIUM_ARGS),
             )
-            page = browser.new_page()
+            page = browser.new_page(
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                device_scale_factor=1,
+            )
             # Network-layer SSRF + allowlist guard: aborts requests to blocked hosts
             # so click-through redirects and subresources are covered, not just the
             # explicit browser_navigate URL (see _host_blocked).

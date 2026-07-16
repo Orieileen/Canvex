@@ -27,6 +27,13 @@ class CanvasAgentContext:
     # correlate a pick to this turn's browser. Identity-equal to id(context) today
     # (runtime.context IS this object) so the switch is behavior-preserving.
     session_token: str = field(default_factory=lambda: uuid4().hex)
+    # RPA authoring keeps the browser session alive ACROSS the streaming turn so the
+    # user can pick elements after the SSE stream closes (a pick is a separate HTTP
+    # request). When True, stream_canvas_agent SKIPS the turn-end close_session — the
+    # idle self-reap (CANVAS_BROWSER_SESSION_IDLE_TIMEOUT) + an explicit close endpoint
+    # bound the session instead. Default False = the normal per-turn web_operator
+    # lifecycle (session closed at turn end, no Chromium lingering).
+    keep_browser_session: bool = False
     # Image URLs attached to this turn via "Send to chat" on ImageEditBar.
     # generate_image / generate_video tools fall back to these when the
     # agent neglects to thread image_urls through itself — gpt-4o-mini

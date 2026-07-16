@@ -208,17 +208,24 @@ def _op_resolve_point(page, x: float, y: float):
 
 
 def _op_screenshot(page) -> bytes:
-    """PNG bytes of the current viewport — for the run-mode monitor frame."""
-    return page.screenshot()
+    """JPEG bytes of the current viewport — for the run-mode monitor frame."""
+    return page.screenshot(type="jpeg", quality=72)
 
 
 def _op_pick(page, x: float, y: float) -> dict:
     """Atomic pick: resolve the element at (x,y) AND capture a FRESH screenshot in the
     SAME owner-thread op, so the picture the user confirms against matches the DOM the
     locator was resolved on (closes the stale-frame TOCTOU — design §2.3). Returns
-    {"locator": <rich locator|None>, "png": <bytes>}; the view encodes/highlights."""
+    {"locator": <rich locator|None>, "image": <JPEG bytes>}; the view base64-encodes."""
     locator = page.evaluate(_ELEMENT_FROM_POINT_JS, {"x": x, "y": y})
-    return {"locator": locator, "png": page.screenshot()}
+    return {"locator": locator, "image": page.screenshot(type="jpeg", quality=72)}
+
+
+def pick_on_session(session, x: float, y: float) -> dict:
+    """Public wrapper for FlowPickView: run the atomic pick op on a live
+    PlaywrightSession. Returns {"locator": <rich locator|None>, "image": <JPEG bytes>}.
+    Raises PlaywrightSessionClosed / TimeoutError like any session.call."""
+    return session.call(_op_pick, x, y)
 
 
 # --- shared tool plumbing ---------------------------------------------------
