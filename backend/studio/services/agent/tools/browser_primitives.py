@@ -126,6 +126,80 @@ def _op_read_text(page):
     return page.inner_text("body", timeout=_timeout_ms())
 
 
+# --- rich-locator resolver (RPA run-mode) -----------------------------------
+# Resolves a DSL step's rich locator {css, role, name, text, fallbacks[], nth} to a
+# UNIQUE Playwright Locator, most-specific strategy first. NEVER silently takes .first:
+# on >1 matches it uses the authored nth or raises LocatorAmbiguous; on 0 across every
+# strategy it raises LocatorMiss. The TYPED exceptions let the run interpreter (step 9)
+# branch — self-heal a genuine miss vs wait/retry a not-yet-present element — which the
+# string-flattening _run_op path cannot express.
+
+class LocatorMiss(RuntimeError):
+    """A rich locator matched nothing on the page (drift, or element not present yet)."""
+
+
+class LocatorAmbiguous(RuntimeError):
+    """A rich locator matched >1 element with no disambiguating nth — refuse to guess."""
+
+
+def _resolve_target(page, target: dict):
+    """Return a UNIQUE Locator for a rich-locator dict; raise LocatorMiss/LocatorAmbiguous."""
+    strategies: list[tuple[str, object]] = []
+    css = target.get("css")
+    if css:
+        strategies.append(("css", lambda: page.locator(css)))
+    role, name = target.get("role"), target.get("name")
+    if role:
+        strategies.append(
+            ("role", lambda: page.get_by_role(role, name=name) if name else page.get_by_role(role))
+        )
+    text = target.get("text")
+    if text:
+        strategies.append(("text", lambda: page.get_by_text(text, exact=True)))
+    for fb in target.get("fallbacks") or []:
+        strategies.append(("fallback", lambda fb=fb: page.locator(fb)))
+
+    nth = target.get("nth")
+    ambiguous = None
+    for kind, make in strategies:
+        try:
+            loc = make()
+            count = loc.count()
+        except Exception:  # noqa: BLE001 — malformed selector/role; try the next strategy
+            continue
+        if count == 1:
+            return loc.first
+        if count > 1:
+            if isinstance(nth, int) and 0 <= nth < count:
+                return loc.nth(nth)
+            # remember it, but keep trying — a more specific strategy may be unique
+            ambiguous = LocatorAmbiguous(
+                f"{kind} matched {count} elements for {target.get('description') or css or role}"
+            )
+    if ambiguous is not None:
+        raise ambiguous
+    raise LocatorMiss(
+        f"no strategy resolved target: {target.get('description') or css or role or text!r}"
+    )
+
+
+def _op_click_target(page, target: dict):
+    """Run-mode click: resolve the rich locator uniquely, click, wait for navigation."""
+    _resolve_target(page, target).click(timeout=_timeout_ms())
+    page.wait_for_load_state("domcontentloaded", timeout=_timeout_ms())
+    return page.url
+
+
+def _op_type_target(page, target: dict, text: str, submit: bool = False):
+    """Run-mode type: resolve uniquely, fill, optionally submit (Enter)."""
+    loc = _resolve_target(page, target)
+    loc.fill(text, timeout=_timeout_ms())
+    if submit:
+        loc.press("Enter")
+        page.wait_for_load_state("domcontentloaded", timeout=_timeout_ms())
+    return page.url
+
+
 # --- element pick (RPA authoring) -------------------------------------------
 # Runs on the LIVE DOM in the owner thread: resolve the actionable element at a
 # CSS-viewport coordinate and return a rich locator (role/name/text/css/nth/bbox).

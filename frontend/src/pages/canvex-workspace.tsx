@@ -15,6 +15,7 @@ import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
 import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode } from "@/components/canvas/BrowseMonitorOverlay";
+import { RobotStepsOverlay, type RobotStepsLive } from "@/components/canvas/RobotStepsOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,7 @@ import type {
   CanvasSkill,
   ChatAttachment,
   FlowLocator,
+  RobotStep,
 } from "@/types/canvex";
 
 import "@excalidraw/excalidraw/index.css";
@@ -378,34 +380,18 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const [browserMode, setBrowserMode] = useState<BrowserMode>("watch");
   // The last element resolved by a pick — drives the highlight + label on the monitor.
   const [pickedLocator, setPickedLocator] = useState<FlowLocator | null>(null);
+  // The robot being authored: DSL steps keyed by robot-steps frame id (each pick
+  // appends a `click` step). Live in React state; persisted to the frame's customData.
+  const [robotSteps, setRobotSteps] = useState<Record<string, RobotStepsLive>>({});
+  // Mirror for synchronous reads in handlePick — avoids a stale closure when several
+  // picks land before a re-render.
+  const robotStepsRef = useRef(robotSteps);
+  useEffect(() => {
+    robotStepsRef.current = robotSteps;
+  }, [robotSteps]);
 
-  // Element pick: POST the clicked page-viewport coord to the live authoring browser,
-  // then show the fresh screenshot + highlight the resolved element. On 409 the session
-  // is gone (turn ended / reaped) — drop it so the UI stops offering Pick.
-  const handlePick = useCallback(
-    async (frameId: string, vx: number, vy: number) => {
-      if (!flowSession) return;
-      try {
-        const res = await canvasService.postFlowPick(activeSceneId, {
-          token: flowSession.token,
-          x: vx,
-          y: vy,
-        });
-        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
-        if (res.locator) setPickedLocator(res.locator);
-        else toast.info(t("browseLog.pickNothing"));
-      } catch (err) {
-        if ((err as { code?: string }).code === "session_gone") {
-          setFlowSession(null);
-          setBrowserMode("watch");
-          toast.error(t("browseLog.pickRearm"));
-        } else {
-          toast.error(extractApiError(err, "pick failed"));
-        }
-      }
-    },
-    [flowSession, activeSceneId, t],
-  );
+  // handlePick + handleEditSteps are defined AFTER the pinning destructure below —
+  // they depend on ensureRobotStepsFrame / persistRobotSteps (declared there).
 
   const latestDataRef = useRef<CanvasSceneData>({});
   // Content hash `length:versionSum:fileCount` —— element.version 只在真实改动
@@ -465,6 +451,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
     clearBrowseMonitorImage,
+    ensureRobotStepsFrame,
+    persistRobotSteps,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -475,6 +463,62 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     reset: resetPinning,
     resetPackRow,
   } = pinning;
+
+  // Edit a robot's steps (change action / type-text / delete) from the step cards.
+  const handleEditSteps = useCallback(
+    (frameId: string, steps: RobotStep[]) => {
+      setRobotSteps((prev) => ({
+        ...prev,
+        [frameId]: { title: prev[frameId]?.title ?? "", steps },
+      }));
+      persistRobotSteps(frameId, steps);
+    },
+    [persistRobotSteps],
+  );
+
+  // Element pick: POST the clicked page-viewport coord to the live authoring browser,
+  // show the fresh screenshot + highlight the resolved element, AND append it as a
+  // `click` step to the robot's step list. On 409 the session is gone — drop it.
+  const handlePick = useCallback(
+    async (frameId: string, vx: number, vy: number) => {
+      if (!flowSession) return;
+      try {
+        const res = await canvasService.postFlowPick(activeSceneId, {
+          token: flowSession.token,
+          x: vx,
+          y: vy,
+        });
+        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
+        if (!res.locator) {
+          toast.info(t("browseLog.pickNothing"));
+          return;
+        }
+        setPickedLocator(res.locator);
+        const stepsFrameId = ensureRobotStepsFrame("");
+        if (stepsFrameId) {
+          const cur = robotStepsRef.current[stepsFrameId]?.steps ?? [];
+          const next: RobotStep[] = [
+            ...cur,
+            { action: "click", target: res.locator, provenance: "picked" },
+          ];
+          setRobotSteps((prev) => ({
+            ...prev,
+            [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps: next },
+          }));
+          persistRobotSteps(stepsFrameId, next);
+        }
+      } catch (err) {
+        if ((err as { code?: string }).code === "session_gone") {
+          setFlowSession(null);
+          setBrowserMode("watch");
+          toast.error(t("browseLog.pickRearm"));
+        } else {
+          toast.error(extractApiError(err, "pick failed"));
+        }
+      }
+    },
+    [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps],
+  );
 
   // 素材库面板挂在这里 (而非外层 CanvasSidebar 所在组件) —— 插入要用本组件的
   // pinImage/pinVideo + 当前 sceneId。侧栏按钮发 window 事件, 这里接住打开。
@@ -1430,6 +1474,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         viewport={flowSession?.viewport ?? null}
         picked={pickedLocator}
         pickable={!!flowSession}
+      />
+      <RobotStepsOverlay
+        excalidrawApiRef={excalidrawApiRef}
+        tick={excalidrawTick}
+        liveSteps={robotSteps}
+        onEditSteps={handleEditSteps}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}

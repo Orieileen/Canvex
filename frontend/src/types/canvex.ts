@@ -216,3 +216,13 @@ export interface FlowPickResult {
   locator: FlowLocator | null;
   image: string;
 }
+
+/** One step of an RPA robot's DSL (v1). `target` is the rich locator from a pick;
+ *  `provenance` records how the target was obtained. Persisted per robot-steps frame. */
+export interface RobotStep {
+  action: "navigate" | "click" | "type";
+  target?: FlowLocator; // for click / type
+  text?: string; // for type
+  url?: string; // for navigate
+  provenance?: "picked" | "guessed" | "self-healed";
+}

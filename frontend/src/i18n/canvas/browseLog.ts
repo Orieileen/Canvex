@@ -9,6 +9,13 @@ export const browseLog = {
     pickHint: "Click an element to target it",
     pickRearm: "Browser session ended — start authoring again",
     pickNothing: "Nothing selectable there — try again",
+    robotHeader: "Robot steps",
+    robotEmpty: "Switch to Pick mode and click elements to add steps",
+    stepClick: "Click",
+    stepType: "Type",
+    stepNavigate: "Go to",
+    stepTypeText: "text to type…",
+    stepDelete: "Delete step",
   },
   zh: {
     header: "浏览日志",

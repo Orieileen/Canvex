@@ -49,6 +49,16 @@ import {
   BROWSE_MONITOR_IMAGE_KEY,
   findBrowseMonitorFrame,
 } from "@/lib/canvas-browse-monitor-frame";
+import {
+  ROBOT_STEPS_FRAME_HEIGHT,
+  ROBOT_STEPS_FRAME_MARKER,
+  ROBOT_STEPS_FRAME_WIDTH,
+  ROBOT_STEPS_KEY,
+  ROBOT_STEPS_TITLE_KEY,
+  findRobotStepsFrame,
+  serializeRobotSteps,
+} from "@/lib/canvas-robot-steps-frame";
+import type { RobotStep } from "@/types/canvex";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -640,6 +650,14 @@ export interface UseCanvasPinning {
    *  browse starts so the monitor doesn't keep a prior browse's screenshot on a
    *  turn that logs but never screenshots. */
   clearBrowseMonitorImage: () => string | null;
+  /** Find-or-create the scene's SINGLE robot-steps frame (RPA authoring), placed to the
+   *  RIGHT of the monitor frame; reused across the authoring session (retitles on reuse,
+   *  steps are appended not cleared). Returns its id, or null. */
+  ensureRobotStepsFrame: (title: string) => string | null;
+  /** Persist the robot's steps into the steps frame's customData (JSON array) so they
+   *  survive a scene reload; the live steps otherwise live only in React state. No-op if
+   *  the frame is gone. */
+  persistRobotSteps: (frameId: string, steps: RobotStep[]) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1216,6 +1234,58 @@ export function useCanvasPinning(
   const persistBrowseMonitorImage = useCallback(
     (frameId: string, url: string): void => {
       patchFrameCustomData(frameId, { [BROWSE_MONITOR_IMAGE_KEY]: url });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Find-or-create the scene's SINGLE robot-steps frame, placed to the RIGHT of the
+   *  monitor frame (the browser the user picks on). Reused across the authoring session;
+   *  on reuse it only retitles (steps are appended by the caller, not cleared here). */
+  const ensureRobotStepsFrame = useCallback(
+    (title: string): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const existing = findRobotStepsFrame(elements);
+        if (existing) {
+          if (title) patchFrameCustomData(existing.id, { [ROBOT_STEPS_TITLE_KEY]: title });
+          return existing.id;
+        }
+        const anchor =
+          findBrowseMonitorFrame(elements) ??
+          findBrowseLogFrame(elements) ??
+          findChatFrame(elements);
+        const startX = anchor ? anchor.x + anchor.width + PIN_GAP : PIN_ORIGIN_X;
+        const startY = anchor ? anchor.y : PIN_ORIGIN_Y;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          ROBOT_STEPS_FRAME_WIDTH, ROBOT_STEPS_FRAME_HEIGHT, PIN_GAP, "down",
+        );
+        const frame = buildFrameElement({
+          x, y, width: ROBOT_STEPS_FRAME_WIDTH, height: ROBOT_STEPS_FRAME_HEIGHT,
+          name: "Robot steps",
+          customData: {
+            aiChatType: ROBOT_STEPS_FRAME_MARKER,
+            [ROBOT_STEPS_TITLE_KEY]: title,
+            [ROBOT_STEPS_KEY]: serializeRobotSteps([]),
+          },
+        });
+        if (!frame) return null;
+        api.updateScene({ elements: [...elements, frame] });
+        api.scrollToContent([frame], { fitToViewport: false, animate: true });
+        return frame.id;
+      } catch (err) {
+        console.error("ensureRobotStepsFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef, patchFrameCustomData],
+  );
+
+  const persistRobotSteps = useCallback(
+    (frameId: string, steps: RobotStep[]): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_KEY]: serializeRobotSteps(steps) });
     },
     [patchFrameCustomData],
   );
@@ -1802,6 +1872,8 @@ export function useCanvasPinning(
     ensureBrowseMonitorFrame,
     persistBrowseMonitorImage,
     clearBrowseMonitorImage,
+    ensureRobotStepsFrame,
+    persistRobotSteps,
     pinImage,
     pinVideo,
     pinMergedImage,
