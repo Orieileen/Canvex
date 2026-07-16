@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AngleJobRetrieveView,
+    FlowDriveView,
     FlowPickView,
     ImageEditJobRetrieveView,
     MediaLibraryFolderItemsView,
@@ -52,6 +53,11 @@ urlpatterns = router.urls + [
         "scenes/<uuid:scene_id>/flow/pick/",
         FlowPickView.as_view(),
         name="canvas-scene-flow-pick",
+    ),
+    path(
+        "scenes/<uuid:scene_id>/flow/drive/",
+        FlowDriveView.as_view(),
+        name="canvas-scene-flow-drive",
     ),
     path(
         "scenes/<uuid:scene_id>/robots/",

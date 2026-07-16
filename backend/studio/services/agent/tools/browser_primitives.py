@@ -302,6 +302,55 @@ def pick_on_session(session, x: float, y: float) -> dict:
     return session.call(_op_pick, x, y)
 
 
+# --- drive / takeover (RPA login / captcha) ---------------------------------
+# DRIVE mode dispatches REAL input to the page (unlike pick, which only RESOLVES an
+# element). It lets the user log in / pass a captcha in the on-canvas browser, then
+# continue picking. Coordinates are CSS-viewport px (same space as pick). Screenshots
+# taken during drive are LIVE-ONLY — the caller must NOT persist them (they may show
+# credentials or an authenticated page; design §11 secret suppression).
+
+def _op_drive_click(page, x: float, y: float):
+    """Real mouse click at (x,y) [CSS viewport px] — actually triggers the element."""
+    page.mouse.click(x, y)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=3000)
+    except Exception:  # noqa: BLE001 — a click need not navigate; ignore the wait timeout
+        pass
+    return True
+
+
+def _op_drive_type(page, text: str):
+    """Type into the currently focused element (after a drive click on a field)."""
+    page.keyboard.type(text)
+    return True
+
+
+def _op_drive_key(page, key: str):
+    """Press a key (Enter / Tab / …) on the focused element."""
+    page.keyboard.press(key)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=3000)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def drive_on_session(
+    session, *, action: str,
+    x: float | None = None, y: float | None = None,
+    text: str | None = None, key: str | None = None,
+) -> None:
+    """Public wrapper for FlowDriveView: dispatch ONE real input action on a live session."""
+    if action == "click":
+        session.call(_op_drive_click, x, y)
+    elif action == "type":
+        session.call(_op_drive_type, text or "")
+    elif action == "key":
+        session.call(_op_drive_key, key or "Enter")
+    else:
+        raise ValueError(f"unknown drive action {action!r}")
+
+
 # --- shared tool plumbing ---------------------------------------------------
 
 def _session_or_refusal(runtime):

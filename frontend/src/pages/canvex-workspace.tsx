@@ -14,7 +14,7 @@ import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
-import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode } from "@/components/canvas/BrowseMonitorOverlay";
+import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode, type DriveAction } from "@/components/canvas/BrowseMonitorOverlay";
 import { RobotStepsOverlay, type RobotStepsLive } from "@/components/canvas/RobotStepsOverlay";
 import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
@@ -527,6 +527,34 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps],
   );
 
+  // Drive (takeover): dispatch REAL input to the live browser (login / captcha), then
+  // show the fresh screenshot — NEVER persisted (it may show credentials). 409 => gone.
+  const handleDrive = useCallback(
+    async (frameId: string, drive: DriveAction) => {
+      if (!flowSession) return;
+      try {
+        const res = await canvasService.postFlowDrive(activeSceneId, {
+          token: flowSession.token,
+          action: drive.action,
+          x: drive.x,
+          y: drive.y,
+          text: drive.text,
+          key: drive.key,
+        });
+        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
+      } catch (err) {
+        if ((err as { code?: string }).code === "session_gone") {
+          setFlowSession(null);
+          setBrowserMode("watch");
+          toast.error(t("browseLog.pickRearm"));
+        } else {
+          toast.error(extractApiError(err, "drive failed"));
+        }
+      }
+    },
+    [flowSession, activeSceneId, t],
+  );
+
   // Save the authored steps as a named robot (POST /robots/); enables Run.
   const handleSaveRobot = useCallback(
     async (frameId: string) => {
@@ -572,6 +600,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         return;
       }
       setRunStatus((prev) => ({ ...prev, [frameId]: {} }));
+      // A run repaints the monitor with the RUN's browser (not the authoring one) —
+      // clear the drive session + revert to watch so a drive click can't hit the wrong
+      // browser (security review HIGH).
+      setFlowSession(null);
+      setBrowserMode("watch");
       let monitorId: string | null = null;
       try {
         for await (const ev of canvasService.postRobotRun(activeSceneId, robotId)) {
@@ -1106,6 +1139,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         finalized: boolean;
         lastImage: string | null;
       } = { frameId: null, attempted: false, finalized: false, lastImage: null };
+      // True once THIS turn emitted flow_session (an author_robot turn opened a drivable
+      // authoring browser, before its first frame). A browse_frame arriving WITHOUT it
+      // means the singleton monitor is being repainted by a NON-authoring browser → drop
+      // the now-mismatched drive session so a drive click can't fire real input on the
+      // wrong (kept-alive, authenticated) browser (security review HIGH).
+      let flowSessionThisTurn = false;
 
       setIsStreaming(true);
       setChatStatus(null);
@@ -1274,6 +1313,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               break;
             }
             case "browse_frame": {
+              // If this frame is NOT from an authoring turn (no flow_session this turn),
+              // the monitor now shows a DIFFERENT browser than flowSession points at —
+              // drop the drive session + revert to watch so a click can't fire real input
+              // on the wrong browser (security review HIGH).
+              if (!flowSessionThisTurn) {
+                setFlowSession(null);
+                setBrowserMode("watch");
+              }
               // Live browser monitor. Spin up the panel (right of this turn's log
               // frame) on the first frame; then either stream a live data-URL into
               // React state, or — on the final frame — persist its media URL to the
@@ -1299,8 +1346,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             }
             case "flow_session":
               // A live authoring browser opened this turn — remember its token +
-              // viewport so the monitor frame can be switched to Pick mode. (Emitted
-              // only when CANVAS_RPA_ENABLED.)
+              // viewport so the monitor frame can be switched to Pick / Drive. (Emitted
+              // only when CANVAS_RPA_ENABLED, and BEFORE the first browse_frame.)
+              flowSessionThisTurn = true;
               setFlowSession({ token: event.token, viewport: event.viewport });
               break;
             case "assistant_final":
@@ -1549,6 +1597,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         mode={browserMode}
         onModeChange={setBrowserMode}
         onPick={handlePick}
+        onDrive={handleDrive}
         viewport={flowSession?.viewport ?? null}
         picked={pickedLocator}
         pickable={!!flowSession}

@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from "react";
+import { useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -19,9 +19,19 @@ export interface BrowseMonitorLive {
 }
 
 /** Interaction mode of the on-canvas browser. `watch` = passive (the agent drives);
- *  `pick` = a click resolves the element under it and does NOT trigger it (RPA
- *  authoring). Drive/takeover (real input dispatch for login) is a later addition. */
-export type BrowserMode = "watch" | "pick";
+ *  `pick` = a click RESOLVES the element under it and does NOT trigger it (RPA
+ *  authoring); `drive` = takeover — a click/keystroke is REAL input (log in / captcha).
+ *  Pick and drive are distinct server endpoints; drive frames are never persisted. */
+export type BrowserMode = "watch" | "pick" | "drive";
+
+/** One drive (real input) action + its payload. */
+export interface DriveAction {
+  action: "click" | "type" | "key";
+  x?: number;
+  y?: number;
+  text?: string;
+  key?: string;
+}
 
 interface BrowseMonitorOverlayProps {
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
@@ -29,21 +39,23 @@ interface BrowseMonitorOverlayProps {
   tick: number;
   liveFrames: Record<string, BrowseMonitorLive>;
   /** RPA authoring plumbing. `pickable` is true once a flow_session token exists (a
-   *  live authoring browser), which enables the Pick toggle + click-to-target. */
+   *  live authoring browser), which enables Pick + Drive. */
   mode: BrowserMode;
   onModeChange: (mode: BrowserMode) => void;
   onPick: (frameId: string, vx: number, vy: number) => void;
+  /** Drive (real input) — click/type/key on the live page (login / captcha). */
+  onDrive: (frameId: string, drive: DriveAction) => void;
   viewport: { width: number; height: number } | null;
   picked: FlowLocator | null;
   pickable: boolean;
 }
 
 /**
- * The live-browser panels — the visual sibling of BrowseLogOverlay, sitting to the
- * right of each browse-log frame. Where the log shows WHY (the agent's reasoning),
- * this shows WHAT (the page itself). In RPA authoring the panel becomes interactive:
- * switch it to Pick mode and click an element to target it (the click resolves on the
- * LIVE DOM via a separate request; it does not trigger the element).
+ * The live-browser panels — the visual sibling of BrowseLogOverlay. Where the log shows
+ * WHY (the agent's reasoning), this shows WHAT (the page). In RPA authoring the panel is
+ * interactive: Pick mode click = resolve an element (no trigger); Drive mode click /
+ * keystroke = REAL input so the user can log in / pass a captcha. The two are visually
+ * unmistakable (green vs red chrome) because in drive a click actually fires.
  */
 export function BrowseMonitorOverlay({
   excalidrawApiRef,
@@ -52,6 +64,7 @@ export function BrowseMonitorOverlay({
   mode,
   onModeChange,
   onPick,
+  onDrive,
   viewport,
   picked,
   pickable,
@@ -73,6 +86,7 @@ export function BrowseMonitorOverlay({
           mode={mode}
           onModeChange={onModeChange}
           onPick={onPick}
+          onDrive={onDrive}
           viewport={viewport}
           picked={picked}
           pickable={pickable}
@@ -89,6 +103,7 @@ function BrowseMonitorPanel({
   mode,
   onModeChange,
   onPick,
+  onDrive,
   viewport,
   picked,
   pickable,
@@ -99,12 +114,14 @@ function BrowseMonitorPanel({
   mode: BrowserMode;
   onModeChange: (mode: BrowserMode) => void;
   onPick: (frameId: string, vx: number, vy: number) => void;
+  onDrive: (frameId: string, drive: DriveAction) => void;
   viewport: { width: number; height: number } | null;
   picked: FlowLocator | null;
   pickable: boolean;
 }) {
   const { t } = useTranslation("canvasUi");
   const imgRef = useRef<HTMLImageElement>(null);
+  const [driveText, setDriveText] = useState("");
   // Live streamed frame wins (this session's turn); else the persisted final URL.
   const image = live?.image || getBrowseMonitorImage(frame);
   const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
@@ -114,11 +131,12 @@ function BrowseMonitorPanel({
   if (!rect) return null;
 
   const picking = pickable && mode === "pick";
+  const driving = pickable && mode === "drive";
 
-  // Click on the (object-contain) screenshot → page-viewport px → onPick. Resolving
-  // happens backend-side on the LIVE DOM, so this is accurate even if the frame lags.
+  // Click on the (object-contain) screenshot. Pick mode → resolve (onPick); drive mode →
+  // REAL click (onDrive). Both map screen px → page-viewport px the same way.
   const handleImgClick = (e: React.MouseEvent) => {
-    if (!picking || !viewport || !imgRef.current) return;
+    if ((!picking && !driving) || !viewport || !imgRef.current) return;
     e.stopPropagation();
     const vp = imagePointToViewport(
       imgRef.current.getBoundingClientRect(),
@@ -126,7 +144,9 @@ function BrowseMonitorPanel({
       e.clientY,
       viewport,
     );
-    if (vp) onPick(frame.id, vp.vx, vp.vy);
+    if (!vp) return;
+    if (picking) onPick(frame.id, vp.vx, vp.vy);
+    else onDrive(frame.id, { action: "click", x: vp.vx, y: vp.vy });
   };
 
   // Last-picked element highlight, in the panel's world coord system (which then scales).
@@ -144,7 +164,11 @@ function BrowseMonitorPanel({
         height,
         transform: `scale(${zoom})`,
         transformOrigin: "top left",
-        outline: picking ? "6px solid rgba(16,185,129,0.9)" : undefined,
+        outline: driving
+          ? "6px solid rgba(239,68,68,0.95)"
+          : picking
+            ? "6px solid rgba(16,185,129,0.9)"
+            : undefined,
         outlineOffset: "-6px",
       }}
       onPointerDown={(e) => e.stopPropagation()}
@@ -160,7 +184,7 @@ function BrowseMonitorPanel({
           className="absolute right-4 top-3 z-20 flex gap-1 rounded bg-black/60 p-1"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          {(["watch", "pick"] as const).map((m) => (
+          {(["watch", "pick", "drive"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -170,12 +194,22 @@ function BrowseMonitorPanel({
               }}
               className={
                 "rounded px-3 py-1 text-[22px] font-medium " +
-                (mode === m
-                  ? "bg-emerald-500 text-black"
-                  : "text-white/70 hover:text-white")
+                (mode !== m
+                  ? "text-white/70 hover:text-white"
+                  : m === "drive"
+                    ? "bg-red-500 text-white"
+                    : m === "pick"
+                      ? "bg-emerald-500 text-black"
+                      : "bg-white/80 text-black")
               }
             >
-              {t(m === "watch" ? "browseLog.modeWatch" : "browseLog.modePick")}
+              {t(
+                m === "watch"
+                  ? "browseLog.modeWatch"
+                  : m === "pick"
+                    ? "browseLog.modePick"
+                    : "browseLog.modeDrive",
+              )}
             </button>
           ))}
         </div>
@@ -188,7 +222,8 @@ function BrowseMonitorPanel({
           alt=""
           onClick={handleImgClick}
           className={
-            "h-full w-full object-contain " + (picking ? "cursor-crosshair" : "")
+            "h-full w-full object-contain " +
+            (picking ? "cursor-crosshair" : driving ? "cursor-pointer" : "")
           }
         />
       ) : (
@@ -223,6 +258,54 @@ function BrowseMonitorPanel({
       {picking && (
         <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded bg-emerald-500/90 px-4 py-1 text-[22px] font-medium text-black">
           {t("browseLog.pickHint")}
+        </div>
+      )}
+
+      {/* Drive banner — REAL input. Unmistakably red; carries a type/Enter affordance so
+          the user can fill a login form (click a field, type, Enter). */}
+      {driving && (
+        <div
+          className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded bg-red-500/95 px-4 py-2"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <span className="text-[22px] font-semibold uppercase tracking-wide text-white">
+            {t("browseLog.driveHint")}
+          </span>
+          <input
+            value={driveText}
+            onChange={(e) => setDriveText(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") {
+                onDrive(frame.id, { action: "type", text: driveText });
+                onDrive(frame.id, { action: "key", key: "Enter" });
+                setDriveText("");
+              }
+            }}
+            placeholder={t("browseLog.driveTypePlaceholder")}
+            className="w-[220px] rounded bg-black/40 px-3 py-1 text-[22px] text-white placeholder:text-white/40"
+          />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDrive(frame.id, { action: "type", text: driveText });
+              setDriveText("");
+            }}
+            className="rounded bg-white/20 px-3 py-1 text-[22px] text-white hover:bg-white/30"
+          >
+            {t("browseLog.driveType")}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDrive(frame.id, { action: "key", key: "Enter" });
+            }}
+            className="rounded bg-white/20 px-3 py-1 text-[22px] text-white hover:bg-white/30"
+          >
+            {t("browseLog.driveEnter")}
+          </button>
         </div>
       )}
     </div>

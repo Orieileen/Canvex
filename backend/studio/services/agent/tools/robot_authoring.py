@@ -92,14 +92,18 @@ def author_robot(
         log(f"▶️ 打开 {url}")
     try:
         session.call(_op_goto, url)
-        emit = ctx.emit_browse_frame
-        if emit:
-            emit(_jpeg_data_url(session.call(_op_screenshot)), False)
-        # Now the browser is live, hand the client this session's token + viewport so a
-        # separate element-pick request can reach THIS page (see FlowPickView).
+        # Hand the client this session's token + viewport BEFORE the first frame, so the
+        # client marks the monitor as THIS authoring browser (pickable / drivable) before
+        # the frame lands. A later plain-`browse` turn's frame (which carries NO
+        # flow_session) then flips the monitor back to non-drivable — otherwise a drive
+        # click would fire REAL input on this kept-alive authenticated browser while the
+        # user sees an unrelated page (security review HIGH).
         emit_fs = ctx.emit_flow_session
         if emit_fs:
             emit_fs(ctx.session_token, {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT})
+        emit = ctx.emit_browse_frame
+        if emit:
+            emit(_jpeg_data_url(session.call(_op_screenshot)), False)
     except Exception as exc:  # noqa: BLE001 — surface, never raise into the graph
         logger.exception("author_robot: open failed")
         return f"Opening {url} failed: {type(exc).__name__}: {str(exc)[:200]}"

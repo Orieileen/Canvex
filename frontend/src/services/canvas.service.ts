@@ -327,6 +327,30 @@ export async function saveRobot(
   return (await resp.json()) as CanvasRobot;
 }
 
+/** RPA drive / takeover: dispatch REAL input (click / type / key) to the live authoring
+ *  browser (login / captcha). Returns a fresh screenshot for the live view — the caller
+ *  must NOT persist it. Throws Error with `code:"session_gone"` on 409. */
+export async function postFlowDrive(
+  sceneId: string,
+  body: { token: string; action: "click" | "type" | "key"; x?: number; y?: number; text?: string; key?: string },
+): Promise<{ image: string }> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/drive/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (resp.status === 409) {
+    const err = new Error("authoring browser session gone") as Error & { code?: string };
+    err.code = "session_gone";
+    throw err;
+  }
+  if (!resp.ok) throw new Error(`flow drive failed: HTTP ${resp.status}`);
+  return (await resp.json()) as { image: string };
+}
+
 /** Run a saved robot; yields per-step status + monitor frames as SSE events. */
 export async function* postRobotRun(
   sceneId: string,
@@ -388,6 +412,8 @@ export const canvasService = {
   postChatStream,
   // RPA 元素拾取: POST 坐标 → 富定位 + 新截图 (见顶部 postFlowPick)
   postFlowPick,
+  // RPA 接管: 真实输入 (click/type/key), 用于登录/验证码 (见顶部 postFlowDrive)
+  postFlowDrive,
   // RPA 机器人: 保存 + 运行 (见顶部 saveRobot / postRobotRun)
   saveRobot,
   postRobotRun,

@@ -54,7 +54,11 @@ from .services.agent.builder import (
 )
 from .services.agent.playwright_session import PlaywrightSessionClosed, get_session
 from .services.agent.robot_runner import stream_robot_run
-from .services.agent.tools.browser_primitives import pick_on_session
+from .services.agent.tools.browser_primitives import (
+    _op_screenshot,
+    drive_on_session,
+    pick_on_session,
+)
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
@@ -382,6 +386,77 @@ class FlowPickView(APIView):
             "locator": result["locator"],           # None if nothing actionable there
             "image": _jpeg_data_url(result["image"]),
         })
+
+
+# Keys the drive endpoint accepts (allowlist — an arbitrary keyboard.press is needless
+# attack surface). Enough for form login / captcha navigation.
+_DRIVE_KEYS = {
+    "Enter", "Tab", "Escape", "Backspace", "Delete", "Space",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End",
+}
+_DRIVE_MAX_TEXT = 4096  # bound drive `text` so a huge string can't wedge the owner thread
+
+
+class FlowDriveView(APIView):
+    """RPA DRIVE / takeover: dispatch REAL input (click / type / key) to the live
+    authoring browser so the user can log in / pass a captcha, then continue picking.
+    Distinct from /flow/pick (resolve-only) — here a click TRIGGERS the element. Returns
+    a FRESH screenshot for the live view; the client must NOT persist it (design §11:
+    drive frames may show credentials / an authenticated page, so they never touch the
+    DB / scene.data). The token is the same unguessable per-turn bearer as pick."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scene_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        token = (request.data.get("token") or "").strip()
+        if not token:
+            raise ValidationError("token is required")
+        action = (request.data.get("action") or "").strip()
+
+        session = get_session(token)
+        if session is None:
+            return Response(
+                {"detail": "authoring browser session unavailable — re-open authoring",
+                 "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            if action == "click":
+                try:
+                    x = float(request.data["x"])
+                    y = float(request.data["y"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValidationError(f"click needs numeric x, y ({exc})")
+                drive_on_session(session, action="click", x=x, y=y)
+            elif action == "type":
+                text = str(request.data.get("text") or "")
+                if len(text) > _DRIVE_MAX_TEXT:
+                    raise ValidationError(f"text too long (max {_DRIVE_MAX_TEXT} chars)")
+                drive_on_session(session, action="type", text=text)
+            elif action == "key":
+                key = str(request.data.get("key") or "Enter")
+                if key not in _DRIVE_KEYS:
+                    raise ValidationError(f"unsupported key {key!r}")
+                drive_on_session(session, action="key", key=key)
+            else:
+                raise ValidationError("action must be one of: click, type, key")
+            image = _jpeg_data_url(session.call(_op_screenshot))
+        except ValidationError:
+            raise  # 400 for bad action / coords / text / key — not the 502 below
+        except PlaywrightSessionClosed:
+            return Response(
+                {"detail": "authoring browser session expired", "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except Exception as exc:  # noqa: BLE001 — Playwright/input error → 502, not 500
+            logger.exception("flow drive failed: scene=%s", scene_id)
+            return Response(
+                {"detail": f"drive failed: {type(exc).__name__}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        # Live-only screenshot — never persisted (secret suppression).
+        return Response({"image": image})
 
 
 def _strip_inlined_secrets(steps: list) -> list:
