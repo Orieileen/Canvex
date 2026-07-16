@@ -384,6 +384,18 @@ class FlowPickView(APIView):
         })
 
 
+def _strip_inlined_secrets(steps: list) -> list:
+    """Never persist plaintext into a password field: drop `text` on a type step whose
+    target is a password input. Credentials must come from a run-time variable / takeover,
+    not the saved DSL (design §11 secret suppression)."""
+    out = []
+    for s in steps:
+        if s.get("action") == "type" and (s.get("target") or {}).get("isPassword") and s.get("text"):
+            s = {**s, "text": ""}
+        out.append(s)
+    return out
+
+
 class SceneRobotListCreateView(APIView):
     """List a scene's saved RPA robots, or save a new one from the authored steps."""
 
@@ -401,8 +413,9 @@ class SceneRobotListCreateView(APIView):
         robot = Robot.objects.create(
             scene=scene,
             name=(ser.validated_data["name"].strip() or "Robot"),
-            steps=ser.validated_data["steps"],
+            steps=_strip_inlined_secrets(ser.validated_data["steps"]),
             variables=ser.validated_data.get("variables") or {},
+            allow_writes=ser.validated_data.get("allow_writes", False),
         )
         return Response(RobotSerializer(robot).data, status=status.HTTP_201_CREATED)
 

@@ -1,14 +1,22 @@
 """Deterministic run-mode for saved RPA robots (影刀-style).
 
 Executes a Robot's DSL steps step-by-step on a fresh Playwright session, WITHOUT the LLM
-(self-heal is a later step). Streams per-step status + a page screenshot after each step
-as SSE event dicts, mirroring the chat stream's frame shape so the frontend can reuse the
-monitor frame. Unlike stream_canvas_agent there is no graph and no background pump: the
-run is sequential, so we drive the steps and yield directly from this generator.
+per step (the model is used only to self-heal a drifted locator). Streams per-step status
++ a page screenshot after each step as SSE event dicts, mirroring the chat stream's frame
+shape so the frontend can reuse the monitor frame. Unlike stream_canvas_agent there is no
+graph and no background pump: the run is sequential, so we drive the steps and yield
+directly from this generator.
+
+Safety (design §10/§11): a run-level wall-clock deadline bounds the whole run; a write-gate
+refuses state-changing steps (destructive clicks / submits) unless the robot has
+allow_writes; self-heal only retries READ steps (never a state-changing one), one attempt.
 """
 import base64
 import logging
+import time
 import uuid
+
+from django.conf import settings
 
 from studio.models import Robot, RobotRun
 
@@ -31,9 +39,30 @@ from .tools.browser_primitives import (
 
 logger = logging.getLogger(__name__)
 
-# Bound step COUNT so a malformed/huge robot can't pin a worker (a run-level wall-clock
-# deadline is a later step; per-op timeout already bounds each step via session.call).
+# Bound step COUNT (a malformed/huge robot); the run-level deadline bounds wall-clock.
 _MAX_STEPS = 100
+
+# A click/submit whose target reads like one of these is treated as state-changing and
+# gated behind Robot.allow_writes (default read-only). Substring match on name/text/css.
+_DESTRUCTIVE_KEYWORDS = (
+    "submit", "save", "pay", "buy", "order", "checkout", "purchase", "delete", "remove",
+    "confirm", "send", "publish", "transfer", "withdraw", "apply", "place order",
+    "提交", "保存", "支付", "付款", "购买", "下单", "结算", "删除", "移除", "确认", "发送",
+    "发布", "转账", "提现",
+)
+
+
+def _is_state_changing(step: dict) -> bool:
+    """True if a step may mutate external state (needs allow_writes). A type with submit,
+    or a click on a destructive-looking control; navigate / plain type are read."""
+    action = step.get("action")
+    if action == "type" and step.get("submit"):
+        return True
+    if action != "click":
+        return False
+    tgt = step.get("target") or {}
+    hay = f"{tgt.get('name', '')} {tgt.get('text', '')} {tgt.get('css', '')}".lower()
+    return any(kw in hay for kw in _DESTRUCTIVE_KEYWORDS)
 
 
 def _shot_data_url(session) -> str | None:
@@ -44,11 +73,71 @@ def _shot_data_url(session) -> str | None:
         return None
 
 
+def _execute_step(session, step: dict, target_override: dict | None = None) -> None:
+    """Run one step on the session (raises LocatorMiss/LocatorAmbiguous/etc. on failure)."""
+    action = step.get("action")
+    target = target_override if target_override is not None else (step.get("target") or {})
+    if action == "navigate":
+        url = (step.get("url") or "").strip()
+        refusal = _nav_refusal(url)
+        if refusal:
+            raise RuntimeError(refusal)
+        session.call(_op_goto, url)
+    elif action == "click":
+        session.call(_op_click_target, target)
+    elif action == "type":
+        session.call(_op_type_target, target, step.get("text") or "", bool(step.get("submit")))
+    else:
+        raise RuntimeError(f"unknown action {action!r}")
+
+
+def _self_heal(session, target: dict) -> dict | None:
+    """READ-step only: ask the browser model to re-locate a drifted element from the
+    CURRENT page's ARIA snapshot; return a new target {role, name} or None. Disabled
+    (returns None) when no browser model is configured. A light safety check rejects a
+    heal that changes the element's ROLE (don't rebind to a different kind of control)."""
+    if not settings.CANVAS_BROWSER_API_KEY:
+        return None
+    try:
+        import json  # noqa: PLC0415
+        import re  # noqa: PLC0415
+
+        from .tools.browser_primitives import _get_extract_model, _op_snapshot  # noqa: PLC0415
+
+        snapshot = (session.call(_op_snapshot) or "")[:6000]
+        desc = (
+            target.get("description") or target.get("name") or target.get("text")
+            or target.get("role") or target.get("css")
+        )
+        prompt = (
+            "You relocate a web element after the page changed. The element I want is: "
+            f"{desc!r} (role hint: {target.get('role')!r}).\n"
+            "Below is the CURRENT page's ARIA accessibility snapshot (roles + accessible "
+            "names). Identify the single matching element and return ONLY a JSON object "
+            '{"role": "...", "name": "..."} (its ARIA role + accessible name), or {} if it '
+            "is not present. No prose.\n\nSNAPSHOT:\n" + snapshot
+        )
+        resp = _get_extract_model().invoke(prompt)
+        text = getattr(resp, "content", resp)
+        if isinstance(text, list):
+            text = "".join(
+                str(p.get("text", "") if isinstance(p, dict) else p) for p in text
+            )
+        text = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", str(text).strip())
+        data = json.loads(text)
+        role, name = data.get("role"), data.get("name")
+        if role and (not target.get("role") or role == target.get("role")):
+            return {"role": role, "name": name or ""}
+    except Exception:  # noqa: BLE001 — self-heal is best-effort; fall back to surfacing the miss
+        logger.info("robot self-heal failed", exc_info=True)
+    return None
+
+
 def stream_robot_run(robot_id: str, *, scene_id: str):
     """Run a saved Robot's steps deterministically, yielding SSE event dicts:
-    - {event: robot_step, index, action, status: running|ok|failed, error?}
+    - {event: robot_step, index, action, status: running|ok|failed, error?, healed?}
     - {event: browse_frame, image, final}  (per-step page screenshot; reuses the monitor)
-    NO LLM. The RobotRun row records status/error for history."""
+    The RobotRun row records status/error for history."""
     robot = Robot.objects.filter(id=robot_id, scene_id=scene_id).first()
     if robot is None:
         yield {"event": StreamEvent.ERROR, "detail": "robot not found"}
@@ -66,45 +155,64 @@ def stream_robot_run(robot_id: str, *, scene_id: str):
         return
 
     steps = (robot.steps or [])[:_MAX_STEPS]
+    allow_writes = robot.allow_writes
+    deadline = time.monotonic() + max(30, settings.CANVAS_BROWSER_ROBOT_RUN_DEADLINE)
     failed: str | None = None
     try:
         for i, step in enumerate(steps):
             action = step.get("action")
-            yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "running"}
-            try:
-                if action == "navigate":
-                    url = (step.get("url") or "").strip()
-                    refusal = _nav_refusal(url)
-                    if refusal:
-                        raise RuntimeError(refusal)
-                    session.call(_op_goto, url)
-                elif action == "click":
-                    session.call(_op_click_target, step.get("target") or {})
-                elif action == "type":
-                    session.call(
-                        _op_type_target, step.get("target") or {}, step.get("text") or "", False
-                    )
-                else:
-                    raise RuntimeError(f"unknown action {action!r}")
-            except (LocatorMiss, LocatorAmbiguous) as exc:
-                failed = f"step {i + 1} ({action}): {type(exc).__name__}: {exc}"
+            if time.monotonic() > deadline:
+                failed = f"run exceeded the {settings.CANVAS_BROWSER_ROBOT_RUN_DEADLINE}s deadline"
                 yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
-                       "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+                       "status": "failed", "error": "run timed out"}
                 break
+            # Write-gate: destructive clicks / submits only run on an allow_writes robot.
+            if _is_state_changing(step) and not allow_writes:
+                failed = f"step {i + 1} ({action}) is state-changing; robot is read-only"
+                yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                       "status": "failed", "error": "write-gated: enable allow_writes to run this"}
+                break
+
+            yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "running"}
+            healed = False
+            try:
+                _execute_step(session, step)
+            except (LocatorMiss, LocatorAmbiguous) as exc:
+                # Self-heal a READ step once (never a state-changing one — a wrong heal
+                # there could click the wrong destructive control).
+                new_target = None if _is_state_changing(step) else _self_heal(session, step.get("target") or {})
+                if new_target is not None:
+                    try:
+                        _execute_step(session, step, target_override=new_target)
+                        healed = True
+                    except Exception as exc2:  # noqa: BLE001
+                        failed = f"step {i + 1} ({action}) failed after self-heal: {type(exc2).__name__}"
+                        yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                               "status": "failed", "error": f"self-heal: {str(exc2)[:150]}"}
+                        break
+                else:
+                    failed = f"step {i + 1} ({action}): {type(exc).__name__}: {exc}"
+                    yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                           "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:150]}"}
+                    break
             except PlaywrightSessionClosed:
                 failed = f"step {i + 1}: browser session closed"
                 yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
                        "status": "failed", "error": "browser session closed"}
                 break
             except Exception as exc:  # noqa: BLE001 — Playwright raises many nav/locator errors
-                failed = f"step {i + 1} ({action}): {type(exc).__name__}: {str(exc)[:180]}"
+                failed = f"step {i + 1} ({action}): {type(exc).__name__}: {str(exc)[:150]}"
                 yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
-                       "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+                       "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:150]}"}
                 break
+
             img = _shot_data_url(session)
             if img:
                 yield {"event": StreamEvent.BROWSE_FRAME, "image": img, "final": False}
-            yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "ok"}
+            ok_event = {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "ok"}
+            if healed:
+                ok_event["healed"] = True
+            yield ok_event
         # End-state freeze frame (final=True so the client persists it to the monitor).
         final_img = _shot_data_url(session)
         if final_img:

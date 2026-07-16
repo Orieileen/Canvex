@@ -249,6 +249,16 @@ CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT = _as_bool(os.getenv("CANVAS_BROWSER_OPERAT
 # operator deps. Gates the author_robot tool + the flow_session/pick channel.
 CANVAS_RPA_ENABLED = _as_bool(os.getenv("CANVAS_RPA_ENABLED"), False)
 
+# SSRF: DNS-resolve request hostnames at the network route guard and block any that
+# resolve to a non-public IP (closes DNS-rebinding / redirect SSRF). ON by default; turn
+# OFF only in environments with a fake/split DNS (e.g. a proxy that maps every domain to
+# a reserved CIDR), where it would block all domain browsing.
+CANVAS_BROWSER_SSRF_STRICT = _as_bool(os.getenv("CANVAS_BROWSER_SSRF_STRICT"), True)
+
+# RPA run-mode wall-clock deadline (seconds): a whole robot run is aborted past this so a
+# long/looping robot can't pin a web worker (per-step timeout is CANVAS_BROWSER_OP_TIMEOUT).
+CANVAS_BROWSER_ROBOT_RUN_DEADLINE = int(os.getenv("CANVAS_BROWSER_ROBOT_RUN_DEADLINE", "300") or 300)
+
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。
 CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")

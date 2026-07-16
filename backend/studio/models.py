@@ -356,6 +356,9 @@ class Robot(models.Model):
     steps = models.JSONField(default=list, blank=True)
     # Run-time-prompted values (e.g. credentials) steps reference — never inlined.
     variables = models.JSONField(default=dict, blank=True)
+    # Write-gate: state-changing steps (destructive clicks — Pay/Delete/Submit) only run
+    # when this is True. Default False = read-only robot (design §11 write-gate).
+    allow_writes = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

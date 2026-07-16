@@ -28,6 +28,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import queue
+import socket
 import threading
 from urllib.parse import urlparse
 
@@ -182,22 +183,57 @@ def _safe_close(browser, pw):
             logger.debug("web_operator teardown: %s.%s failed", type(obj).__name__, meth)
 
 
+# Cache host→blocked so the per-request route guard doesn't DNS-resolve every
+# subresource repeatedly. A host's block-status is stable within a process run.
+_host_block_cache: dict[str, bool] = {}
+
+
+def _ip_str_blocked(ip_str: str) -> bool:
+    """True if an IP (literal or resolved) is NOT a public address — private / loopback
+    / link-local / reserved (incl. 169.254 metadata + 198.18/15) / multicast /
+    unspecified. An unparseable value fails CLOSED (blocked)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    return bool(
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    )
+
+
 def _host_blocked(host: str) -> bool:
-    """True if a request host must be blocked: a private / loopback / reserved /
-    link-local / multicast IP LITERAL (SSRF — e.g. cloud metadata 169.254.169.254),
-    or, when a non-empty CANVAS_BROWSER_ALLOWLIST is set, a host not on it. Domains
-    that are not literal blocked IPs still pass unless the allowlist restricts them —
-    set an allowlist for strict egress control."""
+    """True if a request host must be blocked (SSRF). An IP LITERAL is classified
+    directly. A DOMAIN is DNS-RESOLVED and blocked if ANY resolved address is non-public
+    (closes DNS-rebinding / redirect SSRF — the app-layer pre-check and the browser's
+    fetch can resolve differently, so we block on the ACTUAL resolution); DNS failure
+    fails CLOSED. Domain resolution is gated by CANVAS_BROWSER_SSRF_STRICT (default on;
+    turn off only in environments with a fake/split DNS). A non-empty
+    CANVAS_BROWSER_ALLOWLIST further restricts to listed host suffixes."""
     host = (host or "").lower()
     if not host:
         return True
-    try:
-        ip = ipaddress.ip_address(host)
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return True
-    except ValueError:
-        pass  # host is a domain, not an IP literal
+    cached = _host_block_cache.get(host)
+    if cached is not None:
+        blocked = cached
+    else:
+        blocked = False
+        try:
+            ipaddress.ip_address(host)  # IP literal → classify directly
+            blocked = _ip_str_blocked(host)
+        except ValueError:
+            # Domain: resolve + block any non-public address (strict SSRF only).
+            if settings.CANVAS_BROWSER_SSRF_STRICT:
+                try:
+                    for info in socket.getaddrinfo(host, None):
+                        if _ip_str_blocked(info[4][0]):
+                            blocked = True
+                            break
+                except Exception:  # noqa: BLE001 — DNS failure → fail closed
+                    blocked = True
+        _host_block_cache[host] = blocked
+    if blocked:
+        return True
     allow = settings.CANVAS_BROWSER_ALLOWLIST
     if allow and not any(host == d or host.endswith("." + d) for d in allow):
         return True
@@ -212,8 +248,10 @@ def _route_guard(route):
         if _host_blocked(urlparse(route.request.url).hostname or ""):
             route.abort()
             return
-    except Exception:  # noqa: BLE001 — a guard error must never wedge navigation
-        pass
+    except Exception:  # noqa: BLE001 — FAIL CLOSED: block on any guard error so a bug
+        logger.warning("route guard error; blocking request", exc_info=True)  # here isn't an SSRF hole
+        route.abort()
+        return
     route.continue_()
 
 
