@@ -1,9 +1,12 @@
 import base64
 import json
 import logging
+import queue
+import threading
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db import connections
 from django.db.models import Count, Max
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -187,6 +190,65 @@ def _sse_event(event: dict) -> bytes:
         logger.warning("sse: falling back to default=str for event %s", event.get("event"))
         payload = json.dumps(event, cls=DjangoJSONEncoder, ensure_ascii=False, default=str)
     return (f"data: {payload}\n\n").encode("utf-8")
+
+
+# Emit an SSE keepalive comment at least this often while a stream is idle, so a slow
+# robot step (a browser op blocks up to CANVAS_BROWSER_OP_TIMEOUT, and the initial
+# Chromium launch + first navigate can run tens of seconds before the first event) can't
+# leave the byte stream silent long enough for a reverse proxy to idle-timeout it.
+_SSE_KEEPALIVE_INTERVAL_S = 15.0
+
+
+def _sse_comment(text: str = "keepalive") -> bytes:
+    """An SSE COMMENT line (`: <text>\\n\\n`). EventSource clients ignore it, but the bytes
+    keep the connection warm past reverse-proxy read timeouts."""
+    return f": {text}\n\n".encode("utf-8")
+
+
+def _sse_stream_with_keepalive(events, *, interval_s: float | None = None):
+    """Wrap a BLOCKING event-dict generator as an SSE byte stream that never goes silent
+    longer than the keepalive interval: a daemon thread drains `events` into a queue while
+    this generator emits each event (via _sse_event) as it arrives, or a keepalive COMMENT
+    on each idle interval. Needed because the source generator blocks in-thread (a browser
+    op / Chromium launch), so it cannot interleave keepalives itself. The source's
+    exception is re-raised here so the caller's error handling still runs. `interval_s`
+    defaults to the module constant, read at call time (patchable in tests).
+
+    The drain thread runs the source generator, which opens its OWN DB connection (the run
+    writes RobotRun rows); it closes that connection on exit so the spawned thread does not
+    leak one. On client disconnect the outer generator is closed but the drain thread keeps
+    running the source to completion — bounded by the run's wall-clock deadline."""
+    # A non-positive interval would busy-loop (q.get(timeout<=0) returns Empty at once);
+    # fall back to the default rather than spin (guards a misconfigured constant).
+    interval = interval_s if (interval_s is not None and interval_s > 0) else _SSE_KEEPALIVE_INTERVAL_S
+    q: queue.Queue = queue.Queue()
+    _END = object()
+
+    def _drain():
+        err: Exception | None = None
+        try:
+            for ev in events:
+                q.put(ev)
+        except Exception as exc:  # noqa: BLE001 — ferry to the SSE thread; re-raised below
+            err = exc
+        finally:
+            connections.close_all()  # this thread's DB connection(s) — avoid a leak
+            q.put((_END, err))
+
+    threading.Thread(target=_drain, name="sse-keepalive-drain", daemon=True).start()
+
+    while True:
+        try:
+            item = q.get(timeout=interval)
+        except queue.Empty:
+            yield _sse_comment()
+            continue
+        # Terminal sentinel is a 2-tuple (_END, err); real events are dicts, never tuples.
+        if isinstance(item, tuple) and len(item) == 2 and item[0] is _END:
+            if item[1] is not None:
+                raise item[1]
+            return
+        yield _sse_event(item)
 
 
 class SceneAttachmentUploadView(APIView):
@@ -553,9 +615,18 @@ class SceneRobotRunView(APIView):
         robot_id_str = str(robot_id)
 
         def event_stream():
+            # The run's DB writes happen in the keepalive drain thread on its own
+            # connection; the request thread does no more ORM during the (up-to-deadline)
+            # stream. Release this thread's connection now instead of pinning it idle for
+            # the whole run, so a run's connection footprint stays at 1, not 2. (Runs
+            # post-middleware, so nothing reopens it; request_finished still cleans up.)
+            connections.close_all()
             try:
-                for event in stream_robot_run(robot_id_str, scene_id=scene_id_str):
-                    yield _sse_event(event)
+                # Keepalive-wrapped: a long step or the initial Chromium launch can't leave
+                # the SSE stream silent past a reverse-proxy read timeout (: keepalive lines).
+                yield from _sse_stream_with_keepalive(
+                    stream_robot_run(robot_id_str, scene_id=scene_id_str)
+                )
             except Exception as exc:  # noqa: BLE001 — surface a run-error frame, don't 500
                 logger.exception(
                     "robot run failed: scene=%s robot=%s", scene_id_str, robot_id_str
