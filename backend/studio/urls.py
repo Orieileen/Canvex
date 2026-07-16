@@ -13,6 +13,8 @@ from .views import (
     SceneAttachmentUploadView,
     SceneChatView,
     SceneImageEditJobListView,
+    SceneRobotListCreateView,
+    SceneRobotRunView,
     SceneImageEditView,
     SceneSplitView,
     SceneVideoGenerateView,
@@ -50,6 +52,16 @@ urlpatterns = router.urls + [
         "scenes/<uuid:scene_id>/flow/pick/",
         FlowPickView.as_view(),
         name="canvas-scene-flow-pick",
+    ),
+    path(
+        "scenes/<uuid:scene_id>/robots/",
+        SceneRobotListCreateView.as_view(),
+        name="canvas-scene-robots",
+    ),
+    path(
+        "scenes/<uuid:scene_id>/robots/<uuid:robot_id>/run/",
+        SceneRobotRunView.as_view(),
+        name="canvas-scene-robot-run",
     ),
     path(
         "scenes/<uuid:scene_id>/image-edit/",

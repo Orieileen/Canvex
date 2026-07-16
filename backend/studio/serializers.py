@@ -6,6 +6,7 @@ from .models import (
     ChatMessage,
     ImageEditJob,
     ImageEditResult,
+    Robot,
     Scene,
     VideoJob,
 )
@@ -288,3 +289,20 @@ class MediaLibraryFolderSerializer(serializers.Serializer):
     video_count = serializers.IntegerField(read_only=True)
     cover_url = serializers.CharField(read_only=True, allow_blank=True)
     latest_at = serializers.DateTimeField(read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# Robot (RPA)
+# ---------------------------------------------------------------------------
+
+class RobotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Robot
+        fields = ("id", "scene", "name", "steps", "variables", "created_at", "updated_at")
+        read_only_fields = ("id", "scene", "created_at", "updated_at")
+
+
+class RobotCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=200)
+    steps = serializers.ListField(child=serializers.DictField(), allow_empty=True)
+    variables = serializers.DictField(required=False, default=dict)

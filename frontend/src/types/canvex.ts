@@ -226,3 +226,27 @@ export interface RobotStep {
   url?: string; // for navigate
   provenance?: "picked" | "guessed" | "self-healed";
 }
+
+/** A saved robot (GET/POST /scenes/<id>/robots/). */
+export interface CanvasRobot {
+  id: string;
+  scene: string;
+  name: string;
+  steps: RobotStep[];
+  variables: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** SSE events from POST /robots/<id>/run/ — deterministic run, no LLM per step. */
+export type CanvasRobotRunEvent =
+  | {
+      event: "robot_step";
+      index: number;
+      action: string;
+      status: "running" | "ok" | "failed";
+      error?: string;
+    }
+  | { event: "browse_frame"; image: string; final: boolean }
+  | { event: "error"; detail: string }
+  | { event: "done" };

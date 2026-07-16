@@ -342,3 +342,58 @@ class AngleResult(models.Model):
 
     def __str__(self):
         return f"AngleResult({self.job_id}, #{self.order})"
+
+
+class Robot(models.Model):
+    """A saved browser-automation robot (影刀-style RPA): a named, reusable list of
+    deterministic DSL steps authored by picking elements on the canvas. Runs WITHOUT
+    the LLM (see robot_runner.stream_robot_run); the model only authors / self-heals."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="robots")
+    name = models.CharField(max_length=200)
+    # Ordered DSL steps (AI-RPA-v1-design.md §4): [{action, target, text, url, ...}].
+    steps = models.JSONField(default=list, blank=True)
+    # Run-time-prompted values (e.g. credentials) steps reference — never inlined.
+    variables = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_robots"
+        verbose_name = "Canvas Robot"
+        verbose_name_plural = "Canvas Robots"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Robot({self.id}, {self.name!r}, {len(self.steps or [])} steps)"
+
+
+class RobotRun(models.Model):
+    """One execution of a Robot (run history). Mirrors the job Status pattern."""
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    robot = models.ForeignKey(Robot, on_delete=models.CASCADE, related_name="runs")
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    error = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_robot_runs"
+        verbose_name = "Canvas Robot Run"
+        verbose_name_plural = "Canvas Robot Runs"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"RobotRun({self.id}, robot={self.robot_id}, {self.status})"

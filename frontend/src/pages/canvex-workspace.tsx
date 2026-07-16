@@ -16,6 +16,7 @@ import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
 import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode } from "@/components/canvas/BrowseMonitorOverlay";
 import { RobotStepsOverlay, type RobotStepsLive } from "@/components/canvas/RobotStepsOverlay";
+import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -389,6 +390,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   useEffect(() => {
     robotStepsRef.current = robotSteps;
   }, [robotSteps]);
+  // Saved robot id per steps-frame (presence enables Run); + per-step status a run
+  // streams back onto the cards.
+  const [savedRobotIds, setSavedRobotIds] = useState<Record<string, string>>({});
+  const [runStatus, setRunStatus] = useState<
+    Record<string, Record<number, "running" | "ok" | "failed">>
+  >({});
 
   // handlePick + handleEditSteps are defined AFTER the pinning destructure below —
   // they depend on ensureRobotStepsFrame / persistRobotSteps (declared there).
@@ -518,6 +525,77 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       }
     },
     [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps],
+  );
+
+  // Save the authored steps as a named robot (POST /robots/); enables Run.
+  const handleSaveRobot = useCallback(
+    async (frameId: string) => {
+      // Prefer this session's live steps; after a reload they live only in the frame's
+      // persisted customData, so fall back to that (else Save would silently no-op).
+      const live = robotStepsRef.current[frameId];
+      let steps = live?.steps ?? [];
+      let name = live?.title || "";
+      if (steps.length === 0) {
+        const frame = excalidrawApiRef.current
+          ?.getSceneElements()
+          .find((el) => el.id === frameId && !el.isDeleted);
+        if (frame) {
+          const data = getRobotStepsFrameData(frame);
+          steps = data.steps;
+          name = name || data.title;
+        }
+      }
+      if (steps.length === 0) {
+        toast.info(t("browseLog.robotEmptySave"));
+        return;
+      }
+      try {
+        const robot = await canvasService.saveRobot(activeSceneId, {
+          name: name || "Robot",
+          steps,
+        });
+        setSavedRobotIds((prev) => ({ ...prev, [frameId]: robot.id }));
+        toast.success(t("browseLog.robotSaved"));
+      } catch (err) {
+        toast.error(extractApiError(err, "save robot failed"));
+      }
+    },
+    [activeSceneId, t],
+  );
+
+  // Run a saved robot; stream per-step status onto the cards + the page into the monitor.
+  const handleRunRobot = useCallback(
+    async (frameId: string) => {
+      const robotId = savedRobotIds[frameId];
+      if (!robotId) {
+        toast.info(t("browseLog.robotSaveFirst"));
+        return;
+      }
+      setRunStatus((prev) => ({ ...prev, [frameId]: {} }));
+      let monitorId: string | null = null;
+      try {
+        for await (const ev of canvasService.postRobotRun(activeSceneId, robotId)) {
+          if (ev.event === "robot_step") {
+            setRunStatus((prev) => ({
+              ...prev,
+              [frameId]: { ...(prev[frameId] ?? {}), [ev.index]: ev.status },
+            }));
+          } else if (ev.event === "browse_frame") {
+            if (!monitorId) monitorId = ensureBrowseMonitorFrame(null);
+            const mid = monitorId;
+            if (mid) {
+              setBrowseMonitors((prev) => ({ ...prev, [mid]: { image: ev.image } }));
+              if (ev.final) persistBrowseMonitorImage(mid, ev.image);
+            }
+          } else if (ev.event === "error") {
+            toast.error(ev.detail);
+          }
+        }
+      } catch (err) {
+        toast.error(extractApiError(err, "run failed"));
+      }
+    },
+    [activeSceneId, t, savedRobotIds, ensureBrowseMonitorFrame, persistBrowseMonitorImage],
   );
 
   // 素材库面板挂在这里 (而非外层 CanvasSidebar 所在组件) —— 插入要用本组件的
@@ -1480,6 +1558,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         tick={excalidrawTick}
         liveSteps={robotSteps}
         onEditSteps={handleEditSteps}
+        onSave={handleSaveRobot}
+        onRun={handleRunRobot}
+        runStatus={runStatus}
+        savedFrames={savedRobotIds}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}

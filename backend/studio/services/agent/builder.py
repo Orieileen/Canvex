@@ -264,6 +264,9 @@ class StreamEvent:
     # turn's browser-session {token, viewport}. The client echoes the token in a
     # separate element-pick POST so the pick reaches THIS turn's live page.
     FLOW_SESSION = "flow_session"
+    # RPA run-mode: per-step status while a saved robot runs deterministically. Carries
+    # {index, action, status: 'running'|'ok'|'failed', error?}.
+    ROBOT_STEP = "robot_step"
     ERROR = "error"
     DONE = "done"
 

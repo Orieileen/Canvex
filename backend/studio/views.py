@@ -21,6 +21,7 @@ from .models import (
     ChatMessage,
     ImageEditJob,
     ImageEditResult,
+    Robot,
     Scene,
     VideoJob,
 )
@@ -37,6 +38,8 @@ from .serializers import (
     MediaLibraryFolderSerializer,
     MediaLibraryImageSerializer,
     MediaLibraryVideoSerializer,
+    RobotCreateSerializer,
+    RobotSerializer,
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
@@ -50,6 +53,7 @@ from .services.agent.builder import (
     stream_canvas_agent,
 )
 from .services.agent.playwright_session import PlaywrightSessionClosed, get_session
+from .services.agent.robot_runner import stream_robot_run
 from .services.agent.tools.browser_primitives import pick_on_session
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
@@ -378,6 +382,66 @@ class FlowPickView(APIView):
             "locator": result["locator"],           # None if nothing actionable there
             "image": _jpeg_data_url(result["image"]),
         })
+
+
+class SceneRobotListCreateView(APIView):
+    """List a scene's saved RPA robots, or save a new one from the authored steps."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, scene_id):
+        scene = _get_scene_for_user(request.user, scene_id)
+        robots = Robot.objects.filter(scene=scene)
+        return Response(RobotSerializer(robots, many=True).data)
+
+    def post(self, request, scene_id):
+        scene = _get_scene_for_user(request.user, scene_id)
+        ser = RobotCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        robot = Robot.objects.create(
+            scene=scene,
+            name=(ser.validated_data["name"].strip() or "Robot"),
+            steps=ser.validated_data["steps"],
+            variables=ser.validated_data.get("variables") or {},
+        )
+        return Response(RobotSerializer(robot).data, status=status.HTTP_201_CREATED)
+
+
+class SceneRobotRunView(APIView):
+    """Run a saved robot deterministically (no LLM), streaming per-step status as SSE.
+
+    Mirrors SceneChatView's SSE transport; the actual step execution lives in
+    robot_runner.stream_robot_run (a plain generator — no graph, no background pump)."""
+
+    permission_classes = [permissions.AllowAny]
+    # Accept the client's `Accept: text/event-stream` (else DRF content-negotiation 406s).
+    renderer_classes = [JSONRenderer, SSEStreamingRenderer]
+
+    def post(self, request, scene_id, robot_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        scene_id_str = str(scene_id)
+        robot_id_str = str(robot_id)
+
+        def event_stream():
+            try:
+                for event in stream_robot_run(robot_id_str, scene_id=scene_id_str):
+                    yield _sse_event(event)
+            except Exception as exc:  # noqa: BLE001 — surface a run-error frame, don't 500
+                logger.exception(
+                    "robot run failed: scene=%s robot=%s", scene_id_str, robot_id_str
+                )
+                yield _sse_event({
+                    "event": StreamEvent.ERROR,
+                    "detail": f"run_failed: {type(exc).__name__}",
+                })
+            yield _sse_event({"event": StreamEvent.DONE})
+
+        response = StreamingHttpResponse(
+            event_stream(), content_type=SSE_MEDIA_TYPE, status=status.HTTP_200_OK,
+        )
+        response["X-Accel-Buffering"] = "no"
+        response["Cache-Control"] = "no-cache"
+        return response
 
 
 def _build_history_payload(scene) -> list[dict]:

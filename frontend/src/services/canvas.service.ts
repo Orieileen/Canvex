@@ -17,6 +17,9 @@ import type {
   CanvasVideoJob,
   ChatAttachment,
   FlowPickResult,
+  CanvasRobot,
+  CanvasRobotRunEvent,
+  RobotStep,
 } from "@/types/canvex";
 
 // NDJSON 流式 (fetch) 的 base —— 复用 canvas-media-url 的同一 api base
@@ -307,6 +310,67 @@ export async function postFlowPick(
 }
 
 
+/** Save the authored steps as a named, reusable robot. */
+export async function saveRobot(
+  sceneId: string,
+  body: { name: string; steps: RobotStep[] },
+): Promise<CanvasRobot> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/robots/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!resp.ok) throw new Error(`save robot failed: HTTP ${resp.status}`);
+  return (await resp.json()) as CanvasRobot;
+}
+
+/** Run a saved robot; yields per-step status + monitor frames as SSE events. */
+export async function* postRobotRun(
+  sceneId: string,
+  robotId: string,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<CanvasRobotRunEvent, void, void> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/robots/${encodeURIComponent(robotId)}/run/`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "ngrok-skip-browser-warning": "true",
+      },
+      signal: options.signal,
+    },
+  );
+  if (!resp.ok || !resp.body) throw new Error(`robot run failed: HTTP ${resp.status}`);
+  const reader = resp.body.pipeThrough(new TextDecoderStream("utf-8")).getReader();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      for (const line of frame.split("\n")) {
+        const s = line.trim();
+        if (s.startsWith("data:")) {
+          try {
+            yield JSON.parse(s.slice(5).trim()) as CanvasRobotRunEvent;
+          } catch {
+            /* skip malformed frame */
+          }
+        }
+      }
+    }
+  }
+}
+
+
 export const canvasService = {
   // ── Scene CRUD ────────────────────────────────────────────────────────────
   listScenes: () => request.get<CanvasSceneListItem[]>(SCENES),
@@ -324,6 +388,9 @@ export const canvasService = {
   postChatStream,
   // RPA 元素拾取: POST 坐标 → 富定位 + 新截图 (见顶部 postFlowPick)
   postFlowPick,
+  // RPA 机器人: 保存 + 运行 (见顶部 saveRobot / postRobotRun)
+  saveRobot,
+  postRobotRun,
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜

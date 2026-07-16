@@ -10,8 +10,11 @@ import {
 } from "@/lib/canvas-robot-steps-frame";
 import type { RobotStep } from "@/types/canvex";
 
-/** Stable empty-steps reference so the memo doesn't recompute on an empty panel. */
+/** Stable empty refs so the memos don't recompute on empty panels. */
 const EMPTY_STEPS: RobotStep[] = [];
+const EMPTY_STATUS: Record<number, RunStatus> = {};
+
+export type RunStatus = "running" | "ok" | "failed";
 
 /** Live per-turn steps for a robot-steps frame, keyed by frame id. Present while the
  *  user is authoring in THIS session; frames absent from the map render from their
@@ -27,6 +30,12 @@ interface RobotStepsOverlayProps {
   tick: number;
   liveSteps: Record<string, RobotStepsLive>;
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
+  onSave: (frameId: string) => void;
+  onRun: (frameId: string) => void;
+  /** Per-frame, per-step-index status while a robot runs. */
+  runStatus: Record<string, Record<number, RunStatus>>;
+  /** frameId → saved robot id (presence enables Run). */
+  savedFrames: Record<string, string>;
 }
 
 /** Human-readable target of a step: "role · name/text/css". */
@@ -39,17 +48,27 @@ function targetLabel(step: RobotStep): string {
   return head && head !== role ? `${role} · ${head}` : role;
 }
 
+const STATUS_DOT: Record<RunStatus, string> = {
+  running: "bg-amber-400 animate-pulse",
+  ok: "bg-emerald-400",
+  failed: "bg-red-500",
+};
+
 /**
  * Editable step-cards panels anchored to the scene's robot-steps frames — the DSL of
  * the robot being authored, as clickable cards. Each pick appends a step; here the user
- * can change a step's action, edit type-text, or delete it. Sibling of BrowseLogOverlay
- * (native frames can't scroll, so the cards live in an HTML panel pinned to the frame).
+ * can change a step's action, edit type-text, delete it, or Save the list as a named
+ * robot and Run it (per-step status streams back onto the cards).
  */
 export function RobotStepsOverlay({
   excalidrawApiRef,
   tick,
   liveSteps,
   onEditSteps,
+  onSave,
+  onRun,
+  runStatus,
+  savedFrames,
 }: RobotStepsOverlayProps) {
   void tick; // re-render trigger; live state read fresh below
   const api = excalidrawApiRef.current;
@@ -66,6 +85,10 @@ export function RobotStepsOverlay({
           excalidrawApiRef={excalidrawApiRef}
           live={liveSteps[frame.id]}
           onEditSteps={onEditSteps}
+          onSave={onSave}
+          onRun={onRun}
+          status={runStatus?.[frame.id] ?? EMPTY_STATUS}
+          saved={!!savedFrames?.[frame.id]}
         />
       ))}
     </>
@@ -77,11 +100,19 @@ function RobotStepsPanel({
   excalidrawApiRef,
   live,
   onEditSteps,
+  onSave,
+  onRun,
+  status,
+  saved,
 }: {
   frame: ExcalidrawElement;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   live?: RobotStepsLive;
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
+  onSave: (frameId: string) => void;
+  onRun: (frameId: string) => void;
+  status: Record<number, RunStatus>;
+  saved: boolean;
 }) {
   const { t } = useTranslation("canvasUi");
   const persisted = useMemo(
@@ -124,15 +155,38 @@ function RobotStepsPanel({
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0b0f14]/95 px-6 py-4 backdrop-blur-sm">
-        <div className="text-[28px] font-medium uppercase tracking-wide text-emerald-400/80">
-          {t("browseLog.robotHeader")}
-        </div>
-        {title && (
-          <div className="mt-1 line-clamp-2 text-[34px] leading-snug text-white/90">
-            {title}
+      <div className="sticky top-0 z-10 flex items-center gap-4 border-b border-white/10 bg-[#0b0f14]/95 px-6 py-4 backdrop-blur-sm">
+        <div className="min-w-0 flex-1">
+          <div className="text-[28px] font-medium uppercase tracking-wide text-emerald-400/80">
+            {t("browseLog.robotHeader")}
           </div>
-        )}
+          {title && (
+            <div className="mt-1 line-clamp-1 text-[34px] leading-snug text-white/90">
+              {title}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSave(frame.id);
+          }}
+          className="rounded bg-white/10 px-5 py-2 text-[26px] font-medium text-white hover:bg-white/20"
+        >
+          {t("browseLog.robotSave")}
+        </button>
+        <button
+          type="button"
+          disabled={!saved}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRun(frame.id);
+          }}
+          className="rounded bg-emerald-500 px-5 py-2 text-[26px] font-medium text-black enabled:hover:bg-emerald-400 disabled:opacity-40"
+        >
+          {t("browseLog.robotRun")}
+        </button>
       </div>
 
       <div className="flex flex-col gap-3 p-6">
@@ -146,7 +200,13 @@ function RobotStepsPanel({
               key={i}
               className="flex items-center gap-3 rounded-md border border-white/10 bg-white/5 px-4 py-3"
             >
-              <span className="min-w-[48px] text-[30px] font-semibold text-emerald-400/80">
+              <span
+                className={
+                  "h-4 w-4 shrink-0 rounded-full " +
+                  (status[i] ? STATUS_DOT[status[i]] : "bg-white/15")
+                }
+              />
+              <span className="min-w-[40px] text-[30px] font-semibold text-emerald-400/80">
                 {i + 1}
               </span>
               <select
@@ -168,7 +228,7 @@ function RobotStepsPanel({
                   value={step.text ?? ""}
                   placeholder={t("browseLog.stepTypeText")}
                   onChange={(e) => edit(i, { text: e.target.value })}
-                  className="w-[280px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
+                  className="w-[260px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
                 />
               )}
               {step.provenance && (

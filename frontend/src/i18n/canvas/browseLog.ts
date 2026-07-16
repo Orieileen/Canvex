@@ -16,6 +16,11 @@ export const browseLog = {
     stepNavigate: "Go to",
     stepTypeText: "text to type…",
     stepDelete: "Delete step",
+    robotSave: "Save robot",
+    robotRun: "Run",
+    robotSaved: "Robot saved",
+    robotSaveFirst: "Save the robot first",
+    robotEmptySave: "Add at least one step first",
   },
   zh: {
     header: "浏览日志",
