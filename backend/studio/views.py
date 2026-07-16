@@ -58,6 +58,7 @@ from .services.agent.tools.browser_primitives import (
     _op_screenshot,
     drive_on_session,
     pick_on_session,
+    ping_session,
 )
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
@@ -457,6 +458,47 @@ class FlowDriveView(APIView):
             )
         # Live-only screenshot — never persisted (secret suppression).
         return Response({"image": image})
+
+
+class FlowKeepaliveView(APIView):
+    """Keep the live authoring browser warm across human think-time (login / 2FA /
+    captcha) so it doesn't idle-reap mid-authoring. The client pings this on an interval
+    while an authoring frame is armed; each ping resets the session's idle timer. Cheap
+    and resolve-only — it never creates a browser and returns no screenshot. A 409 means
+    the session is already gone (idle-reaped, turn ended, or a different worker), so the
+    client stops pinging and prompts the user to re-open authoring. Same unguessable
+    per-turn token bearer as pick / drive."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scene_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        token = (request.data.get("token") or "").strip()
+        if not token:
+            raise ValidationError("token is required")
+
+        session = get_session(token)
+        if session is None:
+            return Response(
+                {"detail": "authoring browser session unavailable — re-open authoring",
+                 "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            ping_session(session)
+        except PlaywrightSessionClosed:
+            return Response(
+                {"detail": "authoring browser session expired — re-open authoring",
+                 "code": "session_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except Exception as exc:  # noqa: BLE001 — Playwright error → 502, not 500
+            logger.exception("flow keepalive failed: scene=%s", scene_id)
+            return Response(
+                {"detail": f"keepalive failed: {type(exc).__name__}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"ok": True})
 
 
 def _strip_inlined_secrets(steps: list) -> list:

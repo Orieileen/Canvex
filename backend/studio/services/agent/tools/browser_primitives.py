@@ -302,6 +302,21 @@ def pick_on_session(session, x: float, y: float) -> dict:
     return session.call(_op_pick, x, y)
 
 
+def _op_ping(page) -> str:
+    """No-op liveness probe. Reading page.url is instant and proves the page object is
+    still valid; the op merely being dequeued resets the owner thread's idle-reap timer
+    (the whole point). Returns the current URL."""
+    return page.url
+
+
+def ping_session(session) -> str:
+    """Public wrapper for FlowKeepaliveView: keep a live AUTHORING session warm across
+    human think-time (login / 2FA / captcha) so it doesn't idle-reap mid-authoring. The
+    client pings this on an interval while an authoring frame is armed. Returns the
+    current page URL. Raises PlaywrightSessionClosed / TimeoutError like any session.call."""
+    return session.call(_op_ping)
+
+
 # --- drive / takeover (RPA login / captcha) ---------------------------------
 # DRIVE mode dispatches REAL input to the page (unlike pick, which only RESOLVES an
 # element). It lets the user log in / pass a captcha in the on-canvas browser, then

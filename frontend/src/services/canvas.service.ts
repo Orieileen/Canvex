@@ -351,6 +351,30 @@ export async function postFlowDrive(
   return (await resp.json()) as { image: string };
 }
 
+/** Keep the live authoring browser warm (reset its idle timer) across human think-time
+ *  — the client pings this on an interval while an authoring frame is armed, so a long
+ *  login / 2FA / captcha pause doesn't idle-reap the session. Throws Error with
+ *  `code:"session_gone"` on 409 (the session is gone → the caller stops pinging + re-arms). */
+export async function postFlowKeepalive(
+  sceneId: string,
+  token: string,
+): Promise<void> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/keepalive/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify({ token }),
+    },
+  );
+  if (resp.status === 409) {
+    const err = new Error("authoring browser session gone") as Error & { code?: string };
+    err.code = "session_gone";
+    throw err;
+  }
+  if (!resp.ok) throw new Error(`flow keepalive failed: HTTP ${resp.status}`);
+}
+
 /** Run a saved robot; yields per-step status + monitor frames as SSE events. */
 export async function* postRobotRun(
   sceneId: string,
@@ -414,6 +438,8 @@ export const canvasService = {
   postFlowPick,
   // RPA 接管: 真实输入 (click/type/key), 用于登录/验证码 (见顶部 postFlowDrive)
   postFlowDrive,
+  // RPA 保活: 编写期间定时 ping 活着的浏览器会话, 防登录/验证码久停被 idle-reap
+  postFlowKeepalive,
   // RPA 机器人: 保存 + 运行 (见顶部 saveRobot / postRobotRun)
   saveRobot,
   postRobotRun,

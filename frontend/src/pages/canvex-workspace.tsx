@@ -77,6 +77,12 @@ import { FloatingAdjustPanel, ImageEditBar } from "@/components/canvas/ImageEdit
 
 const SAVE_DEBOUNCE_MS = 1500;
 const STATUS_FADE_MS = 2500;
+// RPA authoring keepalive: while an authoring browser is armed, ping the backend this
+// often to reset its idle-reap timer, so a long login / 2FA / captcha pause doesn't
+// kill the session mid-authoring. Must stay comfortably below the backend
+// CANVAS_BROWSER_SESSION_IDLE_TIMEOUT (default 300s) — 60s gives a 5× margin and
+// tolerates background-tab timer throttling.
+const AUTHORING_KEEPALIVE_MS = 60_000;
 
 // Canvas product policy, forced into every scene's appState by buildInitialData
 // on load (so they win over stale values older autosaves persisted):
@@ -554,6 +560,36 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     },
     [flowSession, activeSceneId, t],
   );
+
+  // Authoring keepalive: while a live authoring browser is armed, ping it on an interval
+  // so a long login / 2FA / captcha pause doesn't idle-reap the session mid-authoring
+  // (picks/drives keep it warm, but human think-time between them can exceed the idle
+  // window). On 409 the session is already gone — stop pinging, drop it, revert to watch,
+  // and tell the user to re-open authoring rather than leaving a dead armed frame.
+  useEffect(() => {
+    if (!flowSession) return;
+    const token = flowSession.token;
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        await canvasService.postFlowKeepalive(activeSceneId, token);
+      } catch (err) {
+        if (cancelled) return;
+        if ((err as { code?: string }).code === "session_gone") {
+          setFlowSession(null);
+          setBrowserMode("watch");
+          toast.error(t("browseLog.pickRearm"));
+        }
+        // Transient errors (network blip, 502): ignore — the next tick retries, and a
+        // truly dead session surfaces as 409 on the following ping or the user's next pick.
+      }
+    };
+    const id = window.setInterval(ping, AUTHORING_KEEPALIVE_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [flowSession, activeSceneId, t]);
 
   // Save the authored steps as a named robot (POST /robots/); enables Run.
   const handleSaveRobot = useCallback(
