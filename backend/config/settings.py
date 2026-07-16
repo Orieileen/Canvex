@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 
@@ -254,6 +255,27 @@ CANVAS_RPA_ENABLED = _as_bool(os.getenv("CANVAS_RPA_ENABLED"), False)
 # OFF only in environments with a fake/split DNS (e.g. a proxy that maps every domain to
 # a reserved CIDR), where it would block all domain browsing.
 CANVAS_BROWSER_SSRF_STRICT = _as_bool(os.getenv("CANVAS_BROWSER_SSRF_STRICT"), True)
+
+# SSRF trust override: IP ranges (CIDRs) to treat as PUBLIC even though they'd otherwise
+# be classified private/reserved. For deployments that reach real destinations THROUGH an
+# egress proxy which resolves them to a reserved range — e.g. a dev sandbox whose fake DNS
+# maps every domain into 198.18.0.0/15, or a corporate forward proxy. EMPTY by default →
+# no override, full SSRF protection. Only the listed ranges are trusted; every other
+# internal IP (127.0.0.1, 169.254.169.254, 10/8, 192.168/16, …) stays blocked. Set this
+# ONLY to ranges whose egress path you control; NEVER leave a broad range set in prod.
+# Guard against a fat-fingered over-broad range (e.g. 0.0.0.0/0 would trust the whole
+# internet as "public"); such an entry, like a malformed one, is skipped (fail closed to
+# "no trust"). Realistic egress-proxy ranges are far narrower than these thresholds.
+_MIN_TRUSTED_PREFIX = {4: 8, 6: 16}
+CANVAS_BROWSER_SSRF_TRUSTED_CIDRS = []
+for _cidr in _as_list(os.getenv("CANVAS_BROWSER_SSRF_TRUSTED_CIDRS")):
+    try:
+        _net = ipaddress.ip_network(_cidr, strict=False)
+    except ValueError:
+        continue  # malformed CIDR — skip rather than crash startup
+    if _net.prefixlen < _MIN_TRUSTED_PREFIX[_net.version]:
+        continue  # too broad to trust — ignore
+    CANVAS_BROWSER_SSRF_TRUSTED_CIDRS.append(_net)
 
 # RPA run-mode wall-clock deadline (seconds): a whole robot run is aborted past this so a
 # long/looping robot can't pin a web worker (per-step timeout is CANVAS_BROWSER_OP_TIMEOUT).

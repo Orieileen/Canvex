@@ -118,6 +118,16 @@ def enqueue_on_commit(job, task) -> str:
     return job_id
 
 
+def ip_is_trusted_cidr(ip) -> bool:
+    """True if `ip` (an ipaddress address) falls in a CANVAS_BROWSER_SSRF_TRUSTED_CIDRS
+    range — an operator-declared egress-proxy range treated as public despite being
+    otherwise private/reserved. Empty by default, so this is a no-op unless configured."""
+    for net in settings.CANVAS_BROWSER_SSRF_TRUSTED_CIDRS:
+        if net.version == ip.version and ip in net:
+            return True
+    return False
+
+
 def is_public_http_url(url: str) -> bool:
     """Reject private-network URLs before they reach an external provider.
 
@@ -148,6 +158,8 @@ def is_public_http_url(url: str) -> bool:
             ip = ipaddress.ip_address(resolved)
         except (socket.gaierror, ValueError):
             return False
+    if ip_is_trusted_cidr(ip):
+        return True  # reached through a declared egress proxy — treat as public
     return not (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_multicast or ip.is_reserved or ip.is_unspecified

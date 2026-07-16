@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 
-from .tools.common import is_gevent_patched
+from .tools.common import ip_is_trusted_cidr, is_gevent_patched
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +196,8 @@ def _ip_str_blocked(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True
+    if ip_is_trusted_cidr(ip):
+        return False  # declared egress-proxy range — reached through a trusted proxy
     return bool(
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
