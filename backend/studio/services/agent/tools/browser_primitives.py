@@ -6,9 +6,9 @@ accessibility snapshot (roles + names), then click / type by role+name. All shar
 ONE Playwright session per turn, owned by a dedicated thread (see
 playwright_session.py — Playwright sync objects are thread-affine).
 
-Session key = id(runtime.context): a fresh CanvasAgentContext per turn, so one
-session per turn. stream_canvas_agent closes it at turn end; an idle self-reap is
-the safety net.
+Session key = runtime.context.session_token: a fresh token per turn, so one session
+per turn. stream_canvas_agent closes it at turn end; an idle self-reap is the safety
+net.
 
 Security: navigation targets are SSRF-filtered (is_public_http_url) and, when a
 non-empty CANVAS_BROWSER_ALLOWLIST is set, restricted to those host suffixes.
@@ -126,6 +126,101 @@ def _op_read_text(page):
     return page.inner_text("body", timeout=_timeout_ms())
 
 
+# --- element pick (RPA authoring) -------------------------------------------
+# Runs on the LIVE DOM in the owner thread: resolve the actionable element at a
+# CSS-viewport coordinate and return a rich locator (role/name/text/css/nth/bbox).
+# The user clicks a point on the streamed screenshot; the frontend inverse-projects
+# it to page viewport px; this maps it back to a concrete element the DSL can target.
+# Resolving here (not off the possibly-stale screenshot) is why a pick is accurate.
+_ELEMENT_FROM_POINT_JS = r"""
+({x, y}) => {
+  const ACTIONABLE = 'a,button,input,select,textarea,label,summary,'
+    + '[role=button],[role=link],[role=tab],[role=menuitem],[role=option],'
+    + '[role=checkbox],[role=radio],[role=switch],[onclick]';
+  let el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  const act = el.closest(ACTIONABLE);      // icon-in-button / span-in-link → the control
+  if (act) el = act;
+  const cssPath = (node) => {
+    const parts = [];
+    while (node && node.nodeType === 1 && node.tagName.toLowerCase() !== 'html') {
+      if (node.id) { parts.unshift('#' + CSS.escape(node.id)); break; }
+      let sel = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (parent) {
+        const sibs = Array.from(parent.children).filter(c => c.tagName === node.tagName);
+        if (sibs.length > 1) sel += ':nth-of-type(' + (sibs.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(sel);
+      node = node.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const roleOf = (n) => {
+    const explicit = n.getAttribute('role');
+    if (explicit) return explicit;
+    const t = n.tagName.toLowerCase();
+    if (t === 'a' && n.hasAttribute('href')) return 'link';
+    if (t === 'button') return 'button';
+    if (t === 'select') return 'combobox';
+    if (t === 'textarea') return 'textbox';
+    if (t === 'input') {
+      const it = (n.getAttribute('type') || 'text').toLowerCase();
+      if (it === 'checkbox' || it === 'radio') return it;
+      if (it === 'button' || it === 'submit' || it === 'reset') return 'button';
+      return 'textbox';
+    }
+    return '';
+  };
+  const nameOf = (n) => (
+    n.getAttribute('aria-label') || n.getAttribute('alt') ||
+    n.getAttribute('placeholder') || n.getAttribute('title') ||
+    (n.innerText || n.textContent || '').trim()
+  ).slice(0, 200);
+  const css = cssPath(el);
+  let nth = 0;
+  try { nth = Array.from(document.querySelectorAll(css)).indexOf(el); }
+  catch (e) { nth = -1; }
+  const r = el.getBoundingClientRect();
+  const it = (el.getAttribute('type') || '').toLowerCase();
+  const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+  return {
+    tag: el.tagName.toLowerCase(),
+    role: roleOf(el),
+    name: nameOf(el),
+    text: ((el.innerText || el.textContent || '').trim()).slice(0, 200),
+    css: css,
+    nth: nth,
+    bbox: [r.x, r.y, r.width, r.height],
+    // flagged so the caller can refuse to persist secrets into a robot (see design §11)
+    isPassword: el.tagName.toLowerCase() === 'input'
+      && (it === 'password' || ac.includes('current-password') || ac.includes('new-password')),
+  };
+}
+"""
+
+
+def _op_resolve_point(page, x: float, y: float):
+    """Rich locator of the actionable element at (x,y) [CSS viewport px] on the live
+    DOM, or None if nothing is there. JSON-serialisable (page.evaluate returns values,
+    not node handles) — exactly the DSL `target` shape."""
+    return page.evaluate(_ELEMENT_FROM_POINT_JS, {"x": x, "y": y})
+
+
+def _op_screenshot(page) -> bytes:
+    """PNG bytes of the current viewport — for the run-mode monitor frame."""
+    return page.screenshot()
+
+
+def _op_pick(page, x: float, y: float) -> dict:
+    """Atomic pick: resolve the element at (x,y) AND capture a FRESH screenshot in the
+    SAME owner-thread op, so the picture the user confirms against matches the DOM the
+    locator was resolved on (closes the stale-frame TOCTOU — design §2.3). Returns
+    {"locator": <rich locator|None>, "png": <bytes>}; the view encodes/highlights."""
+    locator = page.evaluate(_ELEMENT_FROM_POINT_JS, {"x": x, "y": y})
+    return {"locator": locator, "png": page.screenshot()}
+
+
 # --- shared tool plumbing ---------------------------------------------------
 
 def _session_or_refusal(runtime):
@@ -139,7 +234,7 @@ def _session_or_refusal(runtime):
     if runtime is None or runtime.context is None:
         raise RuntimeError("web_operator tools require CanvasAgentContext via ToolRuntime")
     try:
-        return get_or_create_session(id(runtime.context)), None
+        return get_or_create_session(runtime.context.session_token), None
     except PlaywrightUnavailable as exc:
         logger.warning("web_operator unavailable: %s", exc)
         return None, (

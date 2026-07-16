@@ -13,11 +13,20 @@ per-scene (so "scene A's memory" never leaks to "scene B").
 """
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 
 @dataclass
 class CanvasAgentContext:
     scene_id: str
+    # Stable per-turn token identifying this run's browser session in the process
+    # registry (playwright_session._sessions). Replaces id(context) as the key so the
+    # session can be (a) reached from a SEPARATE HTTP request — the RPA element-pick
+    # POST echoes this token to find the same live page — and (b) never GC-id-reused.
+    # Every turn gets a fresh one; the streaming layer emits it so the client can
+    # correlate a pick to this turn's browser. Identity-equal to id(context) today
+    # (runtime.context IS this object) so the switch is behavior-preserving.
+    session_token: str = field(default_factory=lambda: uuid4().hex)
     # Image URLs attached to this turn via "Send to chat" on ImageEditBar.
     # generate_image / generate_video tools fall back to these when the
     # agent neglects to thread image_urls through itself — gpt-4o-mini

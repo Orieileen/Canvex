@@ -9,8 +9,10 @@ owner thread regardless of which thread the tool itself runs on. This mirrors th
 "sensitive work in a dedicated thread" pattern used by browser_runner._run_coro_blocking.
 
 Lifecycle:
-- One session per chat turn, keyed by id(context) in a process registry (the same
-  by-reference context the browse tool uses). Created lazily on first navigate.
+- One session per chat turn, keyed by CanvasAgentContext.session_token in a process
+  registry. Created lazily on first navigate. (The token — not id(context) — is the
+  key so the RPA element-pick request can reach the same session from a SEPARATE HTTP
+  request, and so a GC-reused id can't collide.)
 - Torn down at turn end by stream_canvas_agent (close_session), with an IDLE
   SELF-REAP safety net (the owner thread exits if it gets no command for
   CANVAS_BROWSER_SESSION_IDLE_TIMEOUT) so a missed cleanup can't leak a Chromium.
@@ -207,13 +209,13 @@ def _route_guard(route):
 
 
 # ---------------------------------------------------------------------------
-# Per-turn session registry (keyed by id(context))
+# Per-turn session registry (keyed by CanvasAgentContext.session_token)
 # ---------------------------------------------------------------------------
-_sessions: dict[int, PlaywrightSession] = {}
+_sessions: dict[str, PlaywrightSession] = {}
 _sessions_lock = threading.Lock()
 
 
-def get_or_create_session(key: int) -> PlaywrightSession:
+def get_or_create_session(key: str) -> PlaywrightSession:
     """Return the live session for this turn key, creating one if absent/dead."""
     with _sessions_lock:
         s = _sessions.get(key)
@@ -233,9 +235,19 @@ def get_or_create_session(key: int) -> PlaywrightSession:
         return created
 
 
-def close_session(key: int) -> None:
+def close_session(key: str) -> None:
     """Tear down + forget the session for this turn key (idempotent)."""
     with _sessions_lock:
         s = _sessions.pop(key, None)
     if s is not None:
         s.close()
+
+
+def get_session(key: str) -> PlaywrightSession | None:
+    """Return the live session for this token, or None if absent/dead. Used by the
+    RPA element-pick request — a SEPARATE HTTP request from the streaming turn — to
+    reach the same live page WITHOUT creating one (a pick must never spin up a
+    browser; a miss means the authoring session is gone and the client should re-arm)."""
+    with _sessions_lock:
+        s = _sessions.get(key)
+    return s if s is not None and s.is_alive() else None

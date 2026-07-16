@@ -830,7 +830,7 @@ def stream_canvas_agent(
             # thread could. Guarded so a teardown error can't strand the consumer
             # on frames.get(); the sentinel is ALWAYS posted last.
             try:
-                close_session(id(ctx))
+                close_session(ctx.session_token)
             except Exception:  # noqa: BLE001
                 logger.exception("stream_canvas_agent: close_session failed")
             # The graph ran on THIS thread, so any ORM work its tools did (e.g.
