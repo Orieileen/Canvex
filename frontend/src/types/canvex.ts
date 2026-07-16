@@ -234,6 +234,8 @@ export interface CanvasRobot {
   name: string;
   steps: RobotStep[];
   variables: Record<string, unknown>;
+  /** Whether the robot may run write/state-changing steps (submit / pay / delete). */
+  allow_writes: boolean;
   created_at: string;
   updated_at: string;
 }

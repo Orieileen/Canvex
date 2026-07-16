@@ -14,6 +14,9 @@ export const ROBOT_STEPS_FRAME_MARKER = "robot-steps-frame";
 /** customData 键 —— 读写两侧必须一致 (autosave 回读同名键)。 */
 export const ROBOT_STEPS_TITLE_KEY = "robotTitle";
 export const ROBOT_STEPS_KEY = "robotSteps";
+/** 是否允许该机器人执行「写操作」步骤 (提交表单 / 点支付·删除等) —— 默认 false (只读)。
+ *  跟步骤一样存 customData 以便随场景 autosave + 重载还在, 保存时随 allow_writes 发给后端。 */
+export const ROBOT_STEPS_ALLOW_WRITES_KEY = "robotAllowWrites";
 
 /** 与主聊天框同宽,矮一些 —— 卡片自己滚动。 */
 export const ROBOT_STEPS_FRAME_WIDTH = CHAT_FRAME_WIDTH;
@@ -43,14 +46,16 @@ export function findRobotStepsFrame(
   return elements.find(isRobotStepsFrame) ?? null;
 }
 
-/** 从一个步骤框读出标题 + 已持久化的步骤 (customData)。解析失败 / 非数组 → 空。 */
+/** 从一个步骤框读出标题 + 已持久化的步骤 + 是否允许写操作 (customData)。解析失败 / 非数组 → 空。 */
 export function getRobotStepsFrameData(el: ExcalidrawElement): {
   title: string;
   steps: RobotStep[];
+  allowWrites: boolean;
 } {
   const cd = (el.customData ?? {}) as Record<string, unknown>;
   const title =
     typeof cd[ROBOT_STEPS_TITLE_KEY] === "string" ? (cd[ROBOT_STEPS_TITLE_KEY] as string) : "";
+  const allowWrites = cd[ROBOT_STEPS_ALLOW_WRITES_KEY] === true;
   const raw = cd[ROBOT_STEPS_KEY];
   let steps: RobotStep[] = [];
   if (typeof raw === "string" && raw) {
@@ -66,5 +71,5 @@ export function getRobotStepsFrameData(el: ExcalidrawElement): {
       steps = [];
     }
   }
-  return { title, steps };
+  return { title, steps, allowWrites };
 }

@@ -50,6 +50,7 @@ import {
   findBrowseMonitorFrame,
 } from "@/lib/canvas-browse-monitor-frame";
 import {
+  ROBOT_STEPS_ALLOW_WRITES_KEY,
   ROBOT_STEPS_FRAME_HEIGHT,
   ROBOT_STEPS_FRAME_MARKER,
   ROBOT_STEPS_FRAME_WIDTH,
@@ -658,6 +659,8 @@ export interface UseCanvasPinning {
    *  survive a scene reload; the live steps otherwise live only in React state. No-op if
    *  the frame is gone. */
   persistRobotSteps: (frameId: string, steps: RobotStep[]) => void;
+  /** Persist the robot's write-gate opt-in (allow_writes) to the steps frame. */
+  persistRobotAllowWrites: (frameId: string, allow: boolean) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1282,6 +1285,7 @@ export function useCanvasPinning(
             aiChatType: ROBOT_STEPS_FRAME_MARKER,
             [ROBOT_STEPS_TITLE_KEY]: title,
             [ROBOT_STEPS_KEY]: serializeRobotSteps([]),
+            [ROBOT_STEPS_ALLOW_WRITES_KEY]: false, // read-only by default (write-gate)
           },
         });
         if (!frame) return null;
@@ -1299,6 +1303,16 @@ export function useCanvasPinning(
   const persistRobotSteps = useCallback(
     (frameId: string, steps: RobotStep[]): void => {
       patchFrameCustomData(frameId, { [ROBOT_STEPS_KEY]: serializeRobotSteps(steps) });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Persist the robot's write-gate opt-in to the steps frame's customData. Kept in
+   *  customData (not React state) so it round-trips scene autosave + reload exactly like
+   *  the steps do; Save reads it back to send allow_writes. */
+  const persistRobotAllowWrites = useCallback(
+    (frameId: string, allow: boolean): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_ALLOW_WRITES_KEY]: allow });
     },
     [patchFrameCustomData],
   );
@@ -1887,6 +1901,7 @@ export function useCanvasPinning(
     clearBrowseMonitorImage,
     ensureRobotStepsFrame,
     persistRobotSteps,
+    persistRobotAllowWrites,
     pinImage,
     pinVideo,
     pinMergedImage,

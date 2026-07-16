@@ -26,6 +26,9 @@ export const browseLog = {
     robotSaved: "Robot saved",
     robotSaveFirst: "Save the robot first",
     robotEmptySave: "Add at least one step first",
+    robotAllowWrites: "Allow writes",
+    robotAllowWritesHint:
+      "Let this robot run steps that submit forms or click pay / delete. Off by default — those steps fail the run until enabled.",
   },
   zh: {
     header: "浏览日志",

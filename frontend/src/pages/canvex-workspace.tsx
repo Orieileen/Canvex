@@ -466,6 +466,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     clearBrowseMonitorImage,
     ensureRobotStepsFrame,
     persistRobotSteps,
+    persistRobotAllowWrites,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -477,6 +478,21 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     resetPackRow,
   } = pinning;
 
+  // A saved robot is a SNAPSHOT of the authored state (steps + allow_writes) at Save
+  // time; Run executes that stored robot by id. So ANY later edit — steps or the
+  // allow_writes toggle — must invalidate the saved id (disabling Run until re-Save),
+  // else Run would silently execute the stale robot. Critically for allow_writes: without
+  // this, toggling the switch OFF would show read-only while Run still ran the stored
+  // write-enabled robot (submit / pay / delete) — a visible-vs-enforced safety mismatch.
+  const invalidateSavedRobot = useCallback((frameId: string) => {
+    setSavedRobotIds((prev) => {
+      if (!(frameId in prev)) return prev;
+      const next = { ...prev };
+      delete next[frameId];
+      return next;
+    });
+  }, []);
+
   // Edit a robot's steps (change action / type-text / delete) from the step cards.
   const handleEditSteps = useCallback(
     (frameId: string, steps: RobotStep[]) => {
@@ -485,8 +501,22 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         [frameId]: { title: prev[frameId]?.title ?? "", steps },
       }));
       persistRobotSteps(frameId, steps);
+      invalidateSavedRobot(frameId);
     },
-    [persistRobotSteps],
+    [persistRobotSteps, invalidateSavedRobot],
+  );
+
+  // Toggle the robot's write-gate opt-in. Persisted straight to the steps frame's
+  // customData (no React state) — the overlay reads it back from there, and Save sends
+  // it as allow_writes; it round-trips scene autosave + reload like the steps do.
+  // Invalidate any saved robot so the write-gate the run enforces can't diverge from the
+  // toggle the user sees (they must re-Save to make the new setting runnable).
+  const handleToggleAllowWrites = useCallback(
+    (frameId: string, allow: boolean) => {
+      persistRobotAllowWrites(frameId, allow);
+      invalidateSavedRobot(frameId);
+    },
+    [persistRobotAllowWrites, invalidateSavedRobot],
   );
 
   // Element pick: POST the clicked page-viewport coord to the live authoring browser,
@@ -519,6 +549,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps: next },
           }));
           persistRobotSteps(stepsFrameId, next);
+          invalidateSavedRobot(stepsFrameId); // a new step supersedes any saved snapshot
         }
       } catch (err) {
         if ((err as { code?: string }).code === "session_gone") {
@@ -530,7 +561,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         }
       }
     },
-    [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps],
+    [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps, invalidateSavedRobot],
   );
 
   // Drive (takeover): dispatch REAL input to the live browser (login / captcha), then
@@ -596,18 +627,17 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     async (frameId: string) => {
       // Prefer this session's live steps; after a reload they live only in the frame's
       // persisted customData, so fall back to that (else Save would silently no-op).
+      // allow_writes lives ONLY in customData, so always read the frame for it.
       const live = robotStepsRef.current[frameId];
       let steps = live?.steps ?? [];
       let name = live?.title || "";
-      if (steps.length === 0) {
-        const frame = excalidrawApiRef.current
-          ?.getSceneElements()
-          .find((el) => el.id === frameId && !el.isDeleted);
-        if (frame) {
-          const data = getRobotStepsFrameData(frame);
-          steps = data.steps;
-          name = name || data.title;
-        }
+      const frame = excalidrawApiRef.current
+        ?.getSceneElements()
+        .find((el) => el.id === frameId && !el.isDeleted);
+      const persisted = frame ? getRobotStepsFrameData(frame) : null;
+      if (steps.length === 0 && persisted) {
+        steps = persisted.steps;
+        name = name || persisted.title;
       }
       if (steps.length === 0) {
         toast.info(t("browseLog.robotEmptySave"));
@@ -617,6 +647,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         const robot = await canvasService.saveRobot(activeSceneId, {
           name: name || "Robot",
           steps,
+          allow_writes: persisted?.allowWrites ?? false,
         });
         setSavedRobotIds((prev) => ({ ...prev, [frameId]: robot.id }));
         toast.success(t("browseLog.robotSaved"));
@@ -1645,6 +1676,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         onEditSteps={handleEditSteps}
         onSave={handleSaveRobot}
         onRun={handleRunRobot}
+        onToggleAllowWrites={handleToggleAllowWrites}
         runStatus={runStatus}
         savedFrames={savedRobotIds}
       />

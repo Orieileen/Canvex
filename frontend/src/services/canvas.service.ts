@@ -310,10 +310,11 @@ export async function postFlowPick(
 }
 
 
-/** Save the authored steps as a named, reusable robot. */
+/** Save the authored steps as a named, reusable robot. `allow_writes` opts the robot
+ *  into running write/state-changing steps (submit / pay / delete); omitted → read-only. */
 export async function saveRobot(
   sceneId: string,
-  body: { name: string; steps: RobotStep[] },
+  body: { name: string; steps: RobotStep[]; allow_writes?: boolean },
 ): Promise<CanvasRobot> {
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/robots/`,

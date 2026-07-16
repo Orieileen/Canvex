@@ -32,6 +32,9 @@ interface RobotStepsOverlayProps {
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
   onSave: (frameId: string) => void;
   onRun: (frameId: string) => void;
+  /** Toggle the robot's write-gate opt-in (allow submits / pay·delete clicks). The
+   *  current value is read from the frame's customData, so no companion state prop. */
+  onToggleAllowWrites: (frameId: string, allow: boolean) => void;
   /** Per-frame, per-step-index status while a robot runs. */
   runStatus: Record<string, Record<number, RunStatus>>;
   /** frameId → saved robot id (presence enables Run). */
@@ -67,6 +70,7 @@ export function RobotStepsOverlay({
   onEditSteps,
   onSave,
   onRun,
+  onToggleAllowWrites,
   runStatus,
   savedFrames,
 }: RobotStepsOverlayProps) {
@@ -87,6 +91,7 @@ export function RobotStepsOverlay({
           onEditSteps={onEditSteps}
           onSave={onSave}
           onRun={onRun}
+          onToggleAllowWrites={onToggleAllowWrites}
           status={runStatus?.[frame.id] ?? EMPTY_STATUS}
           saved={!!savedFrames?.[frame.id]}
         />
@@ -102,6 +107,7 @@ function RobotStepsPanel({
   onEditSteps,
   onSave,
   onRun,
+  onToggleAllowWrites,
   status,
   saved,
 }: {
@@ -111,6 +117,7 @@ function RobotStepsPanel({
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
   onSave: (frameId: string) => void;
   onRun: (frameId: string) => void;
+  onToggleAllowWrites: (frameId: string, allow: boolean) => void;
   status: Record<number, RunStatus>;
   saved: boolean;
 }) {
@@ -121,6 +128,9 @@ function RobotStepsPanel({
   );
   const title = live?.title || persisted?.title || "";
   const steps = live?.steps ?? persisted?.steps ?? EMPTY_STEPS;
+  // allow_writes is persisted-only (customData), never part of live authoring state, so
+  // read it straight from the frame (reuse `persisted` when it's already parsed).
+  const allowWrites = (persisted ?? getRobotStepsFrameData(frame)).allowWrites;
 
   const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
     frame,
@@ -166,6 +176,31 @@ function RobotStepsPanel({
             </div>
           )}
         </div>
+        {/* Write-gate toggle — off (read-only) by default; amber when armed, since it lets
+            the robot submit forms / click pay·delete. Value lives in the frame's customData. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={allowWrites}
+          title={t("browseLog.robotAllowWritesHint")}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleAllowWrites(frame.id, !allowWrites);
+          }}
+          className={
+            "flex items-center gap-2 rounded px-5 py-2 text-[26px] font-medium " +
+            (allowWrites
+              ? "bg-amber-500 text-black hover:bg-amber-400"
+              : "bg-white/10 text-white/70 hover:bg-white/20")
+          }
+        >
+          <span
+            className={
+              "h-4 w-4 shrink-0 rounded-full " + (allowWrites ? "bg-black/70" : "bg-white/25")
+            }
+          />
+          {t("browseLog.robotAllowWrites")}
+        </button>
         <button
           type="button"
           onClick={(e) => {
