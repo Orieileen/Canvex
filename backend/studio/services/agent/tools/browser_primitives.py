@@ -291,8 +291,7 @@ def _op_pick(page, x: float, y: float) -> dict:
     SAME owner-thread op, so the picture the user confirms against matches the DOM the
     locator was resolved on (closes the stale-frame TOCTOU — design §2.3). Returns
     {"locator": <rich locator|None>, "image": <JPEG bytes>}; the view base64-encodes."""
-    locator = page.evaluate(_ELEMENT_FROM_POINT_JS, {"x": x, "y": y})
-    return {"locator": locator, "image": page.screenshot(type="jpeg", quality=72)}
+    return {"locator": _op_resolve_point(page, x, y), "image": _op_screenshot(page)}
 
 
 def pick_on_session(session, x: float, y: float) -> dict:

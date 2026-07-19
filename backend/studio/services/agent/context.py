@@ -69,3 +69,26 @@ class CanvasAgentContext:
     # for element picking. Emitting only on a real open keeps the token backed by a live
     # session (emitting every turn would 409 picks on turns that opened no browser).
     emit_flow_session: Callable[[str, dict], None] | None = None
+    # RPA v2 (Phase 4): set by stream_canvas_agent; the authoring tool calls it to send ONE
+    # command (open tab / AXTree snapshot / ask user to pick / ref→locator) to the user's
+    # browser EXTENSION, which the frontend relays. Arg: a command dict already carrying a
+    # command_id + token + op. The extension's result returns as a separate flow/ext-result
+    # POST that resolves the ext_rendezvous slot the tool is blocked on. None on the
+    # non-streaming invoke path — the tool MUST null-check and refuse (no client to relay to).
+    emit_ext_command: Callable[[dict], None] | None = None
+    # RPA v2 (Phase 4): set by stream_canvas_agent; commit_robot_steps calls it with the
+    # final drafted steps → one `robot_steps` frame → the client lays them down as step
+    # cards. None on the non-streaming path.
+    emit_robot_steps: Callable[[list], None] | None = None
+    # RPA v2 (Phase 4): whether the user's browser has the Canvex extension (the frontend
+    # reports it per chat request). False => browser_open_and_snapshot refuses and guides
+    # the user to install it, rather than falling back to a server browser.
+    ext_available: bool = False
+    # True once the client has disconnected (set by stream_canvas_agent to the pump's
+    # abort flag). A tool that BLOCKS (ext_rendezvous.wait during a human pick) polls this
+    # so it can stop parking the pump thread after the user navigates away. None off-stream.
+    is_aborted: Callable[[], bool] | None = None
+    # RPA v2 (Phase 4): the current authoring browser tab the Agent opened this turn —
+    # {tab_id, epoch, url}. Set by browser_open_and_snapshot, read by commit_robot_steps
+    # (same turn/ctx) so snapshot → ref-locator / pick all pin to the same tab + snapshot.
+    rpa_authoring: dict | None = None

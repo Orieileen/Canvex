@@ -183,8 +183,10 @@ def _safe_close(browser, pw):
             logger.debug("web_operator teardown: %s.%s failed", type(obj).__name__, meth)
 
 
-# Cache host→blocked so the per-request route guard doesn't DNS-resolve every
-# subresource repeatedly. A host's block-status is stable within a process run.
+# Cache the block verdict for IP LITERALS only (their classification is deterministic
+# and stable). DOMAIN verdicts are deliberately NOT cached — they must be re-resolved
+# each request so a DNS-rebinding flip or a transient resolution failure is re-evaluated
+# rather than frozen for the process lifetime.
 _host_block_cache: dict[str, bool] = {}
 
 
@@ -220,11 +222,16 @@ def _host_blocked(host: str) -> bool:
         blocked = cached
     else:
         blocked = False
+        cacheable = True
         try:
-            ipaddress.ip_address(host)  # IP literal → classify directly
+            ipaddress.ip_address(host)  # IP literal → classify directly (stable → cache)
             blocked = _ip_str_blocked(host)
         except ValueError:
-            # Domain: resolve + block any non-public address (strict SSRF only).
+            # Domain: resolve + block any non-public address (strict SSRF only). Do NOT
+            # cache this verdict — re-resolve every request so a DNS-rebinding flip (short
+            # TTL, the exact case this guard defends) can't slip past on a cached "public",
+            # and a transient resolution failure can't permanently block a good host.
+            cacheable = False
             if settings.CANVAS_BROWSER_SSRF_STRICT:
                 try:
                     for info in socket.getaddrinfo(host, None):
@@ -233,7 +240,8 @@ def _host_blocked(host: str) -> bool:
                             break
                 except Exception:  # noqa: BLE001 — DNS failure → fail closed
                     blocked = True
-        _host_block_cache[host] = blocked
+        if cacheable:
+            _host_block_cache[host] = blocked
     if blocked:
         return True
     allow = settings.CANVAS_BROWSER_ALLOWLIST
@@ -275,13 +283,25 @@ def get_or_create_session(key: str) -> PlaywrightSession:
     # would serialize / deadlock every other session op. Re-check under the lock
     # afterward and discard ours if another thread won the race for this key.
     created = PlaywrightSession()  # may raise PlaywrightUnavailable
+    winner = None
     with _sessions_lock:
+        # Prune idle-reaped/dead entries (their owner thread has exited) so per-turn and
+        # keep-alive tokens that are never close_session()ed don't accumulate for the life
+        # of the process. is_alive() is a cheap, non-blocking thread check.
+        for dead in [k for k, v in _sessions.items() if not v.is_alive()]:
+            _sessions.pop(dead, None)
         existing = _sessions.get(key)
         if existing is not None and existing.is_alive():
-            created.close()
-            return existing
-        _sessions[key] = created
-        return created
+            winner = existing
+        else:
+            _sessions[key] = created
+            winner = created
+    # close() can block ~25s (done.wait + join); do it OUTSIDE the lock so a race-loser's
+    # teardown doesn't serialize every other registry op (the whole reason we construct
+    # outside the lock above).
+    if winner is not created:
+        created.close()
+    return winner
 
 
 def close_session(key: str) -> None:

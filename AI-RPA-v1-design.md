@@ -221,6 +221,8 @@ vx = ix * (Wviewport/Wimg);  vy = iy * (Hviewport/Himg)   // 发送 (vx, vy)
 
 **v2 backlog**:CDP 交互视图 + live hover;专用 browser-worker 进程 token/IPC 寻址(真正的多进程修复);调度/无人值守 + 队列;完整输入转发接管(验证码);多并发机器人(需脱离 scene-singleton 帧模型);凭证库集成;自愈定位自动回写。
 
+> **v2 大方向:用户浏览器执行(扩展式)** —— 见 [`AI-RPA-v2-browser-extension-design.md`](AI-RPA-v2-browser-extension-design.md)。把执行从"云端假身份 Playwright"换成"用户真实浏览器里的 Canvex 扩展",用真实 IP+指纹+登录态从根上绕过反爬(本仓库已实测:服务器端有头+Xvfb 仍被 Google/Amazon 的 IP 信誉拦)。DSL/录制/定位/模型/写门全部复用,是加一个 `RobotExecutor` 实现;代价是退成 attended,故两执行器并存。
+
 ---
 
 ## 13. 构建顺序

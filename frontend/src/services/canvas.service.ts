@@ -140,6 +140,80 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * Parse an SSE byte stream into typed JSON events. Frames are separated by a blank line
+ * ("\n\n"); within a frame the `data:` lines carry the payload (joined by "\n" per spec)
+ * and other lines (":" keep-alive comments, event:/id:/retry:) are ignored. A cursor
+ * advances through `buffer` instead of reslicing per frame — reslicing is O(buffer²) for
+ * many small frames (matters for big screenshot frames). CR is stripped so CRLF/CR line
+ * endings (a proxy may rewrite them) still split on "\n\n"; safe because json.dumps escapes
+ * any real CR inside payloads. `[DONE]` sentinels are skipped. With `skipMalformed`, a frame
+ * that fails JSON.parse is dropped; otherwise the error propagates and aborts the stream.
+ * On any exit the reader is cancelled (so the server stops producing into an orphan
+ * connection) and released. Shared by postChatStream + postRobotRun — the frontend's only
+ * two SSE consumers.
+ */
+async function* parseSSEStream<T>(
+  reader: ReadableStreamDefaultReader<string>,
+  { skipMalformed = false }: { skipMalformed?: boolean } = {},
+): AsyncGenerator<T, void, void> {
+  const frameData = (frame: string): string => {
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("data:")) {
+        const v = line.slice(5);
+        data += (data ? "\n" : "") + (v.startsWith(" ") ? v.slice(1) : v);
+      }
+    }
+    return data;
+  };
+  // Returns undefined for an empty/[DONE]/skipped-malformed frame (JSON.parse never yields
+  // undefined, so it's a safe "no event" sentinel — a literal `null` payload still yields).
+  const parse = (data: string): T | undefined => {
+    if (!data || data === "[DONE]") return undefined;
+    if (!skipMalformed) return JSON.parse(data) as T;
+    try {
+      return JSON.parse(data) as T;
+    } catch {
+      return undefined;
+    }
+  };
+  let buffer = "";
+  let cursor = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (value) buffer += value.replace(/\r/g, "");
+      let sep = buffer.indexOf("\n\n", cursor);
+      while (sep !== -1) {
+        const evt = parse(frameData(buffer.slice(cursor, sep)));
+        cursor = sep + 2;
+        if (evt !== undefined) yield evt;
+        sep = buffer.indexOf("\n\n", cursor);
+      }
+      // Compact once the backlog is large enough that trailing unparsed bytes aren't a
+      // material fraction — bounded memory even on very long streams.
+      if (cursor > 4096) {
+        buffer = buffer.slice(cursor);
+        cursor = 0;
+      }
+      if (done) break;
+    }
+    // Defensive: a final frame not terminated by a blank line.
+    const tail = parse(frameData(buffer.slice(cursor)));
+    if (tail !== undefined) yield tail;
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    throw err;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released via cancel()
+    }
+  }
+}
+
+/**
  * Chat stream — SSE via fetch (NOT axios, NOT EventSource).
  *
  * 直接用 fetch 的原因:
@@ -157,6 +231,7 @@ export async function* postChatStream(
     signal?: AbortSignal;
     disabledSkills?: string[];
     attachments?: ChatAttachment[];
+    extAvailable?: boolean;
   } = {},
 ): AsyncGenerator<CanvasChatStreamEvent, void, void> {
   // Empty / undefined optional fields → omit so backend serializer's
@@ -168,6 +243,11 @@ export async function* postChatStream(
   }
   if (options.attachments && options.attachments.length > 0) {
     body.attachments = options.attachments;
+  }
+  // RPA v2 (Phase 4): tell the backend whether the Canvex extension is available so the
+  // authoring tool can drive the user's browser (or refuse + guide install).
+  if (options.extAvailable) {
+    body.ext_available = true;
   }
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/chat/`,
@@ -188,64 +268,9 @@ export async function* postChatStream(
   const reader = resp.body
     .pipeThrough(new TextDecoderStream("utf-8"))
     .getReader();
-  // Parse SSE frames: events are separated by a blank line ("\n\n"); within a
-  // frame the `data:` lines carry the payload (joined by "\n" per spec), and
-  // other lines (":" keep-alive comments, event:/id:/retry:) are ignored. We
-  // advance a cursor through `buffer` instead of reslicing on every frame —
-  // reslicing is O(buffer²) for many small frames. The payloads are single-line
-  // JSON identical to the old NDJSON events; only the framing changed.
-  const frameData = (frame: string): string => {
-    let data = "";
-    for (const line of frame.split("\n")) {
-      if (line.startsWith("data:")) {
-        const v = line.slice(5);
-        data += (data ? "\n" : "") + (v.startsWith(" ") ? v.slice(1) : v);
-      }
-    }
-    return data;
-  };
-  let buffer = "";
-  let cursor = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      // Strip CR so CRLF/CR line endings (a proxy may rewrite them) normalize to
-      // LF — then "\n\n" frame splitting works. Safe: json.dumps escapes any real
-      // CR inside payloads, so raw CR only ever appears as an SSE line terminator.
-      if (value) buffer += value.replace(/\r/g, "");
-      let sep = buffer.indexOf("\n\n", cursor);
-      while (sep !== -1) {
-        const data = frameData(buffer.slice(cursor, sep));
-        cursor = sep + 2;
-        if (data && data !== "[DONE]") {
-          yield JSON.parse(data) as CanvasChatStreamEvent;
-        }
-        sep = buffer.indexOf("\n\n", cursor);
-      }
-      // Compact once the backlog is large enough that trailing unparsed bytes
-      // aren't a material fraction — bounded memory even on very long streams.
-      if (cursor > 4096) {
-        buffer = buffer.slice(cursor);
-        cursor = 0;
-      }
-      if (done) break;
-    }
-    // Defensive: a final frame not terminated by a blank line.
-    const tail = frameData(buffer.slice(cursor));
-    if (tail && tail !== "[DONE]") yield JSON.parse(tail) as CanvasChatStreamEvent;
-  } catch (err) {
-    // Tell the server we're done so it stops producing into an orphan
-    // connection. cancel() releases the lock too, so releaseLock in the
-    // finally below would throw — swallow it there.
-    await reader.cancel().catch(() => {});
-    throw err;
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // already released via cancel()
-    }
-  }
+  // A malformed chat frame aborts the stream (no skipMalformed) — the payloads are our
+  // own single-line JSON, so a parse failure means real corruption, not a stray frame.
+  yield* parseSSEStream<CanvasChatStreamEvent>(reader);
 }
 
 // list 返回无 data 字段, retrieve 带 data —— createResource 默认 list 返回
@@ -282,21 +307,16 @@ export interface AngleCreatePayload {
   zoom: number;
 }
 
-/** RPA element pick: POST a page-viewport coordinate to the live authoring browser and
- *  get back the resolved rich locator + a fresh screenshot. Throws Error with
- *  `code: "session_gone"` on 409 (the authoring browser is gone → the caller re-arms). */
-export async function postFlowPick(
-  sceneId: string,
-  body: { token: string; x: number; y: number },
-): Promise<FlowPickResult> {
+/** POST JSON to a `/flow/<path>/` endpoint on the live authoring browser. Encodes the
+ *  shared flow-endpoint error contract once: a 409 becomes an Error with
+ *  `code:"session_gone"` (the browser is gone → the caller re-arms); any other non-2xx
+ *  throws. Returns the parsed JSON body. */
+async function postFlowJson<T>(sceneId: string, path: string, body: object): Promise<T> {
   const resp = await fetch(
-    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/pick/`,
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/${path}/`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "true",
-      },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
       body: JSON.stringify(body),
     },
   );
@@ -305,8 +325,18 @@ export async function postFlowPick(
     err.code = "session_gone";
     throw err;
   }
-  if (!resp.ok) throw new Error(`flow pick failed: HTTP ${resp.status}`);
-  return (await resp.json()) as FlowPickResult;
+  if (!resp.ok) throw new Error(`flow ${path} failed: HTTP ${resp.status}`);
+  return (await resp.json()) as T;
+}
+
+/** RPA element pick: POST a page-viewport coordinate to the live authoring browser and
+ *  get back the resolved rich locator + a fresh screenshot. Throws Error with
+ *  `code: "session_gone"` on 409 (the authoring browser is gone → the caller re-arms). */
+export async function postFlowPick(
+  sceneId: string,
+  body: { token: string; x: number; y: number },
+): Promise<FlowPickResult> {
+  return postFlowJson<FlowPickResult>(sceneId, "pick", body);
 }
 
 
@@ -335,21 +365,7 @@ export async function postFlowDrive(
   sceneId: string,
   body: { token: string; action: "click" | "type" | "key"; x?: number; y?: number; text?: string; key?: string },
 ): Promise<{ image: string }> {
-  const resp = await fetch(
-    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/drive/`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-      body: JSON.stringify(body),
-    },
-  );
-  if (resp.status === 409) {
-    const err = new Error("authoring browser session gone") as Error & { code?: string };
-    err.code = "session_gone";
-    throw err;
-  }
-  if (!resp.ok) throw new Error(`flow drive failed: HTTP ${resp.status}`);
-  return (await resp.json()) as { image: string };
+  return postFlowJson<{ image: string }>(sceneId, "drive", body);
 }
 
 /** Keep the live authoring browser warm (reset its idle timer) across human think-time
@@ -360,20 +376,27 @@ export async function postFlowKeepalive(
   sceneId: string,
   token: string,
 ): Promise<void> {
+  await postFlowJson<{ ok: boolean }>(sceneId, "keepalive", { token });
+}
+
+/** RPA v2 (Phase 4): return the browser extension's result for ONE Agent command to the
+ *  backend, which unblocks the waiting tool. Resolves true when delivered (200); a 409
+ *  (command_gone — the Agent already timed out / the turn ended) or any other non-2xx
+ *  resolves false, never throws, so the relay caller simply stops. The result payload
+ *  (AXTree / real-browser data) is NOT persisted server-side. */
+export async function postFlowExtResult(
+  sceneId: string,
+  body: { token: string; command_id: string; result: unknown },
+): Promise<boolean> {
   const resp = await fetch(
-    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/keepalive/`,
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/ext-result/`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(body),
     },
   );
-  if (resp.status === 409) {
-    const err = new Error("authoring browser session gone") as Error & { code?: string };
-    err.code = "session_gone";
-    throw err;
-  }
-  if (!resp.ok) throw new Error(`flow keepalive failed: HTTP ${resp.status}`);
+  return resp.ok;
 }
 
 /** Run a saved robot; yields per-step status + monitor frames as SSE events. */
@@ -396,27 +419,9 @@ export async function* postRobotRun(
   );
   if (!resp.ok || !resp.body) throw new Error(`robot run failed: HTTP ${resp.status}`);
   const reader = resp.body.pipeThrough(new TextDecoderStream("utf-8")).getReader();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += value;
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      for (const line of frame.split("\n")) {
-        const s = line.trim();
-        if (s.startsWith("data:")) {
-          try {
-            yield JSON.parse(s.slice(5).trim()) as CanvasRobotRunEvent;
-          } catch {
-            /* skip malformed frame */
-          }
-        }
-      }
-    }
-  }
+  // skipMalformed: a robot run interleaves screenshot frames; tolerate a stray/truncated
+  // one rather than aborting the whole run.
+  yield* parseSSEStream<CanvasRobotRunEvent>(reader, { skipMalformed: true });
 }
 
 
@@ -441,6 +446,8 @@ export const canvasService = {
   postFlowDrive,
   // RPA 保活: 编写期间定时 ping 活着的浏览器会话, 防登录/验证码久停被 idle-reap
   postFlowKeepalive,
+  // RPA v2 (Phase 4): 把扩展执行一条 Agent 命令的结果回传后端 (解阻塞 Agent 工具)
+  postFlowExtResult,
   // RPA 机器人: 保存 + 运行 (见顶部 saveRobot / postRobotRun)
   saveRobot,
   postRobotRun,

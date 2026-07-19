@@ -65,7 +65,7 @@ from .playwright_session import close_session
 from .tools.browser import browse
 from .tools.browser_primitives import WEB_OPERATOR_TOOLS
 from .tools.image import generate_image
-from .tools.robot_authoring import author_robot
+from .tools.robot_authoring import browser_open_and_snapshot, commit_robot_steps
 from .tools.video import generate_video
 
 # All SKILL.md files live under this dir, one subdir per skill. Layout matches
@@ -215,12 +215,19 @@ RPA_SYSTEM_PROMPT_SECTION = """
 
 ## Browser automation authoring (影刀-style RPA)
 When the user wants to BUILD or RECORD a repeatable browser automation ("每天…", \
-"自动…", "做个机器人/脚本" that clicks or fills a site), call the `author_robot` tool \
-with their task and the site's start URL. It opens a browser ON THE CANVAS the user can \
-point at: they switch it to Pick mode and CLICK the target elements, which is far more \
-reliable than you guessing selectors. Ask for the start URL if they didn't give one; \
-never guess it. This is for building REUSABLE robots — for one-off research use \
-`browse`, for a single precise flow use `web_operator`."""
+"自动…", "做个机器人/脚本" that clicks or fills a site), author it in the user's OWN \
+browser via the Canvex extension (real IP + login state — works where server browsers \
+get blocked), using TWO tools in the SAME turn:
+1. `browser_open_and_snapshot(url)` — opens the site in the user's browser and returns \
+its interactive elements, each with a `ref` id. Ask for the start URL if they didn't \
+give one; never guess it.
+2. `commit_robot_steps(steps)` — DRAFT the full step list from the snapshot, then commit \
+it. Reference a `ref` for each element you can identify; for an element you're unsure \
+about, set `uncertain:true` with a clear `label` and the user will be asked to CLICK it \
+in their page. The steps become editable cards on the canvas (the user can Save + Run).
+If the extension isn't installed the first tool will say so — relay its guidance to \
+install it; do NOT fall back to any other browser. This is for building REUSABLE robots \
+— for one-off research use `browse`, for a single precise flow use `web_operator`."""
 
 
 # Module-level caches — populate on first call, never mutate after.
@@ -267,6 +274,16 @@ class StreamEvent:
     # RPA run-mode: per-step status while a saved robot runs deterministically. Carries
     # {index, action, status: 'running'|'ok'|'failed', error?}.
     ROBOT_STEP = "robot_step"
+    # RPA v2 (Phase 4): the Agent drives the user's OWN browser via the extension. One
+    # command the frontend relays to the extension (open a tab / AXTree snapshot / ask the
+    # user to pick an element / resolve a ref→locator). Carries {command_id, token, op, …}.
+    # The extension's result comes back as a SEPARATE POST (flow/ext-result/) that resolves
+    # an ext_rendezvous slot the blocked tool is waiting on. op:"heartbeat" is a byte-only
+    # keepalive the client ignores.
+    EXT_COMMAND = "ext_command"
+    # RPA v2 (Phase 4): a batch of Agent-drafted steps to lay down as step cards on the
+    # canvas. Carries {steps: [ {action, target, text?, url?, submit?, provenance, ref?} ]}.
+    ROBOT_STEPS = "robot_steps"
     ERROR = "error"
     DONE = "done"
 
@@ -455,9 +472,12 @@ def build_canvas_agent():
                 settings.CANVAS_BROWSER_MODEL,
             )
         if settings.CANVAS_RPA_ENABLED:
-            tools.append(author_robot)
+            tools.append(browser_open_and_snapshot)
+            tools.append(commit_robot_steps)
             system_prompt += RPA_SYSTEM_PROMPT_SECTION
-            logger.info("canvas agent: RPA authoring (author_robot) enabled")
+            logger.info(
+                "canvas agent: RPA authoring (browser_open_and_snapshot + commit_robot_steps) enabled"
+            )
 
         _agent = create_deep_agent(
             model=model,
@@ -541,6 +561,7 @@ def _prepare_agent_call(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    ext_available: bool = False,
 ) -> tuple[Any, dict, CanvasAgentContext, dict]:
     """Shared `invoke_` / `stream_` setup: cached agent, state dict, per-call
     context, langgraph config. Both wrappers diverge only in how they drive
@@ -563,7 +584,9 @@ def _prepare_agent_call(
     # unreliable about threading explicit kwargs through despite the
     # SystemMessage instructing it to.
     attachment_urls = [a["url"] for a in (attachments or []) if a.get("url")]
-    ctx = CanvasAgentContext(scene_id=scene_id, attachment_urls=attachment_urls)
+    ctx = CanvasAgentContext(
+        scene_id=scene_id, attachment_urls=attachment_urls, ext_available=ext_available,
+    )
     config = {"recursion_limit": AGENT_RECURSION_LIMIT}
     return agent, state, ctx, config
 
@@ -669,6 +692,7 @@ def stream_canvas_agent(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    ext_available: bool = False,
 ) -> Iterator[dict]:
     """Stream per-node updates from the agent as structured event dicts.
 
@@ -712,6 +736,7 @@ def stream_canvas_agent(
     agent, state, ctx, config = _prepare_agent_call(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
+        ext_available=ext_available,
     )
 
     # Live streaming must interleave TWO producers onto one SSE stream:
@@ -752,6 +777,25 @@ def stream_canvas_agent(
         if not aborted.is_set():
             frames.put({"event": StreamEvent.FLOW_SESSION, "token": token, "viewport": viewport})
     ctx.emit_flow_session = _emit_flow_session
+
+    def _emit_ext_command(command: dict) -> None:
+        # RPA v2: push one browser-extension command frame; the frontend relays it to the
+        # extension and POSTs the result back (→ ext_rendezvous). The command dict already
+        # carries command_id/token/op; spread it into the frame. Same aborted guard as the
+        # other sinks — after client disconnect the blocked tool's should_abort breaks its
+        # wait, so nothing here lingers (left un-nulled like emit_flow_session).
+        if not aborted.is_set():
+            frames.put({"event": StreamEvent.EXT_COMMAND, **command})
+    ctx.emit_ext_command = _emit_ext_command
+
+    def _emit_robot_steps(steps: list) -> None:
+        # RPA v2: lay the Agent's drafted steps down as canvas step cards.
+        if not aborted.is_set():
+            frames.put({"event": StreamEvent.ROBOT_STEPS, "steps": steps})
+    ctx.emit_robot_steps = _emit_robot_steps
+    # Let a BLOCKING RPA tool (a human pick) notice client disconnect and stop parking the
+    # pump thread — `aborted` is set by the consumer's finally on GeneratorExit.
+    ctx.is_aborted = aborted.is_set
 
     def _pump():
         emitted_tool_ids: set[str] = set()

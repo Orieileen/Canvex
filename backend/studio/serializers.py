@@ -90,6 +90,9 @@ class ChatMessageCreateSerializer(serializers.Serializer):
         default=list,
         max_length=10,
     )
+    # RPA v2 (Phase 4): whether the user's browser has the Canvex extension, so the
+    # authoring tool can drive it (or refuse + guide install). Per-request capability flag.
+    ext_available = serializers.BooleanField(required=False, default=False)
 
 
 # ---------------------------------------------------------------------------

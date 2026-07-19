@@ -193,6 +193,26 @@ export type CanvasChatStreamEvent =
   // turn start (when CANVAS_RPA_ENABLED). The client echoes the token in a separate
   // element-pick POST (/flow/pick/) so the pick reaches this turn's live page.
   | { event: "flow_session"; token: string; viewport: { width: number; height: number } }
+  // RPA v2 (Phase 4): one command the Agent wants run in the user's OWN browser via the
+  // extension. The client relays it (by `op`) to the extension, correlates the reply by
+  // `command_id`, and POSTs the result to /flow/ext-result/ (which unblocks the waiting
+  // Agent tool). `op:"heartbeat"` is a byte-only keepalive the client ignores. `token` is
+  // this turn's session token, echoed back on the result POST.
+  | {
+      event: "ext_command";
+      command_id: string;
+      token: string;
+      op: "open_tab" | "snapshot" | "pick" | "ref_locator" | "heartbeat";
+      url?: string;
+      tabId?: number;
+      ref?: string;
+      epoch?: number;
+      label?: string;
+      max?: number;
+    }
+  // RPA v2 (Phase 4): the Agent's drafted steps to lay down as step cards (replacing the
+  // steps frame's contents). Each step carries a rich locator (+ optional AXTree ref).
+  | { event: "robot_steps"; steps: RobotStep[] }
   | { event: "error"; detail: string }
   | { event: "done" };
 
@@ -224,7 +244,11 @@ export interface RobotStep {
   target?: FlowLocator; // for click / type
   text?: string; // for type
   url?: string; // for navigate
+  /** for type: press Enter after (submits the form). Both runners execute on this. */
+  submit?: boolean;
   provenance?: "picked" | "guessed" | "self-healed";
+  /** AXTree snapshot ref this step's target came from (Agent-drafted or picked). */
+  ref?: string | null;
 }
 
 /** A saved robot (GET/POST /scenes/<id>/robots/). */

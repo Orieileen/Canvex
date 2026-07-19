@@ -16,6 +16,7 @@ import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
 import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode, type DriveAction } from "@/components/canvas/BrowseMonitorOverlay";
 import { RobotStepsOverlay, type RobotStepsLive } from "@/components/canvas/RobotStepsOverlay";
+import { detectExtension, postToExtension, runInBrowser, sendExtCommand } from "@/lib/extension-bridge";
 import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
@@ -54,6 +55,7 @@ import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
+  CanvasChatStreamEvent,
   CanvasMediaImage,
   CanvasMediaVideo,
   CanvasScene,
@@ -399,6 +401,12 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // Saved robot id per steps-frame (presence enables Run); + per-step status a run
   // streams back onto the cards.
   const [savedRobotIds, setSavedRobotIds] = useState<Record<string, string>>({});
+  // Is the Canvex browser extension installed? Detected once on mount; enables the
+  // "run in my browser" path (robot runs in the user's own browser — real IP + login).
+  const [extAvailable, setExtAvailable] = useState(false);
+  useEffect(() => {
+    detectExtension().then(setExtAvailable);
+  }, []);
   const [runStatus, setRunStatus] = useState<
     Record<string, Record<number, "running" | "ok" | "failed">>
   >({});
@@ -485,12 +493,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // this, toggling the switch OFF would show read-only while Run still ran the stored
   // write-enabled robot (submit / pay / delete) — a visible-vs-enforced safety mismatch.
   const invalidateSavedRobot = useCallback((frameId: string) => {
-    setSavedRobotIds((prev) => {
-      if (!(frameId in prev)) return prev;
-      const next = { ...prev };
-      delete next[frameId];
-      return next;
-    });
+    dropLiveEntry(setSavedRobotIds, frameId);
   }, []);
 
   // Edit a robot's steps (change action / type-text / delete) from the step cards.
@@ -519,6 +522,44 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     [persistRobotAllowWrites, invalidateSavedRobot],
   );
 
+  // A 409 from any flow endpoint means the authoring browser session is gone: drop it,
+  // revert to watch, and tell the user to re-arm. Returns true if it handled a
+  // session_gone error, so callers can fall through to their own error toast otherwise.
+  const handleSessionGone = useCallback(
+    (err: unknown): boolean => {
+      if ((err as { code?: string }).code !== "session_gone") return false;
+      setFlowSession(null);
+      setBrowserMode("watch");
+      toast.error(t("browseLog.pickRearm"));
+      return true;
+    },
+    [t],
+  );
+
+  // A robot steps-frame's effective data: this session's LIVE authoring state when present,
+  // else the frame's persisted customData. After a reload the live ref is empty while the
+  // frame still holds the authored steps — without the fallback, pick/save/run would each
+  // silently see zero steps. `allowWrites` lives ONLY in customData, so it's always read
+  // from the persisted frame. One accessor so the three callers can't drift on this rule.
+  const getEffectiveRobotData = useCallback(
+    (
+      frameId: string,
+    ): {
+      steps: RobotStep[];
+      allowWrites: boolean;
+      persisted: ReturnType<typeof getRobotStepsFrameData> | null;
+    } => {
+      const live = robotStepsRef.current[frameId];
+      const frame = excalidrawApiRef.current
+        ?.getSceneElements()
+        .find((el) => el.id === frameId && !el.isDeleted);
+      const persisted = frame ? getRobotStepsFrameData(frame) : null;
+      const steps = live?.steps?.length ? live.steps : persisted?.steps ?? [];
+      return { steps, allowWrites: persisted?.allowWrites ?? false, persisted };
+    },
+    [],
+  );
+
   // Element pick: POST the clicked page-viewport coord to the live authoring browser,
   // show the fresh screenshot + highlight the resolved element, AND append it as a
   // `click` step to the robot's step list. On 409 the session is gone — drop it.
@@ -539,7 +580,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         setPickedLocator(res.locator);
         const stepsFrameId = ensureRobotStepsFrame("");
         if (stepsFrameId) {
-          const cur = robotStepsRef.current[stepsFrameId]?.steps ?? [];
+          // Base steps: live authoring state, else the frame's persisted customData — else
+          // the first pick after a reload would overwrite the authored steps with just this one.
+          const cur = getEffectiveRobotData(stepsFrameId).steps;
           const next: RobotStep[] = [
             ...cur,
             { action: "click", target: res.locator, provenance: "picked" },
@@ -552,16 +595,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           invalidateSavedRobot(stepsFrameId); // a new step supersedes any saved snapshot
         }
       } catch (err) {
-        if ((err as { code?: string }).code === "session_gone") {
-          setFlowSession(null);
-          setBrowserMode("watch");
-          toast.error(t("browseLog.pickRearm"));
-        } else {
-          toast.error(extractApiError(err, "pick failed"));
-        }
+        if (!handleSessionGone(err)) toast.error(extractApiError(err, "pick failed"));
       }
     },
-    [flowSession, activeSceneId, t, ensureRobotStepsFrame, persistRobotSteps, invalidateSavedRobot],
+    [
+      flowSession, activeSceneId, t, handleSessionGone, getEffectiveRobotData,
+      ensureRobotStepsFrame, persistRobotSteps, invalidateSavedRobot,
+    ],
   );
 
   // Drive (takeover): dispatch REAL input to the live browser (login / captcha), then
@@ -580,16 +620,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         });
         setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
       } catch (err) {
-        if ((err as { code?: string }).code === "session_gone") {
-          setFlowSession(null);
-          setBrowserMode("watch");
-          toast.error(t("browseLog.pickRearm"));
-        } else {
-          toast.error(extractApiError(err, "drive failed"));
-        }
+        if (!handleSessionGone(err)) toast.error(extractApiError(err, "drive failed"));
       }
     },
-    [flowSession, activeSceneId, t],
+    [flowSession, activeSceneId, handleSessionGone],
   );
 
   // Authoring keepalive: while a live authoring browser is armed, ping it on an interval
@@ -606,11 +640,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         await canvasService.postFlowKeepalive(activeSceneId, token);
       } catch (err) {
         if (cancelled) return;
-        if ((err as { code?: string }).code === "session_gone") {
-          setFlowSession(null);
-          setBrowserMode("watch");
-          toast.error(t("browseLog.pickRearm"));
-        }
+        handleSessionGone(err);
         // Transient errors (network blip, 502): ignore — the next tick retries, and a
         // truly dead session surfaces as 409 on the following ping or the user's next pick.
       }
@@ -620,25 +650,18 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [flowSession, activeSceneId, t]);
+  }, [flowSession, activeSceneId, t, handleSessionGone]);
 
   // Save the authored steps as a named robot (POST /robots/); enables Run.
   const handleSaveRobot = useCallback(
     async (frameId: string) => {
       // Prefer this session's live steps; after a reload they live only in the frame's
       // persisted customData, so fall back to that (else Save would silently no-op).
-      // allow_writes lives ONLY in customData, so always read the frame for it.
+      const { steps, allowWrites, persisted } = getEffectiveRobotData(frameId);
       const live = robotStepsRef.current[frameId];
-      let steps = live?.steps ?? [];
+      // Title: live authoring title, else the persisted title when we fell back (post-reload).
       let name = live?.title || "";
-      const frame = excalidrawApiRef.current
-        ?.getSceneElements()
-        .find((el) => el.id === frameId && !el.isDeleted);
-      const persisted = frame ? getRobotStepsFrameData(frame) : null;
-      if (steps.length === 0 && persisted) {
-        steps = persisted.steps;
-        name = name || persisted.title;
-      }
+      if (!live?.steps?.length && persisted) name = name || persisted.title;
       if (steps.length === 0) {
         toast.info(t("browseLog.robotEmptySave"));
         return;
@@ -647,7 +670,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         const robot = await canvasService.saveRobot(activeSceneId, {
           name: name || "Robot",
           steps,
-          allow_writes: persisted?.allowWrites ?? false,
+          allow_writes: allowWrites,
         });
         setSavedRobotIds((prev) => ({ ...prev, [frameId]: robot.id }));
         toast.success(t("browseLog.robotSaved"));
@@ -655,7 +678,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         toast.error(extractApiError(err, "save robot failed"));
       }
     },
-    [activeSceneId, t],
+    [activeSceneId, t, getEffectiveRobotData],
   );
 
   // Run a saved robot; stream per-step status onto the cards + the page into the monitor.
@@ -696,6 +719,81 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       }
     },
     [activeSceneId, t, savedRobotIds, ensureBrowseMonitorFrame, persistBrowseMonitorImage],
+  );
+
+  // Run the robot in the user's OWN browser via the extension (real IP + login state).
+  // Sends the current steps straight to the extension — no server-side session, and no
+  // saved-robot requirement (unlike handleRunRobot). Per-step status streams onto the cards.
+  const handleRunInBrowser = useCallback(
+    (frameId: string) => {
+      const { steps, allowWrites } = getEffectiveRobotData(frameId);
+      if (steps.length === 0) {
+        toast.info(t("browseLog.robotEmptySave"));
+        return;
+      }
+      setRunStatus((prev) => ({ ...prev, [frameId]: {} }));
+      runInBrowser(steps, allowWrites, (evt) => {
+        if (evt.type === "step") {
+          setRunStatus((prev) => ({
+            ...prev,
+            [frameId]: { ...(prev[frameId] ?? {}), [evt.index]: evt.status },
+          }));
+        } else if (evt.type === "done") {
+          if (evt.ok) toast.success(t("browseLog.robotRanInBrowser"));
+          else toast.error(t("browseLog.robotRunFailedInBrowser"));
+        }
+      });
+    },
+    [t, getEffectiveRobotData],
+  );
+
+  // RPA v2 (Phase 4): relay ONE Agent `ext_command` to the extension (by op), then POST the
+  // reply back to the backend (which unblocks the waiting Agent tool). Correlated by
+  // command_id. Fire-and-forget from the SSE loop so heartbeats keep flowing while a slow
+  // human pick is outstanding. Errors/409s are swallowed — the Agent has already moved on.
+  const relayExtCommand = useCallback(
+    async (cmd: Extract<CanvasChatStreamEvent, { event: "ext_command" }>) => {
+      let extMsg: { type: string; command_id: string; [k: string]: unknown };
+      // Must outlive the backend's per-op wait so the backend gives up first and refuses
+      // cleanly (open_tab waits 30s server-side; snapshot 25s; ref_locator 20s). 35s covers
+      // all three; pick overrides below.
+      let timeoutMs = 35000;
+      switch (cmd.op) {
+        case "open_tab":
+          extMsg = { type: "canvex-open-tab", command_id: cmd.command_id, url: cmd.url };
+          break;
+        case "snapshot":
+          extMsg = { type: "canvex-snapshot", command_id: cmd.command_id, tabId: cmd.tabId, max: cmd.max };
+          break;
+        case "ref_locator":
+          extMsg = {
+            type: "canvex-ref-locator",
+            command_id: cmd.command_id,
+            tabId: cmd.tabId,
+            ref: cmd.ref,
+            epoch: cmd.epoch,
+          };
+          break;
+        case "pick":
+          extMsg = { type: "canvex-pick-start", command_id: cmd.command_id, tabId: cmd.tabId, label: cmd.label };
+          timeoutMs = 210000; // a human pick is slow — outlive the backend's pick wait
+          if (cmd.label) toast.info(`${t("browseLog.extPickPrompt")} ${cmd.label}`);
+          break;
+        default:
+          return; // heartbeat / unknown — nothing to relay
+      }
+      const result = await sendExtCommand(extMsg, timeoutMs);
+      // A pick that timed out (or errored) leaves the in-page pick banner armed, hijacking
+      // clicks in the user's tab after the Agent already gave up — disarm it. (A successful
+      // pick is disarmed by the extension's own one-shot handler.)
+      if (cmd.op === "pick" && (result as { error?: unknown })?.error) {
+        postToExtension({ type: "canvex-pick-stop", tabId: cmd.tabId });
+      }
+      await canvasService
+        .postFlowExtResult(activeSceneId, { token: cmd.token, command_id: cmd.command_id, result })
+        .catch(() => {});
+    },
+    [activeSceneId, t],
   );
 
   // 素材库面板挂在这里 (而非外层 CanvasSidebar 所在组件) —— 插入要用本组件的
@@ -1232,7 +1330,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for await (const event of canvasService.postChatStream(
           activeSceneId,
           content,
-          { signal: abort.signal, disabledSkills, attachments },
+          { signal: abort.signal, disabledSkills, attachments, extAvailable },
         )) {
           switch (event.event) {
             case "user_created":
@@ -1418,6 +1516,28 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               flowSessionThisTurn = true;
               setFlowSession({ token: event.token, viewport: event.viewport });
               break;
+            case "ext_command":
+              // RPA v2 (Phase 4): the Agent is driving the user's OWN browser via the
+              // extension. Relay this command + return its result to the backend (which
+              // unblocks the Agent tool). Fire-and-forget so the SSE loop keeps consuming
+              // the heartbeat frames the Agent emits while it blocks on this command.
+              if (event.op !== "heartbeat") void relayExtCommand(event);
+              break;
+            case "robot_steps": {
+              // RPA v2 (Phase 4): the Agent drafted a robot — lay its steps down as cards,
+              // replacing the steps frame's contents (same persistence as a manual pick).
+              const stepsFrameId = ensureRobotStepsFrame("");
+              if (stepsFrameId && Array.isArray(event.steps)) {
+                const steps = event.steps;
+                setRobotSteps((prev) => ({
+                  ...prev,
+                  [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps },
+                }));
+                persistRobotSteps(stepsFrameId, steps);
+                invalidateSavedRobot(stepsFrameId);
+              }
+              break;
+            }
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);
@@ -1502,6 +1622,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     },
     [
       activeSceneId,
+      extAvailable,
       createPlaceholder,
       markPlaceholdersFailed,
       pinImage,
@@ -1511,6 +1632,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       ensureBrowseMonitorFrame,
       persistBrowseMonitorImage,
       clearBrowseMonitorImage,
+      ensureRobotStepsFrame,
+      persistRobotSteps,
+      invalidateSavedRobot,
+      relayExtCommand,
       pollAndPinJob,
       resetPackRow,
       resetStream,
@@ -1679,6 +1804,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         onToggleAllowWrites={handleToggleAllowWrites}
         runStatus={runStatus}
         savedFrames={savedRobotIds}
+        extAvailable={extAvailable}
+        onRunInBrowser={handleRunInBrowser}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}

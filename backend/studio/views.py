@@ -50,6 +50,7 @@ from .serializers import (
     VideoJobSerializer,
     result_asset_url,
 )
+from .services.agent import ext_rendezvous
 from .services.agent.builder import (
     CanvasAgentInvocationError,
     StreamEvent,
@@ -329,6 +330,9 @@ class SceneChatView(APIView):
         content = serializer.validated_data["content"].strip()
         disabled_skills = serializer.validated_data["disabled_skills"]
         attachments = serializer.validated_data["attachments"]
+        # RPA v2 (Phase 4): whether the user's browser has the Canvex extension, so the
+        # authoring tool can drive it (or refuse + guide install).
+        ext_available = serializer.validated_data["ext_available"]
 
         # 预先持久化用户消息, 使其在流中途失败时仍然保留。
         user_msg = ChatMessage.objects.create(
@@ -352,6 +356,7 @@ class SceneChatView(APIView):
                     scene_id=scene_id_str,
                     disabled_skills=disabled_skills,
                     attachments=attachments,
+                    ext_available=ext_available,
                 ):
                     yield _sse_event(event)
                     if event.get("event") == StreamEvent.ASSISTANT_FINAL:
@@ -559,6 +564,38 @@ class FlowKeepaliveView(APIView):
             return Response(
                 {"detail": f"keepalive failed: {type(exc).__name__}"},
                 status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"ok": True})
+
+
+class FlowExtResultView(APIView):
+    """RPA v2 (Phase 4): the browser EXTENSION's result for one Agent command, relayed
+    back through the Canvas page. The chat Agent emitted an `ext_command` (open+snapshot /
+    pick / ref-locator) on the SSE stream and is BLOCKED in ext_rendezvous.wait keyed by
+    (token, command_id); this POST resolves it and the tool resumes.
+
+    Unlike pick / drive / keepalive there is NO server Playwright session here — the whole
+    point of v2 is the user's own browser — so the (token, command_id) pair itself is the
+    unguessable bearer (both are uuid4 hex minted server-side, reaching the client only via
+    the SSE ext_command frame). A 409 `command_gone` means the Agent already timed out or
+    the turn ended, so the client stops relaying. The result payload (AXTree snapshot,
+    screenshots of the user's REAL browser) is NEVER persisted — it only unblocks the
+    in-flight tool (design §11 secret suppression, doubly so for the real browser)."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scene_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        token = (request.data.get("token") or "").strip()
+        command_id = (request.data.get("command_id") or "").strip()
+        if not token or not command_id:
+            raise ValidationError("token and command_id are required")
+        result = request.data.get("result")
+        if not ext_rendezvous.resolve(token, command_id, result):
+            return Response(
+                {"detail": "no agent is waiting on this command — it timed out or the turn ended",
+                 "code": "command_gone"},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response({"ok": True})
 

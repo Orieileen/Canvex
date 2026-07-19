@@ -39,6 +39,11 @@ interface RobotStepsOverlayProps {
   runStatus: Record<string, Record<number, RunStatus>>;
   /** frameId → saved robot id (presence enables Run). */
   savedFrames: Record<string, string>;
+  /** True when the Canvex browser extension is installed → enables "run in my browser". */
+  extAvailable?: boolean;
+  /** Run the robot in the user's OWN browser via the extension (real IP + login state).
+   *  Unlike onRun (server-side, needs a saved robot), this sends the current steps directly. */
+  onRunInBrowser?: (frameId: string) => void;
 }
 
 /** Human-readable target of a step: "role · name/text/css". */
@@ -73,6 +78,8 @@ export function RobotStepsOverlay({
   onToggleAllowWrites,
   runStatus,
   savedFrames,
+  extAvailable,
+  onRunInBrowser,
 }: RobotStepsOverlayProps) {
   void tick; // re-render trigger; live state read fresh below
   const api = excalidrawApiRef.current;
@@ -94,6 +101,8 @@ export function RobotStepsOverlay({
           onToggleAllowWrites={onToggleAllowWrites}
           status={runStatus?.[frame.id] ?? EMPTY_STATUS}
           saved={!!savedFrames?.[frame.id]}
+          extAvailable={extAvailable}
+          onRunInBrowser={onRunInBrowser}
         />
       ))}
     </>
@@ -110,6 +119,8 @@ function RobotStepsPanel({
   onToggleAllowWrites,
   status,
   saved,
+  extAvailable,
+  onRunInBrowser,
 }: {
   frame: ExcalidrawElement;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
@@ -120,17 +131,19 @@ function RobotStepsPanel({
   onToggleAllowWrites: (frameId: string, allow: boolean) => void;
   status: Record<number, RunStatus>;
   saved: boolean;
+  extAvailable?: boolean;
+  onRunInBrowser?: (frameId: string) => void;
 }) {
   const { t } = useTranslation("canvasUi");
-  const persisted = useMemo(
-    () => (live ? null : getRobotStepsFrameData(frame)),
-    [live, frame],
-  );
+  // Parse the frame's customData once per frame change. Used both for allow_writes
+  // (persisted-only, never in live authoring state) and as the post-reload fallback for
+  // title/steps — reading it through this memo avoids a JSON.parse on every render tick
+  // during live authoring (when `persisted` below is null).
+  const frameData = useMemo(() => getRobotStepsFrameData(frame), [frame]);
+  const persisted = live ? null : frameData;
   const title = live?.title || persisted?.title || "";
   const steps = live?.steps ?? persisted?.steps ?? EMPTY_STEPS;
-  // allow_writes is persisted-only (customData), never part of live authoring state, so
-  // read it straight from the frame (reuse `persisted` when it's already parsed).
-  const allowWrites = (persisted ?? getRobotStepsFrameData(frame)).allowWrites;
+  const allowWrites = frameData.allowWrites;
 
   const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
     frame,
@@ -222,6 +235,19 @@ function RobotStepsPanel({
         >
           {t("browseLog.robotRun")}
         </button>
+        {extAvailable && onRunInBrowser && (
+          <button
+            type="button"
+            title={t("browseLog.runInBrowserHint")}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRunInBrowser(frame.id);
+            }}
+            className="rounded bg-sky-500 px-5 py-2 text-[26px] font-medium text-black hover:bg-sky-400"
+          >
+            {t("browseLog.runInBrowser")}
+          </button>
+        )}
       </div>
 
       <div className="flex flex-col gap-3 p-6">
@@ -263,6 +289,14 @@ function RobotStepsPanel({
                   value={step.text ?? ""}
                   placeholder={t("browseLog.stepTypeText")}
                   onChange={(e) => edit(i, { text: e.target.value })}
+                  className="w-[260px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
+                />
+              )}
+              {step.action === "navigate" && (
+                <input
+                  value={step.url ?? ""}
+                  placeholder={t("browseLog.stepNavigateUrl")}
+                  onChange={(e) => edit(i, { url: e.target.value })}
                   className="w-[260px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
                 />
               )}
