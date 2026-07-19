@@ -832,10 +832,16 @@ def stream_canvas_agent(
                     # `updates` branch (last_ai_text) + the ASSISTANT_FINAL frame.
                     chunk, meta = data if isinstance(data, tuple) else (data, {})
                     # Only the top-level agent's reply tokens reach the user.
-                    # Subagents (the deepagents `task` tool) and any internal LLM
-                    # node run in a child graph namespace (non-empty checkpoint_ns);
-                    # their tokens must not leak into the user-facing typewriter.
-                    in_subgraph = bool((meta or {}).get("checkpoint_ns"))
+                    # Subagents (the deepagents `task` tool / web_operator) run one
+                    # graph level deeper; langgraph joins namespace levels with `|`
+                    # (NS_SEP), so a checkpoint_ns *containing* `|` marks a nested
+                    # subagent token that must NOT leak into the user-facing
+                    # typewriter. The top-level model node's own checkpoint_ns is a
+                    # single `model:<uuid>` segment (non-empty, no `|`) — so the old
+                    # `bool(checkpoint_ns)` test wrongly dropped EVERY main-reply
+                    # token and the typewriter only ever filled from ASSISTANT_FINAL.
+                    checkpoint_ns = (meta or {}).get("checkpoint_ns") or ""
+                    in_subgraph = "|" in checkpoint_ns
                     if isinstance(chunk, AIMessageChunk) and not in_subgraph:
                         text = _flatten_content(chunk.content)
                         if text:
