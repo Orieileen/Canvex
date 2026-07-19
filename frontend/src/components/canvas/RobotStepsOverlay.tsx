@@ -10,11 +10,18 @@ import {
 } from "@/lib/canvas-robot-steps-frame";
 import type { RobotStep } from "@/types/canvex";
 
+export type RunStatus = "running" | "ok" | "failed";
+
+/** Per-step run state on a card: the status dot + the failure reason (shown inline on a
+ *  failed step). Populated as a run streams `robot_step` / extension run events back. */
+export interface RunStepState {
+  status: RunStatus;
+  error?: string;
+}
+
 /** Stable empty refs so the memos don't recompute on empty panels. */
 const EMPTY_STEPS: RobotStep[] = [];
-const EMPTY_STATUS: Record<number, RunStatus> = {};
-
-export type RunStatus = "running" | "ok" | "failed";
+const EMPTY_STATUS: Record<number, RunStepState> = {};
 
 /** Live per-turn steps for a robot-steps frame, keyed by frame id. Present while the
  *  user is authoring in THIS session; frames absent from the map render from their
@@ -30,13 +37,15 @@ interface RobotStepsOverlayProps {
   tick: number;
   liveSteps: Record<string, RobotStepsLive>;
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
+  /** Rename the robot (persisted to customData; Save sends it as the robot name). */
+  onEditTitle: (frameId: string, title: string) => void;
   onSave: (frameId: string) => void;
   onRun: (frameId: string) => void;
   /** Toggle the robot's write-gate opt-in (allow submits / pay·delete clicks). The
    *  current value is read from the frame's customData, so no companion state prop. */
   onToggleAllowWrites: (frameId: string, allow: boolean) => void;
-  /** Per-frame, per-step-index status while a robot runs. */
-  runStatus: Record<string, Record<number, RunStatus>>;
+  /** Per-frame, per-step-index run state (status + failure error) while a robot runs. */
+  runStatus: Record<string, Record<number, RunStepState>>;
   /** frameId → saved robot id (presence enables Run). */
   savedFrames: Record<string, string>;
   /** True when the Canvex browser extension is installed → enables "run in my browser". */
@@ -65,14 +74,16 @@ const STATUS_DOT: Record<RunStatus, string> = {
 /**
  * Editable step-cards panels anchored to the scene's robot-steps frames — the DSL of
  * the robot being authored, as clickable cards. Each pick appends a step; here the user
- * can change a step's action, edit type-text, delete it, or Save the list as a named
- * robot and Run it (per-step status streams back onto the cards).
+ * can rename the robot, add / reorder / duplicate / delete steps, change a step's action,
+ * edit type-text (+ mark it to submit with Enter), and Save the list as a named robot and
+ * Run it (per-step status + failure reason stream back onto the cards).
  */
 export function RobotStepsOverlay({
   excalidrawApiRef,
   tick,
   liveSteps,
   onEditSteps,
+  onEditTitle,
   onSave,
   onRun,
   onToggleAllowWrites,
@@ -96,6 +107,7 @@ export function RobotStepsOverlay({
           excalidrawApiRef={excalidrawApiRef}
           live={liveSteps[frame.id]}
           onEditSteps={onEditSteps}
+          onEditTitle={onEditTitle}
           onSave={onSave}
           onRun={onRun}
           onToggleAllowWrites={onToggleAllowWrites}
@@ -114,6 +126,7 @@ function RobotStepsPanel({
   excalidrawApiRef,
   live,
   onEditSteps,
+  onEditTitle,
   onSave,
   onRun,
   onToggleAllowWrites,
@@ -126,10 +139,11 @@ function RobotStepsPanel({
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   live?: RobotStepsLive;
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
+  onEditTitle: (frameId: string, title: string) => void;
   onSave: (frameId: string) => void;
   onRun: (frameId: string) => void;
   onToggleAllowWrites: (frameId: string, allow: boolean) => void;
-  status: Record<number, RunStatus>;
+  status: Record<number, RunStepState>;
   saved: boolean;
   extAvailable?: boolean;
   onRunInBrowser?: (frameId: string) => void;
@@ -161,8 +175,96 @@ function RobotStepsPanel({
       frame.id,
       steps.filter((_, idx) => idx !== i),
     );
+  // Swap step i with its neighbour (dir -1 up / +1 down); no-op at the ends.
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= steps.length) return;
+    const next = steps.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    onEditSteps(frame.id, next);
+  };
+  // Insert a copy of step i right after it (keeps its target/text/submit).
+  const duplicate = (i: number) =>
+    onEditSteps(frame.id, [
+      ...steps.slice(0, i + 1),
+      { ...steps[i] },
+      ...steps.slice(i + 1),
+    ]);
+  // Append a blank navigate step — the one action fully hand-authorable (just a URL);
+  // click / type targets come from picks (a rich locator can't be typed by hand).
+  const addStep = () => onEditSteps(frame.id, [...steps, { action: "navigate", url: "" }]);
+  // Append an (empty) loop block; the user moves steps into it with ↑/↓ (indented display).
+  const addLoop = () =>
+    onEditSteps(frame.id, [...steps, { action: "loop_start", count: 2 }, { action: "loop_end" }]);
 
   if (!rect) return null;
+
+  const iconBtn =
+    "shrink-0 rounded px-2 py-1 text-[26px] leading-none text-white/40 enabled:hover:text-white/80 disabled:opacity-25";
+
+  // The ↑ / ↓ / ⧉ / × cluster — shared by normal and loop-marker cards.
+  const controls = (i: number) => (
+    <div className="flex shrink-0 items-center">
+      <button type="button" onClick={() => move(i, -1)} disabled={i === 0} title={t("browseLog.stepMoveUp")} className={iconBtn}>↑</button>
+      <button type="button" onClick={() => move(i, 1)} disabled={i === steps.length - 1} title={t("browseLog.stepMoveDown")} className={iconBtn}>↓</button>
+      <button type="button" onClick={() => duplicate(i)} title={t("browseLog.stepDuplicate")} className={iconBtn}>⧉</button>
+      <button type="button" onClick={() => remove(i)} title={t("browseLog.stepDelete")} className={iconBtn + " text-[32px] hover:!text-red-400"}>×</button>
+    </div>
+  );
+
+  // The action-specific field(s) shown in a normal step card's flexible middle column.
+  const field = "min-w-0 flex-1 rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30";
+  const fieldSm = "w-[180px] shrink-0 rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30";
+  const label = (s: RobotStep) => (
+    <span className="min-w-0 flex-1 truncate text-[28px] text-white/85">{targetLabel(s)}</span>
+  );
+  const primaryField = (step: RobotStep, i: number) => {
+    switch (step.action) {
+      case "navigate":
+        return <input value={step.url ?? ""} placeholder={t("browseLog.stepNavigateUrl")} onChange={(e) => edit(i, { url: e.target.value })} className={field} />;
+      case "wait":
+        return <input type="number" min={0} value={step.ms ?? 1000} placeholder={t("browseLog.stepWaitMs")} onChange={(e) => edit(i, { ms: Number(e.target.value) })} className={fieldSm} />;
+      case "key":
+        return <input value={step.key ?? ""} placeholder={t("browseLog.stepKeyName")} onChange={(e) => edit(i, { key: e.target.value })} className={fieldSm} />;
+      case "type":
+        return (
+          <>
+            {label(step)}
+            <input value={step.text ?? ""} placeholder={t("browseLog.stepTypeText")} onChange={(e) => edit(i, { text: e.target.value })} className="w-[220px] shrink-0 rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30" />
+            <label title={t("browseLog.stepSubmitHint")} className={"flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-2 text-[24px] " + (step.submit ? "text-emerald-300" : "text-white/40")}>
+              <input type="checkbox" checked={!!step.submit} onChange={(e) => edit(i, { submit: e.target.checked })} className="h-4 w-4 accent-emerald-500" />
+              {t("browseLog.stepSubmit")}
+            </label>
+          </>
+        );
+      case "wait_for":
+        return (
+          <>
+            {label(step)}
+            <input type="number" min={0} value={step.ms ?? 10000} placeholder={t("browseLog.stepWaitTimeout")} onChange={(e) => edit(i, { ms: Number(e.target.value) })} className={fieldSm} />
+          </>
+        );
+      case "select":
+        return (
+          <>
+            {label(step)}
+            <input value={step.value ?? ""} placeholder={t("browseLog.stepSelectValue")} onChange={(e) => edit(i, { value: e.target.value })} className={fieldSm} />
+          </>
+        );
+      default: // click / scroll / hover — target label only
+        return label(step);
+    }
+  };
+
+  // Indent each step by its loop nesting depth (visual only): depth rises after a
+  // loop_start and falls at a loop_end.
+  const depths: number[] = [];
+  let depth = 0;
+  for (const s of steps) {
+    if (s.action === "loop_end") depth = Math.max(0, depth - 1);
+    depths.push(depth);
+    if (s.action === "loop_start") depth += 1;
+  }
 
   return (
     <div
@@ -183,11 +285,13 @@ function RobotStepsPanel({
           <div className="text-[28px] font-medium uppercase tracking-wide text-emerald-400/80">
             {t("browseLog.robotHeader")}
           </div>
-          {title && (
-            <div className="mt-1 line-clamp-1 text-[34px] leading-snug text-white/90">
-              {title}
-            </div>
-          )}
+          {/* Editable robot name — persisted to customData, sent as the robot name on Save. */}
+          <input
+            value={title}
+            placeholder={t("browseLog.robotName")}
+            onChange={(e) => onEditTitle(frame.id, e.target.value)}
+            className="mt-1 w-full truncate rounded bg-transparent px-1 text-[34px] leading-snug text-white/90 placeholder:text-white/25 hover:bg-black/20 focus:bg-black/30 focus:outline-none"
+          />
         </div>
         {/* Write-gate toggle — off (read-only) by default; amber when armed, since it lets
             the robot submit forms / click pay·delete. Value lives in the frame's customData. */}
@@ -251,71 +355,118 @@ function RobotStepsPanel({
       </div>
 
       <div className="flex flex-col gap-3 p-6">
-        {steps.length === 0 ? (
+        {steps.length === 0 && (
           <p className="text-[28px] leading-relaxed text-white/40">
             {t("browseLog.robotEmpty")}
           </p>
-        ) : (
-          steps.map((step, i) => (
+        )}
+        {steps.map((step, i) => {
+          const st = status[i];
+          const dot = (
+            <span className={"h-4 w-4 shrink-0 rounded-full " + (st ? STATUS_DOT[st.status] : "bg-white/15")} />
+          );
+          const num = (
+            <span className="min-w-[40px] text-[30px] font-semibold text-emerald-400/80">{i + 1}</span>
+          );
+          const indent = { paddingLeft: depths[i] * 32 } as const;
+
+          // Loop markers render as distinct sky-tinted cards (no action dropdown): loop_start
+          // carries an editable repeat count; loop_end just marks the block's end.
+          if (step.action === "loop_start" || step.action === "loop_end") {
+            return (
+              <div
+                key={i}
+                style={indent}
+                className="flex items-center gap-3 rounded-md border border-sky-400/25 bg-sky-400/5 px-4 py-3"
+              >
+                {dot}
+                {num}
+                {step.action === "loop_start" ? (
+                  <div className="flex min-w-0 flex-1 items-center gap-2 text-[28px] text-sky-200/90">
+                    🔁 {t("browseLog.stepLoop")}
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={step.count ?? 2}
+                      onChange={(e) => edit(i, { count: Number(e.target.value) })}
+                      className="w-[110px] rounded bg-black/40 px-3 py-2 text-[26px] text-white"
+                    />
+                    {t("browseLog.stepLoopTimes")}
+                  </div>
+                ) : (
+                  <span className="min-w-0 flex-1 text-[28px] text-sky-200/60">
+                    🔁 {t("browseLog.stepLoopEnd")}
+                  </span>
+                )}
+                {controls(i)}
+              </div>
+            );
+          }
+
+          return (
             <div
               key={i}
-              className="flex items-center gap-3 rounded-md border border-white/10 bg-white/5 px-4 py-3"
+              style={indent}
+              className="flex flex-col gap-2 rounded-md border border-white/10 bg-white/5 px-4 py-3"
             >
-              <span
-                className={
-                  "h-4 w-4 shrink-0 rounded-full " +
-                  (status[i] ? STATUS_DOT[status[i]] : "bg-white/15")
-                }
-              />
-              <span className="min-w-[40px] text-[30px] font-semibold text-emerald-400/80">
-                {i + 1}
-              </span>
-              <select
-                value={step.action}
-                onChange={(e) =>
-                  edit(i, { action: e.target.value as RobotStep["action"] })
-                }
-                className="rounded bg-black/40 px-3 py-2 text-[26px] text-white"
-              >
-                <option value="click">{t("browseLog.stepClick")}</option>
-                <option value="type">{t("browseLog.stepType")}</option>
-                <option value="navigate">{t("browseLog.stepNavigate")}</option>
-              </select>
-              <span className="min-w-0 flex-1 truncate text-[28px] text-white/85">
-                {targetLabel(step)}
-              </span>
-              {step.action === "type" && (
-                <input
-                  value={step.text ?? ""}
-                  placeholder={t("browseLog.stepTypeText")}
-                  onChange={(e) => edit(i, { text: e.target.value })}
-                  className="w-[260px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
-                />
+              <div className="flex items-center gap-3">
+                {dot}
+                {num}
+                <select
+                  value={step.action}
+                  onChange={(e) => edit(i, { action: e.target.value as RobotStep["action"] })}
+                  className="shrink-0 rounded bg-black/40 px-3 py-2 text-[26px] text-white"
+                >
+                  <option value="click">{t("browseLog.stepClick")}</option>
+                  <option value="type">{t("browseLog.stepType")}</option>
+                  <option value="navigate">{t("browseLog.stepNavigate")}</option>
+                  <option value="wait">{t("browseLog.stepWait")}</option>
+                  <option value="wait_for">{t("browseLog.stepWaitFor")}</option>
+                  <option value="key">{t("browseLog.stepKey")}</option>
+                  <option value="scroll">{t("browseLog.stepScroll")}</option>
+                  <option value="hover">{t("browseLog.stepHover")}</option>
+                  <option value="select">{t("browseLog.stepSelect")}</option>
+                </select>
+
+                <div className="flex min-w-0 flex-1 items-center gap-2">{primaryField(step, i)}</div>
+
+                {step.provenance && (
+                  <span className="shrink-0 rounded bg-emerald-500/20 px-3 py-1 text-[22px] uppercase tracking-wide text-emerald-300/80">
+                    {step.provenance}
+                  </span>
+                )}
+                {controls(i)}
+              </div>
+
+              {/* Failure reason from the last run — surfaced instead of just a red dot. */}
+              {st?.status === "failed" && st.error && (
+                <div className="pl-[68px] text-[22px] leading-snug text-red-300/90">
+                  {st.error}
+                </div>
               )}
-              {step.action === "navigate" && (
-                <input
-                  value={step.url ?? ""}
-                  placeholder={t("browseLog.stepNavigateUrl")}
-                  onChange={(e) => edit(i, { url: e.target.value })}
-                  className="w-[260px] rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30"
-                />
-              )}
-              {step.provenance && (
-                <span className="rounded bg-emerald-500/20 px-3 py-1 text-[22px] uppercase tracking-wide text-emerald-300/80">
-                  {step.provenance}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => remove(i)}
-                title={t("browseLog.stepDelete")}
-                className="rounded px-3 py-1 text-[32px] leading-none text-white/40 hover:text-red-400"
-              >
-                ×
-              </button>
             </div>
-          ))
-        )}
+          );
+        })}
+
+        <div className="mt-1 flex gap-3">
+          {/* Add a step manually (a navigate step; switch its action after). */}
+          <button
+            type="button"
+            onClick={addStep}
+            className="flex-1 rounded-md border border-dashed border-white/20 px-4 py-3 text-[26px] text-white/50 hover:border-white/40 hover:text-white/80"
+          >
+            ＋ {t("browseLog.stepAdd")}
+          </button>
+          {/* Add an empty loop block; move steps into it with ↑ / ↓. */}
+          <button
+            type="button"
+            onClick={addLoop}
+            className="flex-1 rounded-md border border-dashed border-sky-400/30 px-4 py-3 text-[26px] text-sky-200/60 hover:border-sky-400/50 hover:text-sky-200/90"
+          >
+            🔁 {t("browseLog.stepAddLoop")}
+          </button>
+        </div>
       </div>
     </div>
   );

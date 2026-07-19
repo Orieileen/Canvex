@@ -1307,6 +1307,16 @@ export function useCanvasPinning(
     [patchFrameCustomData],
   );
 
+  /** Persist the robot's user-edited name to the steps frame's customData so it
+   *  round-trips scene autosave + reload like the steps do; Save reads it back as the
+   *  robot name. */
+  const persistRobotTitle = useCallback(
+    (frameId: string, title: string): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_TITLE_KEY]: title });
+    },
+    [patchFrameCustomData],
+  );
+
   /** Persist the robot's write-gate opt-in to the steps frame's customData. Kept in
    *  customData (not React state) so it round-trips scene autosave + reload exactly like
    *  the steps do; Save reads it back to send allow_writes. */
@@ -1901,6 +1911,7 @@ export function useCanvasPinning(
     clearBrowseMonitorImage,
     ensureRobotStepsFrame,
     persistRobotSteps,
+    persistRobotTitle,
     persistRobotAllowWrites,
     pinImage,
     pinVideo,

@@ -44,11 +44,20 @@ const _DESTRUCTIVE_KEYWORDS = [
 ];
 function isStateChanging(step) {
   if (step.action === "type" && step.submit) return true;
+  // A bare Enter keypress submits the focused form / triggers search — gate it like submit.
+  if (step.action === "key" && String(step.key || "").toLowerCase() === "enter") return true;
   if (step.action !== "click") return false;
   const t = step.target || {};
   const hay = `${t.name || ""} ${t.text || ""} ${t.css || ""}`.toLowerCase();
   return _DESTRUCTIVE_KEYWORDS.some((kw) => hay.includes(kw));
 }
+
+// Loop back-edges make the executed-step count exceed the array length; bound it so a huge
+// loop count or a malformed loop can't run forever. (navGate already bounds each step's wall
+// time.) Mirrors robot_runner._MAX_EXECUTED.
+const MAX_EXECUTED_STEPS = 500;
+const clampMs = (ms, def) => Math.min(Math.max(Math.floor(Number(ms)) || def, 0), 60000);
+const clampCount = (c) => Math.min(Math.max(Math.floor(Number(c)) || 2, 1), 100);
 
 let isMac = false;
 try {
@@ -202,12 +211,36 @@ async function cdpSelectAll(tabId) {
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
-// Trusted Enter — submits forms / triggers search. text:"\r" makes it register as a
-// character where a bare keyDown wouldn't.
-async function cdpEnter(tabId) {
-  const base = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...base });
+// Trusted key press. A named key → the CDP key fields. `text` (for Enter/Space) makes it
+// register as a character where a bare keyDown wouldn't. Case-insensitive on the name.
+const KEY_MAP = {
+  enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", vk: 9 },
+  escape: { key: "Escape", code: "Escape", vk: 27 },
+  esc: { key: "Escape", code: "Escape", vk: 27 },
+  backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  delete: { key: "Delete", code: "Delete", vk: 46 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  home: { key: "Home", code: "Home", vk: 36 },
+  end: { key: "End", code: "End", vk: 35 },
+  pageup: { key: "PageUp", code: "PageUp", vk: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", vk: 34 },
+  space: { key: " ", code: "Space", vk: 32, text: " " },
+};
+async function cdpKey(tabId, name) {
+  const k = KEY_MAP[String(name || "").trim().toLowerCase()];
+  if (!k) throw new Error("unsupported key: " + name);
+  const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk };
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...(k.text ? { text: k.text } : {}), ...base });
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
+}
+
+// Trusted pointer move onto a coordinate (hover) — fires mouseover/mouseenter handlers.
+async function cdpMove(tabId, x, y) {
+  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
 }
 
 // ── Step orchestration ──────────────────────────────────────────────────────
@@ -335,6 +368,164 @@ async function focusTarget(tabId, target) {
   return !!(out && out[0] && out[0].result);
 }
 
+// Poll (in-page) until the target resolves AND is visible, or the timeout elapses. Re-injects
+// each tick so a navigation mid-wait doesn't leave window.__canvex undefined.
+async function waitForTarget(tabId, target, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await inject(tabId);
+    const out = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (loc) => {
+        try {
+          const el = window.__canvex.resolve(loc || {}).el;
+          if (!el) return false;
+          const s = getComputedStyle(el);
+          return (
+            (el.offsetParent !== null || el.getClientRects().length) &&
+            s.visibility !== "hidden" &&
+            s.opacity !== "0"
+          );
+        } catch (_) {
+          return false;
+        }
+      },
+      args: [target || {}],
+    });
+    if (out && out[0] && out[0].result) return { ok: true };
+    await sleep(250);
+  }
+  return { ok: false, error: "wait_for timed out (" + timeoutMs + "ms)" };
+}
+
+// Scroll the target into view (no click/trust needed).
+async function scrollTarget(tabId, target) {
+  await inject(tabId);
+  const out = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (loc) => {
+      const el = window.__canvex.resolve(loc || {}).el;
+      if (!el) return false;
+      el.scrollIntoView({ block: "center", inline: "center" });
+      return true;
+    },
+    args: [target || {}],
+  });
+  return out && out[0] && out[0].result ? { ok: true } : { ok: false, error: "scroll target not found" };
+}
+
+// Pick a <select> option by value, then exact label, then substring — dispatching input+change
+// so frameworks notice. Climbs to the enclosing <select> if the locator resolved a child.
+async function selectOption(tabId, target, value) {
+  await inject(tabId);
+  const out = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (loc, val) => {
+      let el = window.__canvex.resolve(loc || {}).el;
+      if (el && el.tagName !== "SELECT" && el.closest) el = el.closest("select") || el;
+      if (!el || el.tagName !== "SELECT") return { ok: false, error: "target is not a <select>" };
+      const opts = [...el.options];
+      const m =
+        opts.find((o) => o.value === val) ||
+        opts.find((o) => (o.textContent || "").trim() === val) ||
+        opts.find((o) => (o.textContent || "").trim().includes(val));
+      if (!m) return { ok: false, error: "no option matching " + JSON.stringify(val) };
+      el.value = m.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true };
+    },
+    args: [target || {}, value == null ? "" : String(value)],
+  });
+  return (out && out[0] && out[0].result) || { ok: false, error: "select failed" };
+}
+
+// Execute ONE step's browser action → {ok, error?}. Control-only steps (loop_start/loop_end)
+// and pure pauses (wait) do no browser work; the loop jump logic lives in nextIndex(), not here.
+async function execAction(tabId, step, run) {
+  const a = step.action;
+  if (a === "loop_start" || a === "loop_end") return { ok: true }; // control-only
+  if (a === "navigate") {
+    const gate = navGate(tabId); // arm before triggering navigation
+    await chrome.tabs.update(tabId, { url: step.url });
+    await gate;
+    return { ok: true };
+  }
+  if (a === "wait") {
+    await sleep(clampMs(step.ms, 500));
+    return { ok: true };
+  }
+  // Write-gate parity with the server runner: submit / pay·delete clicks, type+submit, and a
+  // bare Enter keypress need the robot's allow_writes. Enforced HERE (the trusted executor) so
+  // both the Canvas "run in my browser" and popup run paths are covered.
+  if (isStateChanging(step) && !run.allowWrites) {
+    return { ok: false, error: "write-gated: enable allow_writes to run this step" };
+  }
+  if (a === "key") {
+    const gate = navGate(tabId); // Enter may submit/navigate — watch from before it
+    await cdpKey(tabId, step.key);
+    await gate;
+    return { ok: true };
+  }
+  if (a === "wait_for") return waitForTarget(tabId, step.target, clampMs(step.ms, 10000));
+  if (a === "scroll") return scrollTarget(tabId, step.target);
+  if (a === "hover") {
+    const pt = await resolvePoint(tabId, step.target);
+    if (!pt.ok) return { ok: false, error: pt.error };
+    await cdpMove(tabId, pt.x, pt.y);
+    return { ok: true };
+  }
+  if (a === "select") return selectOption(tabId, step.target, step.value);
+  if (a === "click") {
+    const pt = await resolvePoint(tabId, step.target);
+    if (!pt.ok) return { ok: false, error: pt.error };
+    const gate = navGate(tabId); // the click may navigate — watch from before it
+    await cdpClick(tabId, pt.x, pt.y);
+    await gate;
+    return { ok: true };
+  }
+  if (a === "type") {
+    const pt = await resolvePoint(tabId, step.target);
+    if (!pt.ok) return { ok: false, error: pt.error };
+    const gate = navGate(tabId); // submit may navigate — watch from before it
+    await cdpClick(tabId, pt.x, pt.y); // trusted focus (fires the page's focus handlers)
+    await sleep(TYPE_FOCUS_SETTLE_MS); // let on-focus suggestions / re-renders settle
+    const focused = await focusTarget(tabId, step.target); // re-focus the (maybe re-rendered) element
+    if (!focused) {
+      // The target vanished after the focus-click (an on-focus re-render dropped it with no
+      // locator-matching replacement). Typing now would go nowhere yet report success — the
+      // exact silent no-op this path guards against. Fail the step instead.
+      return { ok: false, error: "type target disappeared after focus (re-render); nothing typed" };
+    }
+    await cdpSelectAll(tabId); // replace any existing value
+    await cdp(tabId, "Input.insertText", { text: step.text || "" });
+    if (step.submit) await cdpKey(tabId, "Enter");
+    await gate;
+    return { ok: true };
+  }
+  return { ok: false, error: "unknown action " + a };
+}
+
+// Loop-aware advancement: where to go after the step at run.index. loop_start pushes a frame;
+// loop_end decrements the innermost frame and jumps back to the body while iterations remain.
+// Mutates run.loopStack — call only on the success path. Nestable (stack of frames).
+function nextIndex(run, step) {
+  if (step.action === "loop_start") {
+    run.loopStack.push({ start: run.index, left: clampCount(step.count) });
+    return run.index + 1;
+  }
+  if (step.action === "loop_end") {
+    const frame = run.loopStack[run.loopStack.length - 1];
+    if (frame) {
+      frame.left -= 1;
+      if (frame.left > 0) return frame.start + 1; // re-run the loop body
+      run.loopStack.pop();
+    }
+    return run.index + 1;
+  }
+  return run.index + 1;
+}
+
 async function runStep(tabId) {
   const run = runs[tabId];
   if (!run) return;
@@ -343,48 +534,14 @@ async function runStep(tabId) {
 
   let result;
   try {
-    if (step.action === "navigate") {
-      const gate = navGate(tabId); // arm before triggering navigation
-      await chrome.tabs.update(tabId, { url: step.url });
-      await gate;
-      result = { ok: true };
-    } else if (isStateChanging(step) && !run.allowWrites) {
-      // Write-gate parity with the server runner: a submit / pay / delete-type step needs
-      // the robot's allow_writes. Enforced HERE (the trusted CDP executor) so both the
-      // Canvas "run in my browser" and the popup run paths are covered.
-      result = { ok: false, error: "write-gated: enable allow_writes to run this step" };
-    } else {
-      const pt = await resolvePoint(tabId, step.target);
-      if (!pt.ok) {
-        result = { ok: false, error: pt.error };
-      } else if (step.action === "click") {
-        const gate = navGate(tabId); // the click may navigate — watch from before it
-        await cdpClick(tabId, pt.x, pt.y);
-        await gate;
-        result = { ok: true };
-      } else if (step.action === "type") {
-        const gate = navGate(tabId); // submit may navigate — watch from before it
-        await cdpClick(tabId, pt.x, pt.y); // trusted focus (fires the page's focus handlers)
-        await sleep(TYPE_FOCUS_SETTLE_MS); // let on-focus suggestions / re-renders settle
-        const focused = await focusTarget(tabId, step.target); // re-focus the (maybe re-rendered) element
-        if (!focused) {
-          // The target vanished after the focus-click (an on-focus re-render dropped it with
-          // no locator-matching replacement). Typing now would go nowhere yet report success —
-          // the exact silent no-op this path guards against. Fail the step instead.
-          result = { ok: false, error: "type target disappeared after focus (re-render); nothing typed" };
-        } else {
-          await cdpSelectAll(tabId); // replace any existing value
-          await cdp(tabId, "Input.insertText", { text: step.text || "" });
-          if (step.submit) await cdpEnter(tabId);
-          await gate;
-          result = { ok: true };
-        }
-      } else {
-        result = { ok: false, error: "unknown action " + step.action };
-      }
-    }
+    result = await execAction(tabId, step, run);
   } catch (e) {
     result = { ok: false, error: String((e && e.message) || e).slice(0, 150) };
+  }
+
+  run.executed += 1;
+  if (result.ok && run.executed >= MAX_EXECUTED_STEPS) {
+    result = { ok: false, error: "loop step cap (" + MAX_EXECUTED_STEPS + ") exceeded" };
   }
 
   report(
@@ -398,15 +555,16 @@ async function runStep(tabId) {
     run.canvasTabId,
   );
 
-  run.index += 1;
-  if (result.ok && run.index < run.steps.length) {
+  const next = result.ok ? nextIndex(run, step) : run.index + 1;
+  if (result.ok && next < run.steps.length) {
+    run.index = next;
     runStep(tabId);
   } else {
     // `_done` guards against a double terminal event: if the tab closed mid-step,
     // forget() (via onRemoved) may already have reported `done` for this run.
     if (!run._done) {
       run._done = true;
-      report({ type: "done", ok: result.ok, steps: run.steps.length, ran: run.index }, run.canvasTabId);
+      report({ type: "done", ok: result.ok, steps: run.steps.length, ran: run.executed }, run.canvasTabId);
     }
     delete runs[tabId];
     detachDebugger(tabId);
@@ -454,7 +612,10 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       // Remember the Canvas tab (present only for bridge-initiated runs) so run events
       // get pushed back to that page, not just the popup. allowWrites gates state-changing
       // steps (default off) — parity with the server runner.
-      runs[tabId] = { steps: msg.steps, index: 0, canvasTabId, allowWrites: !!msg.allowWrites };
+      runs[tabId] = {
+        steps: msg.steps, index: 0, canvasTabId, allowWrites: !!msg.allowWrites,
+        loopStack: [], executed: 0,
+      };
       runStep(tabId);
     } else if (msg.type === "canvex-open-tab") {
       // Phase 4: open (+ navigate) a tab for the Agent to author against, and return its id

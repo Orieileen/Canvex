@@ -48,6 +48,18 @@ _INTERACTIVE_ROLES = {
 }
 _ROLE_RE = re.compile(r"^\s*-\s+(\S+)")
 
+# DSL actions the Agent may draft. Target-less ones carry only their own fields; targeted
+# ones resolve a rich locator via ref/pick (like click). navigate is handled separately.
+_TARGETLESS = {"wait", "key", "loop_start", "loop_end"}
+_TARGETED = {"click", "type", "wait_for", "scroll", "hover", "select"}
+
+
+def _coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 def _ext_command(ctx: CanvasAgentContext, op: str, *, timeout: float, **fields) -> dict:
     """Emit ONE ext_command to the user's browser and block for its result.
@@ -193,13 +205,22 @@ def browser_open_and_snapshot(
         f"{interactive or '(no interactive elements detected)'}\n\n"
         "Now DRAFT the full step list and call commit_robot_steps(steps) in this turn. "
         "Each step is an object:\n"
-        '  {"action":"navigate","url":"https://…"}  — go to a page\n'
-        '  {"action":"click","ref":"ref_N"}          — click an element you identified above\n'
+        '  {"action":"navigate","url":"https://…"}       — go to a page\n'
+        '  {"action":"click","ref":"ref_N"}              — click an element you identified above\n'
         '  {"action":"type","ref":"ref_N","text":"…","submit":true}  — type + optional Enter\n'
+        '  {"action":"wait","ms":1000}                   — pause N milliseconds\n'
+        '  {"action":"wait_for","ref":"ref_N","ms":10000} — wait until an element is visible\n'
+        '  {"action":"key","key":"Enter"}                — press a key (Enter/Tab/Escape/ArrowDown…)\n'
+        '  {"action":"scroll","ref":"ref_N"}             — scroll an element into view\n'
+        '  {"action":"hover","ref":"ref_N"}              — move the pointer onto an element\n'
+        '  {"action":"select","ref":"ref_N","value":"…"} — pick a <select> option\n'
+        '  {"action":"loop_start","count":3} … {"action":"loop_end"}  — repeat the enclosed '
+        "steps N times (nestable)\n"
         '  {"action":"click","uncertain":true,"label":"the Add-to-cart button"}  — you\'re '
         "unsure which element; the user will be asked to click it\n"
-        "Use a `ref` when you can identify the element; otherwise set uncertain:true with a "
-        "clear `label`. Never invent a ref that wasn't listed."
+        "For an element action, use a `ref` when you can identify it; otherwise set "
+        "uncertain:true with a clear `label`. Never invent a ref that wasn't listed. Add "
+        "`wait`/`wait_for` after a navigation or a click that loads content."
     )
 
 
@@ -215,8 +236,11 @@ def commit_robot_steps(
     Args:
         steps: the drafted step list. Each item:
             {"action":"navigate","url":...} |
-            {"action":"click"|"type","ref":"ref_N", "text"?:..., "submit"?:bool} |
-            {"action":"click"|"type","uncertain":true,"label":"what to click", "text"?:...}
+            {"action":"click"|"type"|"scroll"|"hover"|"wait_for"|"select","ref":"ref_N",
+             "text"?:..., "submit"?:bool, "value"?:..., "ms"?:int} |
+            {"action":"click"|...,"uncertain":true,"label":"what to click", "text"?:...} |
+            {"action":"wait","ms":int} | {"action":"key","key":"Enter"} |
+            {"action":"loop_start","count":int} | {"action":"loop_end"}
     """
     ctx, refusal = _guard(runtime)
     if refusal:
@@ -245,7 +269,22 @@ def commit_robot_steps(
                 continue
             final.append({"action": "navigate", "url": url, "provenance": "guessed"})
             continue
-        if action not in ("click", "type"):
+        # Target-less actions: no ref/pick needed — just carry their fields through.
+        if action in _TARGETLESS:
+            step: dict = {"action": action, "provenance": "guessed"}
+            if action == "wait":
+                step["ms"] = _coerce_int(raw.get("ms"), 1000)
+            elif action == "key":
+                key = (raw.get("key") or "").strip()
+                if not key:
+                    notes.append(f"step {i + 1}: key step with no key — skipped")
+                    continue
+                step["key"] = key
+            elif action == "loop_start":
+                step["count"] = _coerce_int(raw.get("count"), 2)
+            final.append(step)
+            continue
+        if action not in _TARGETED:
             notes.append(f"step {i + 1}: unknown action {action!r} — skipped")
             continue
 
@@ -286,6 +325,10 @@ def commit_robot_steps(
             step["text"] = "" if locator.get("isPassword") else (raw.get("text") or "")
             if raw.get("submit"):
                 step["submit"] = True
+        elif action == "wait_for":
+            step["ms"] = _coerce_int(raw.get("ms"), 10000)
+        elif action == "select":
+            step["value"] = str(raw.get("value") or "")
         final.append(step)
 
     if not final:

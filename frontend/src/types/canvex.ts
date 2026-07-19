@@ -237,15 +237,48 @@ export interface FlowPickResult {
   image: string;
 }
 
-/** One step of an RPA robot's DSL (v1). `target` is the rich locator from a pick;
- *  `provenance` records how the target was obtained. Persisted per robot-steps frame. */
+/** One step of an RPA robot's DSL. `target` is the rich locator from a pick; `provenance`
+ *  records how the target was obtained. Persisted per robot-steps frame. Both executors
+ *  (the extension's CDP runStep + the server robot_runner) implement the same actions.
+ *
+ *  Actions:
+ *   - navigate {url}                    — go to a URL
+ *   - click {target}                    — click an element
+ *   - type {target, text, submit?}      — type text, optional Enter
+ *   - wait {ms}                         — pause for ms milliseconds
+ *   - wait_for {target, ms?}            — wait until the target is visible (ms = timeout)
+ *   - key {key}                         — press a key (Enter/Tab/Escape/Arrow…)
+ *   - scroll {target}                   — scroll the target into view
+ *   - hover {target}                    — move the pointer onto the target
+ *   - select {target, value}            — pick a <select> option (by value or label)
+ *   - loop_start {count} … loop_end     — repeat the enclosed steps `count` times (nestable)
+ */
 export interface RobotStep {
-  action: "navigate" | "click" | "type";
-  target?: FlowLocator; // for click / type
-  text?: string; // for type
-  url?: string; // for navigate
+  action:
+    | "navigate"
+    | "click"
+    | "type"
+    | "wait"
+    | "wait_for"
+    | "key"
+    | "scroll"
+    | "hover"
+    | "select"
+    | "loop_start"
+    | "loop_end";
+  target?: FlowLocator; // click / type / wait_for / scroll / hover / select
+  text?: string; // type
+  url?: string; // navigate
   /** for type: press Enter after (submits the form). Both runners execute on this. */
   submit?: boolean;
+  /** wait: delay in ms. wait_for: visibility timeout in ms. */
+  ms?: number;
+  /** key: the key name to press (e.g. "Enter", "Tab", "Escape", "ArrowDown"). */
+  key?: string;
+  /** select: the option to choose (matched against option value, then label). */
+  value?: string;
+  /** loop_start: how many times to repeat the enclosed steps (1–100). */
+  count?: number;
   provenance?: "picked" | "guessed" | "self-healed";
   /** AXTree snapshot ref this step's target came from (Agent-drafted or picked). */
   ref?: string | null;

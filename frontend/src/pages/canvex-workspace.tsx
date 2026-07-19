@@ -15,7 +15,7 @@ import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
 import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode, type DriveAction } from "@/components/canvas/BrowseMonitorOverlay";
-import { RobotStepsOverlay, type RobotStepsLive } from "@/components/canvas/RobotStepsOverlay";
+import { RobotStepsOverlay, type RobotStepsLive, type RunStepState } from "@/components/canvas/RobotStepsOverlay";
 import { detectExtension, postToExtension, runInBrowser, sendExtCommand } from "@/lib/extension-bridge";
 import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
@@ -407,8 +407,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   useEffect(() => {
     detectExtension().then(setExtAvailable);
   }, []);
+  // Per-frame, per-step-index run state — status + the failure error (shown on the card).
   const [runStatus, setRunStatus] = useState<
-    Record<string, Record<number, "running" | "ok" | "failed">>
+    Record<string, Record<number, RunStepState>>
   >({});
 
   // handlePick + handleEditSteps are defined AFTER the pinning destructure below —
@@ -474,6 +475,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     clearBrowseMonitorImage,
     ensureRobotStepsFrame,
     persistRobotSteps,
+    persistRobotTitle,
     persistRobotAllowWrites,
     pinImage,
     pinVideo,
@@ -558,6 +560,23 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       return { steps, allowWrites: persisted?.allowWrites ?? false, persisted };
     },
     [],
+  );
+
+  // Rename the robot from the steps-card header. Update live state (preserving the current
+  // steps — seeding from persisted when the live ref is empty post-reload, else setting
+  // {title, steps:[]} would blank the visible steps) AND persist the name to customData so
+  // it survives reload and Save picks it up. Cosmetic — does NOT invalidate a saved robot
+  // (the name doesn't affect execution), so Run stays enabled through a rename.
+  const handleEditRobotTitle = useCallback(
+    (frameId: string, title: string) => {
+      setRobotSteps((prev) => {
+        const cur = prev[frameId];
+        const steps = cur?.steps ?? getEffectiveRobotData(frameId).steps;
+        return { ...prev, [frameId]: { title, steps } };
+      });
+      persistRobotTitle(frameId, title);
+    },
+    [getEffectiveRobotData, persistRobotTitle],
   );
 
   // Element pick: POST the clicked page-viewport coord to the live authoring browser,
@@ -701,7 +720,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           if (ev.event === "robot_step") {
             setRunStatus((prev) => ({
               ...prev,
-              [frameId]: { ...(prev[frameId] ?? {}), [ev.index]: ev.status },
+              [frameId]: { ...(prev[frameId] ?? {}), [ev.index]: { status: ev.status, error: ev.error } },
             }));
           } else if (ev.event === "browse_frame") {
             if (!monitorId) monitorId = ensureBrowseMonitorFrame(null);
@@ -736,7 +755,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         if (evt.type === "step") {
           setRunStatus((prev) => ({
             ...prev,
-            [frameId]: { ...(prev[frameId] ?? {}), [evt.index]: evt.status },
+            [frameId]: { ...(prev[frameId] ?? {}), [evt.index]: { status: evt.status, error: evt.error } },
           }));
         } else if (evt.type === "done") {
           if (evt.ok) toast.success(t("browseLog.robotRanInBrowser"));
@@ -1799,6 +1818,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         tick={excalidrawTick}
         liveSteps={robotSteps}
         onEditSteps={handleEditSteps}
+        onEditTitle={handleEditRobotTitle}
         onSave={handleSaveRobot}
         onRun={handleRunRobot}
         onToggleAllowWrites={handleToggleAllowWrites}

@@ -200,6 +200,59 @@ def _op_type_target(page, target: dict, text: str, submit: bool = False):
     return page.url
 
 
+# --- extra DSL primitives (wait / wait_for / key / scroll / hover / select) --------------
+# Server-side twins of the extension's CDP executor, so a robot with these steps runs the
+# same on the "Run" (server) path as on "run in my browser". Same _resolve_target locator.
+
+def _op_scroll(page, target: dict):
+    """Scroll the target into view."""
+    _resolve_target(page, target).scroll_into_view_if_needed(timeout=_timeout_ms())
+
+
+def _op_hover(page, target: dict):
+    """Move the pointer onto the target (fires hover handlers)."""
+    _resolve_target(page, target).hover(timeout=_timeout_ms())
+
+
+def _op_select(page, target: dict, value: str):
+    """Pick a <select> option — Playwright matches value, then label."""
+    loc = _resolve_target(page, target)
+    try:
+        loc.select_option(value=value, timeout=_timeout_ms())
+    except Exception:  # noqa: BLE001 — value didn't match an option value; try the visible label
+        loc.select_option(label=value, timeout=_timeout_ms())
+
+
+def _op_key(page, key: str):
+    """Press a key on the focused element / page. Enter may navigate — settle after."""
+    page.keyboard.press(key)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=3000)
+    except Exception:  # noqa: BLE001 — a keypress need not navigate; ignore the settle timeout
+        pass
+
+
+def _op_wait(page, ms: int):
+    """Pause for ms milliseconds."""
+    page.wait_for_timeout(ms)
+
+
+def _op_wait_for(page, target: dict, timeout_ms: int):
+    """Wait until the target becomes visible (or timeout). Builds the locator directly —
+    NOT via _resolve_target, which counts elements NOW and would miss a not-yet-present one."""
+    css = target.get("css")
+    role, name = target.get("role"), target.get("name")
+    if css:
+        loc = page.locator(css)
+    elif role:
+        loc = page.get_by_role(role, name=name) if name else page.get_by_role(role)
+    elif target.get("text"):
+        loc = page.get_by_text(target["text"], exact=True)
+    else:
+        raise RuntimeError("wait_for needs a target (css / role / text)")
+    loc.first.wait_for(state="visible", timeout=timeout_ms)
+
+
 # --- element pick (RPA authoring) -------------------------------------------
 # Runs on the LIVE DOM in the owner thread: resolve the actionable element at a
 # CSS-viewport coordinate and return a rich locator (role/name/text/css/nth/bbox).

@@ -33,14 +33,39 @@ from .tools.browser_primitives import (
     _nav_refusal,
     _op_click_target,
     _op_goto,
+    _op_hover,
+    _op_key,
     _op_screenshot,
+    _op_scroll,
+    _op_select,
     _op_type_target,
+    _op_wait,
+    _op_wait_for,
 )
 
 logger = logging.getLogger(__name__)
 
-# Bound step COUNT (a malformed/huge robot); the run-level deadline bounds wall-clock.
+# Bound the step ARRAY length (a malformed/huge robot). Loop back-edges make the number of
+# EXECUTED steps exceed this, so a separate _MAX_EXECUTED caps that; the run-level deadline
+# bounds wall-clock either way.
 _MAX_STEPS = 100
+_MAX_EXECUTED = 500
+
+
+def _clamp_ms(ms, default: int) -> int:
+    try:
+        v = int(ms)
+    except (TypeError, ValueError):
+        v = default
+    return max(0, min(v, 60000))
+
+
+def _clamp_count(count) -> int:
+    try:
+        v = int(count)
+    except (TypeError, ValueError):
+        v = 2
+    return max(1, min(v, 100))
 
 # A click/submit whose target reads like one of these is treated as state-changing and
 # gated behind Robot.allow_writes (default read-only). Substring match on name/text/css.
@@ -53,10 +78,13 @@ _DESTRUCTIVE_KEYWORDS = (
 
 
 def _is_state_changing(step: dict) -> bool:
-    """True if a step may mutate external state (needs allow_writes). A type with submit,
-    or a click on a destructive-looking control; navigate / plain type are read."""
+    """True if a step may mutate external state (needs allow_writes). A type with submit, a
+    bare Enter keypress (submits the focused form), or a click on a destructive-looking
+    control; navigate / wait / scroll / hover / select / plain type / other keys are read."""
     action = step.get("action")
     if action == "type" and step.get("submit"):
+        return True
+    if action == "key" and str(step.get("key") or "").lower() == "enter":
         return True
     if action != "click":
         return False
@@ -74,7 +102,9 @@ def _shot_data_url(session) -> str | None:
 
 
 def _execute_step(session, step: dict, target_override: dict | None = None) -> None:
-    """Run one step on the session (raises LocatorMiss/LocatorAmbiguous/etc. on failure)."""
+    """Run one step on the session (raises LocatorMiss/LocatorAmbiguous/etc. on failure).
+    loop_start/loop_end are control-only and never reach here (stream_robot_run drives the
+    program counter); they're accepted as no-ops for safety."""
     action = step.get("action")
     target = target_override if target_override is not None else (step.get("target") or {})
     if action == "navigate":
@@ -87,6 +117,20 @@ def _execute_step(session, step: dict, target_override: dict | None = None) -> N
         session.call(_op_click_target, target)
     elif action == "type":
         session.call(_op_type_target, target, step.get("text") or "", bool(step.get("submit")))
+    elif action == "wait":
+        session.call(_op_wait, _clamp_ms(step.get("ms"), 500))
+    elif action == "wait_for":
+        session.call(_op_wait_for, target, _clamp_ms(step.get("ms"), 10000))
+    elif action == "key":
+        session.call(_op_key, str(step.get("key") or ""))
+    elif action == "scroll":
+        session.call(_op_scroll, target)
+    elif action == "hover":
+        session.call(_op_hover, target)
+    elif action == "select":
+        session.call(_op_select, target, str(step.get("value") or ""))
+    elif action in ("loop_start", "loop_end"):
+        pass  # control-only; the PC/loop-stack in stream_robot_run handles the jump
     else:
         raise RuntimeError(f"unknown action {action!r}")
 
@@ -158,22 +202,54 @@ def stream_robot_run(robot_id: str, *, scene_id: str):
     allow_writes = robot.allow_writes
     deadline = time.monotonic() + max(30, settings.CANVAS_BROWSER_ROBOT_RUN_DEADLINE)
     failed: str | None = None
+    # Program counter + loop stack: loop_start/loop_end are markers that jump `pc` (a loop
+    # back-edge re-runs the enclosed body), so this is a while-loop over `pc`, not a for-loop
+    # over `enumerate`. `executed` bounds total steps run since a back-edge can exceed len(steps).
+    pc = 0
+    loop_stack: list[dict] = []
+    executed = 0
     try:
-        for i, step in enumerate(steps):
+        while pc < len(steps):
+            step = steps[pc]
             action = step.get("action")
+
+            if executed >= _MAX_EXECUTED:
+                failed = f"run exceeded the {_MAX_EXECUTED}-step execution cap (loop too large?)"
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
+                       "status": "failed", "error": "loop step cap exceeded"}
+                break
+            executed += 1
             if time.monotonic() > deadline:
                 failed = f"run exceeded the {settings.CANVAS_BROWSER_ROBOT_RUN_DEADLINE}s deadline"
-                yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                        "status": "failed", "error": "run timed out"}
                 break
+
+            # Loop markers: no browser work + no screenshot; emit status then jump the PC.
+            if action in ("loop_start", "loop_end"):
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action, "status": "running"}
+                next_pc = pc + 1
+                if action == "loop_start":
+                    loop_stack.append({"start": pc, "left": _clamp_count(step.get("count"))})
+                elif loop_stack:
+                    frame = loop_stack[-1]
+                    frame["left"] -= 1
+                    if frame["left"] > 0:
+                        next_pc = frame["start"] + 1  # re-run the loop body
+                    else:
+                        loop_stack.pop()
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action, "status": "ok"}
+                pc = next_pc
+                continue
+
             # Write-gate: destructive clicks / submits only run on an allow_writes robot.
             if _is_state_changing(step) and not allow_writes:
-                failed = f"step {i + 1} ({action}) is state-changing; robot is read-only"
-                yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                failed = f"step {pc + 1} ({action}) is state-changing; robot is read-only"
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                        "status": "failed", "error": "write-gated: enable allow_writes to run this"}
                 break
 
-            yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "running"}
+            yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action, "status": "running"}
             healed = False
             try:
                 _execute_step(session, step)
@@ -186,33 +262,34 @@ def stream_robot_run(robot_id: str, *, scene_id: str):
                         _execute_step(session, step, target_override=new_target)
                         healed = True
                     except Exception as exc2:  # noqa: BLE001
-                        failed = f"step {i + 1} ({action}) failed after self-heal: {type(exc2).__name__}"
-                        yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                        failed = f"step {pc + 1} ({action}) failed after self-heal: {type(exc2).__name__}"
+                        yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                                "status": "failed", "error": f"self-heal: {str(exc2)[:150]}"}
                         break
                 else:
-                    failed = f"step {i + 1} ({action}): {type(exc).__name__}: {exc}"
-                    yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                    failed = f"step {pc + 1} ({action}): {type(exc).__name__}: {exc}"
+                    yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                            "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:150]}"}
                     break
             except PlaywrightSessionClosed:
-                failed = f"step {i + 1}: browser session closed"
-                yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                failed = f"step {pc + 1}: browser session closed"
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                        "status": "failed", "error": "browser session closed"}
                 break
             except Exception as exc:  # noqa: BLE001 — Playwright raises many nav/locator errors
-                failed = f"step {i + 1} ({action}): {type(exc).__name__}: {str(exc)[:150]}"
-                yield {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action,
+                failed = f"step {pc + 1} ({action}): {type(exc).__name__}: {str(exc)[:150]}"
+                yield {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action,
                        "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:150]}"}
                 break
 
             img = _shot_data_url(session)
             if img:
                 yield {"event": StreamEvent.BROWSE_FRAME, "image": img, "final": False}
-            ok_event = {"event": StreamEvent.ROBOT_STEP, "index": i, "action": action, "status": "ok"}
+            ok_event = {"event": StreamEvent.ROBOT_STEP, "index": pc, "action": action, "status": "ok"}
             if healed:
                 ok_event["healed"] = True
             yield ok_event
+            pc += 1
         # End-state freeze frame (final=True so the client persists it to the monitor).
         final_img = _shot_data_url(session)
         if final_img:
