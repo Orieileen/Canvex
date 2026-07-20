@@ -431,6 +431,7 @@
     elementToRef,
     startPick,
     stopPick,
+    axVisible, // the snapshot's visibility predicate — reused by the executor's wait_for
     resolveFromPoint: (x, y) => locatorOf(document.elementFromPoint(x, y)),
   };
 })();

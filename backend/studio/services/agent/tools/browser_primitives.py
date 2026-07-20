@@ -85,6 +85,33 @@ def _coerce_json(text: str) -> str:
         return t
 
 
+# --- DSL field coercion (shared by robot_runner's clamps + robot_authoring's drafting) ---
+# One home for these so the run-time bounds and the authoring-time defaults can't drift, and
+# so authoring persists values that already satisfy the bounds. Kept in exact lockstep with
+# the extension's clampMs / clampCount.
+
+def _coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_ms(ms, default: int) -> int:
+    # 0 / negative / missing / non-numeric → the default, mirroring the extension's
+    # `Math.floor(Number(ms)) || def`. Critically this keeps wait_for's Playwright timeout
+    # POSITIVE — timeout=0 means "no timeout" (wait forever), which a cleared ms field would
+    # otherwise trigger (the run's own deadline is the only backstop).
+    v = _coerce_int(ms, 0)
+    if v <= 0:
+        v = default
+    return min(v, 60000)
+
+
+def _clamp_count(count) -> int:
+    return max(1, min(_coerce_int(count, 2), 100))
+
+
 # --- page operations (run in the session's owner thread) --------------------
 
 def _timeout_ms() -> int:
@@ -214,18 +241,50 @@ def _op_hover(page, target: dict):
     _resolve_target(page, target).hover(timeout=_timeout_ms())
 
 
+# Match value → exact label → substring in ONE in-page pass (mirrors the extension's
+# selectOption), dispatching input+change so frameworks notice. Avoids Playwright
+# select_option's per-attempt wait: a label-typed value would otherwise stall the whole
+# op-timeout on the failed value= attempt before the label= fallback even runs.
+_SELECT_OPTION_JS = """(el, val) => {
+  if (el && el.tagName !== 'SELECT' && el.closest) el = el.closest('select') || el;
+  if (!el || el.tagName !== 'SELECT') return { ok: false, error: 'target is not a <select>' };
+  const opts = [...el.options];
+  const m = opts.find((o) => o.value === val)
+    || opts.find((o) => (o.textContent || '').trim() === val)
+    || opts.find((o) => (o.textContent || '').trim().includes(val));
+  if (!m) return { ok: false, error: 'no option matching ' + JSON.stringify(val) };
+  el.value = m.value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true };
+}"""
+
+
 def _op_select(page, target: dict, value: str):
-    """Pick a <select> option — Playwright matches value, then label."""
-    loc = _resolve_target(page, target)
-    try:
-        loc.select_option(value=value, timeout=_timeout_ms())
-    except Exception:  # noqa: BLE001 — value didn't match an option value; try the visible label
-        loc.select_option(label=value, timeout=_timeout_ms())
+    """Pick a <select> option — value, then exact label, then substring."""
+    res = _resolve_target(page, target).evaluate(_SELECT_OPTION_JS, value)
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError((isinstance(res, dict) and res.get("error")) or "select failed")
+
+
+# Aliases/casing → Playwright key names, mirroring the extension's KEY_MAP so a `key` step
+# behaves the same on both runners (the extension lowercases + aliases; Playwright's
+# keyboard.press wants exact names like "Escape"/"ArrowDown", not "esc"/"arrowdown").
+_KEY_ALIASES = {
+    "enter": "Enter", "tab": "Tab", "escape": "Escape", "esc": "Escape",
+    "backspace": "Backspace", "delete": "Delete", "space": "Space",
+    "arrowup": "ArrowUp", "arrowdown": "ArrowDown",
+    "arrowleft": "ArrowLeft", "arrowright": "ArrowRight",
+    "home": "Home", "end": "End", "pageup": "PageUp", "pagedown": "PageDown",
+}
 
 
 def _op_key(page, key: str):
-    """Press a key on the focused element / page. Enter may navigate — settle after."""
-    page.keyboard.press(key)
+    """Press a key on the focused element / page. Enter may navigate — settle after.
+    Normalizes the name (case/aliases) so it matches the extension; an unknown name (e.g. a
+    single character) passes through to Playwright unchanged."""
+    k = _KEY_ALIASES.get(key.strip().lower(), key)
+    page.keyboard.press(k)
     try:
         page.wait_for_load_state("domcontentloaded", timeout=3000)
     except Exception:  # noqa: BLE001 — a keypress need not navigate; ignore the settle timeout

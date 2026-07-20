@@ -24,7 +24,7 @@ from langchain.tools import ToolRuntime, tool
 
 from .. import ext_rendezvous
 from ..context import CanvasAgentContext
-from .browser_primitives import _nav_refusal
+from .browser_primitives import _clamp_count, _clamp_ms, _nav_refusal
 from .image import REFUSED_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -52,13 +52,6 @@ _ROLE_RE = re.compile(r"^\s*-\s+(\S+)")
 # ones resolve a rich locator via ref/pick (like click). navigate is handled separately.
 _TARGETLESS = {"wait", "key", "loop_start", "loop_end"}
 _TARGETED = {"click", "type", "wait_for", "scroll", "hover", "select"}
-
-
-def _coerce_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _ext_command(ctx: CanvasAgentContext, op: str, *, timeout: float, **fields) -> dict:
@@ -273,7 +266,7 @@ def commit_robot_steps(
         if action in _TARGETLESS:
             step: dict = {"action": action, "provenance": "guessed"}
             if action == "wait":
-                step["ms"] = _coerce_int(raw.get("ms"), 1000)
+                step["ms"] = _clamp_ms(raw.get("ms"), 1000)
             elif action == "key":
                 key = (raw.get("key") or "").strip()
                 if not key:
@@ -281,7 +274,7 @@ def commit_robot_steps(
                     continue
                 step["key"] = key
             elif action == "loop_start":
-                step["count"] = _coerce_int(raw.get("count"), 2)
+                step["count"] = _clamp_count(raw.get("count"))
             final.append(step)
             continue
         if action not in _TARGETED:
@@ -326,7 +319,7 @@ def commit_robot_steps(
             if raw.get("submit"):
                 step["submit"] = True
         elif action == "wait_for":
-            step["ms"] = _coerce_int(raw.get("ms"), 10000)
+            step["ms"] = _clamp_ms(raw.get("ms"), 10000)
         elif action == "select":
             step["value"] = str(raw.get("value") or "")
         final.append(step)

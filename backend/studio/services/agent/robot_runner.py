@@ -30,6 +30,8 @@ from .playwright_session import (
 from .tools.browser_primitives import (
     LocatorAmbiguous,
     LocatorMiss,
+    _clamp_count,
+    _clamp_ms,
     _nav_refusal,
     _op_click_target,
     _op_goto,
@@ -50,22 +52,6 @@ logger = logging.getLogger(__name__)
 # bounds wall-clock either way.
 _MAX_STEPS = 100
 _MAX_EXECUTED = 500
-
-
-def _clamp_ms(ms, default: int) -> int:
-    try:
-        v = int(ms)
-    except (TypeError, ValueError):
-        v = default
-    return max(0, min(v, 60000))
-
-
-def _clamp_count(count) -> int:
-    try:
-        v = int(count)
-    except (TypeError, ValueError):
-        v = 2
-    return max(1, min(v, 100))
 
 # A click/submit whose target reads like one of these is treated as state-changing and
 # gated behind Robot.allow_writes (default read-only). Substring match on name/text/css.
@@ -118,7 +104,7 @@ def _execute_step(session, step: dict, target_override: dict | None = None) -> N
     elif action == "type":
         session.call(_op_type_target, target, step.get("text") or "", bool(step.get("submit")))
     elif action == "wait":
-        session.call(_op_wait, _clamp_ms(step.get("ms"), 500))
+        session.call(_op_wait, _clamp_ms(step.get("ms"), 1000))
     elif action == "wait_for":
         session.call(_op_wait_for, target, _clamp_ms(step.get("ms"), 10000))
     elif action == "key":

@@ -56,8 +56,17 @@ function isStateChanging(step) {
 // loop count or a malformed loop can't run forever. (navGate already bounds each step's wall
 // time.) Mirrors robot_runner._MAX_EXECUTED.
 const MAX_EXECUTED_STEPS = 500;
-const clampMs = (ms, def) => Math.min(Math.max(Math.floor(Number(ms)) || def, 0), 60000);
-const clampCount = (c) => Math.min(Math.max(Math.floor(Number(c)) || 2, 1), 100);
+// 0 / negative / non-numeric ms → the default (a 0ms pause is meaningless; a 0ms wait_for
+// timeout would be worse). count: non-numeric → 2, else clamped to [1,100] (0 → 1 iteration).
+// Kept in exact lockstep with robot_runner._clamp_ms / _clamp_count.
+const clampMs = (ms, def) => {
+  const n = Math.floor(Number(ms));
+  return Math.min(Number.isFinite(n) && n > 0 ? n : def, 60000);
+};
+const clampCount = (c) => {
+  const n = Math.floor(Number(c));
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 100) : 2;
+};
 
 let isMac = false;
 try {
@@ -368,31 +377,30 @@ async function focusTarget(tabId, target) {
   return !!(out && out[0] && out[0].result);
 }
 
-// Poll (in-page) until the target resolves AND is visible, or the timeout elapses. Re-injects
-// each tick so a navigation mid-wait doesn't leave window.__canvex undefined.
+// Poll (in-page) until the target resolves AND is visible (reusing page-agent's own
+// axVisible predicate), or the timeout elapses. Inject ONCE; only re-inject when a mid-wait
+// navigation dropped window.__canvex (the check returns the "__gone__" sentinel), so a plain
+// 10s wait costs ~1 inject, not ~40.
 async function waitForTarget(tabId, target, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  await inject(tabId);
   while (Date.now() < deadline) {
-    await inject(tabId);
     const out = await chrome.scripting.executeScript({
       target: { tabId },
       func: (loc) => {
+        if (!window.__canvex) return "__gone__"; // navigation wiped the injected agent
         try {
           const el = window.__canvex.resolve(loc || {}).el;
-          if (!el) return false;
-          const s = getComputedStyle(el);
-          return (
-            (el.offsetParent !== null || el.getClientRects().length) &&
-            s.visibility !== "hidden" &&
-            s.opacity !== "0"
-          );
+          return el ? !!window.__canvex.axVisible(el) : false;
         } catch (_) {
           return false;
         }
       },
       args: [target || {}],
     });
-    if (out && out[0] && out[0].result) return { ok: true };
+    const r = out && out[0] && out[0].result;
+    if (r === true) return { ok: true };
+    if (r === "__gone__") await inject(tabId); // re-establish page-agent after a navigation
     await sleep(250);
   }
   return { ok: false, error: "wait_for timed out (" + timeoutMs + "ms)" };
@@ -452,7 +460,7 @@ async function execAction(tabId, step, run) {
     return { ok: true };
   }
   if (a === "wait") {
-    await sleep(clampMs(step.ms, 500));
+    await sleep(clampMs(step.ms, 1000));
     return { ok: true };
   }
   // Write-gate parity with the server runner: submit / pay·delete clicks, type+submit, and a
