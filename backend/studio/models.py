@@ -346,8 +346,8 @@ class AngleResult(models.Model):
 
 class Robot(models.Model):
     """A saved browser-automation robot (影刀-style RPA): a named, reusable list of
-    deterministic DSL steps authored by picking elements on the canvas. Runs WITHOUT
-    the LLM (see robot_runner.stream_robot_run); the model only authors / self-heals."""
+    deterministic DSL steps. Runs WITHOUT the LLM, in the user's own browser via the
+    Canvex extension ("run in my browser"); the model just persists the authored steps."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     scene = models.ForeignKey(Scene, on_delete=models.CASCADE, related_name="robots")

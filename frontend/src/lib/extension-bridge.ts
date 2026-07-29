@@ -3,6 +3,11 @@
 // No extension ID / externally_connectable needed — the content script only
 // loads on the Canvex origin and bridges page <-> background.
 
+import type { FlowLocator } from "@/types/canvex";
+
+const newCommandId = (): string =>
+  crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
 type BridgeInbound = {
   __canvexFrom?: "ext";
   payload?: { type?: string; command_id?: string | null; evt?: RobotRunEvent; [k: string]: unknown };
@@ -16,6 +21,33 @@ function post(payload: unknown) {
  *  pick banner (`canvex-pick-stop`) that outlived the Agent's request. */
 export function postToExtension(payload: Record<string, unknown>): void {
   post(payload);
+}
+
+/** Arm element-pick in the user's REAL browser and resolve the picked rich locator — the
+ *  manual counterpart to the Agent's pick, so a step card's target can be (re)bound by
+ *  clicking the actual element. With `url`, open a fresh tab there first; otherwise pick on
+ *  the page the user was last on (the extension resolves it — the active tab is the Canvas,
+ *  so the caller can't just say "active"). Resolves `{ error }` on timeout / no-target-tab /
+ *  cancel so the caller toasts instead of hanging. Independent of the backend/Agent. */
+export async function pickInBrowser(
+  opts: { url?: string; label?: string; timeoutMs?: number } = {},
+): Promise<{ locator?: FlowLocator; ref?: string | null; error?: string }> {
+  const timeoutMs = opts.timeoutMs ?? 180000; // a human pick is slow
+  let tabId: number | undefined;
+  if (opts.url) {
+    const open = await sendExtCommand(
+      { type: "canvex-open-tab", command_id: newCommandId(), url: opts.url },
+      30000,
+    );
+    if (open.error) return { error: String(open.error) };
+    tabId = typeof open.tabId === "number" ? open.tabId : undefined;
+  }
+  const res = await sendExtCommand(
+    { type: "canvex-pick-start", command_id: newCommandId(), tabId, useLastTab: !opts.url, label: opts.label ?? "" },
+    timeoutMs,
+  );
+  if (res.error) return { error: String(res.error) };
+  return { locator: res.locator as FlowLocator, ref: (res.ref as string | null) ?? null };
 }
 
 /** Resolve true if the Canvex extension answers a ping within `timeoutMs`. */

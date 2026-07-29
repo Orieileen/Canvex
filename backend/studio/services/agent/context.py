@@ -20,20 +20,11 @@ from uuid import uuid4
 class CanvasAgentContext:
     scene_id: str
     # Stable per-turn token identifying this run's browser session in the process
-    # registry (playwright_session._sessions). Replaces id(context) as the key so the
-    # session can be (a) reached from a SEPARATE HTTP request — the RPA element-pick
-    # POST echoes this token to find the same live page — and (b) never GC-id-reused.
-    # Every turn gets a fresh one; the streaming layer emits it so the client can
-    # correlate a pick to this turn's browser. Identity-equal to id(context) today
-    # (runtime.context IS this object) so the switch is behavior-preserving.
+    # registry (playwright_session._sessions). Serves the per-turn web_operator/browse
+    # session AND (as the rendezvous key) the v2 extension flow/ext-result POST. A fresh
+    # one per turn; identity-equal to id(context) today (runtime.context IS this object),
+    # so keying by it is behavior-preserving.
     session_token: str = field(default_factory=lambda: uuid4().hex)
-    # RPA authoring keeps the browser session alive ACROSS the streaming turn so the
-    # user can pick elements after the SSE stream closes (a pick is a separate HTTP
-    # request). When True, stream_canvas_agent SKIPS the turn-end close_session — the
-    # idle self-reap (CANVAS_BROWSER_SESSION_IDLE_TIMEOUT) + an explicit close endpoint
-    # bound the session instead. Default False = the normal per-turn web_operator
-    # lifecycle (session closed at turn end, no Chromium lingering).
-    keep_browser_session: bool = False
     # Image URLs attached to this turn via "Send to chat" on ImageEditBar.
     # generate_image / generate_video tools fall back to these when the
     # agent neglects to thread image_urls through itself — gpt-4o-mini
@@ -64,11 +55,6 @@ class CanvasAgentContext:
     # reload). None on the non-streaming path. Thread-safe (called from the browse
     # worker thread); the installed callback just does a queue put.
     emit_browse_frame: Callable[[str, bool], None] | None = None
-    # RPA authoring: set by stream_canvas_agent; author_robot calls it AFTER opening a
-    # live browser session to hand the client this turn's session_token + page viewport
-    # for element picking. Emitting only on a real open keeps the token backed by a live
-    # session (emitting every turn would 409 picks on turns that opened no browser).
-    emit_flow_session: Callable[[str, dict], None] | None = None
     # RPA v2 (Phase 4): set by stream_canvas_agent; the authoring tool calls it to send ONE
     # command (open tab / AXTree snapshot / ask user to pick / ref→locator) to the user's
     # browser EXTENSION, which the frontend relays. Arg: a command dict already carrying a

@@ -3,10 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AngleJobRetrieveView,
-    FlowDriveView,
     FlowExtResultView,
-    FlowKeepaliveView,
-    FlowPickView,
     ImageEditJobRetrieveView,
     MediaLibraryFolderItemsView,
     MediaLibraryFoldersView,
@@ -17,7 +14,6 @@ from .views import (
     SceneChatView,
     SceneImageEditJobListView,
     SceneRobotListCreateView,
-    SceneRobotRunView,
     SceneImageEditView,
     SceneSplitView,
     SceneVideoGenerateView,
@@ -52,21 +48,6 @@ urlpatterns = router.urls + [
         name="canvas-scene-chat",
     ),
     path(
-        "scenes/<uuid:scene_id>/flow/pick/",
-        FlowPickView.as_view(),
-        name="canvas-scene-flow-pick",
-    ),
-    path(
-        "scenes/<uuid:scene_id>/flow/drive/",
-        FlowDriveView.as_view(),
-        name="canvas-scene-flow-drive",
-    ),
-    path(
-        "scenes/<uuid:scene_id>/flow/keepalive/",
-        FlowKeepaliveView.as_view(),
-        name="canvas-scene-flow-keepalive",
-    ),
-    path(
         "scenes/<uuid:scene_id>/flow/ext-result/",
         FlowExtResultView.as_view(),
         name="canvas-scene-flow-ext-result",
@@ -75,11 +56,6 @@ urlpatterns = router.urls + [
         "scenes/<uuid:scene_id>/robots/",
         SceneRobotListCreateView.as_view(),
         name="canvas-scene-robots",
-    ),
-    path(
-        "scenes/<uuid:scene_id>/robots/<uuid:robot_id>/run/",
-        SceneRobotRunView.as_view(),
-        name="canvas-scene-robot-run",
     ),
     path(
         "scenes/<uuid:scene_id>/image-edit/",

@@ -267,13 +267,6 @@ class StreamEvent:
     # data-URL (live) or a persisted media URL (the final freeze frame, final=True,
     # which the frontend saves to the monitor frame's customData for reload).
     BROWSE_FRAME = "browse_frame"
-    # RPA authoring: emitted once at turn start (when CANVAS_RPA_ENABLED) with this
-    # turn's browser-session {token, viewport}. The client echoes the token in a
-    # separate element-pick POST so the pick reaches THIS turn's live page.
-    FLOW_SESSION = "flow_session"
-    # RPA run-mode: per-step status while a saved robot runs deterministically. Carries
-    # {index, action, status: 'running'|'ok'|'failed', error?}.
-    ROBOT_STEP = "robot_step"
     # RPA v2 (Phase 4): the Agent drives the user's OWN browser via the extension. One
     # command the frontend relays to the extension (open a tab / AXTree snapshot / ask the
     # user to pick an element / resolve a ref→locator). Carries {command_id, token, op, …}.
@@ -769,21 +762,12 @@ def stream_canvas_agent(
             frames.put({"event": StreamEvent.BROWSE_FRAME, "image": image, "final": final})
     ctx.emit_browse_frame = _emit_browse_frame
 
-    def _emit_flow_session(token: str, viewport: dict) -> None:
-        # RPA authoring: author_robot calls this AFTER it opens a live browser session,
-        # so the token the client picks with always backs a live session. (Emitting at
-        # pump start handed out a token on EVERY rpa-enabled turn — including ones where
-        # the agent opened no browser — so picks 409'd against a session-less token.)
-        if not aborted.is_set():
-            frames.put({"event": StreamEvent.FLOW_SESSION, "token": token, "viewport": viewport})
-    ctx.emit_flow_session = _emit_flow_session
-
     def _emit_ext_command(command: dict) -> None:
         # RPA v2: push one browser-extension command frame; the frontend relays it to the
         # extension and POSTs the result back (→ ext_rendezvous). The command dict already
         # carries command_id/token/op; spread it into the frame. Same aborted guard as the
         # other sinks — after client disconnect the blocked tool's should_abort breaks its
-        # wait, so nothing here lingers (left un-nulled like emit_flow_session).
+        # wait, so nothing here lingers (left un-nulled like the other emit_* sinks).
         if not aborted.is_set():
             frames.put({"event": StreamEvent.EXT_COMMAND, **command})
     ctx.emit_ext_command = _emit_ext_command
@@ -913,10 +897,10 @@ def stream_canvas_agent(
             # thread could. Guarded so a teardown error can't strand the consumer
             # on frames.get(); the sentinel is ALWAYS posted last.
             try:
-                # RPA authoring keeps its session alive past the turn (picks are
-                # separate requests) — the idle self-reap + explicit close bound it.
-                if not ctx.keep_browser_session:
-                    close_session(ctx.session_token)
+                # Close this turn's web_operator/browse session (RPA authoring now runs
+                # entirely in the user's own browser via the extension — no server session
+                # to keep alive across the turn).
+                close_session(ctx.session_token)
             except Exception:  # noqa: BLE001
                 logger.exception("stream_canvas_agent: close_session failed")
             # The graph ran on THIS thread, so any ORM work its tools did (e.g.

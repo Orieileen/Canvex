@@ -189,10 +189,6 @@ export type CanvasChatStreamEvent =
   // tool runs — `image` is a JPEG data-URL (live) or a media URL (final=true,
   // which the client persists to the monitor frame's customData for reload).
   | { event: "browse_frame"; image: string; final: boolean }
-  // RPA authoring: this turn's browser-session token + page viewport, emitted once at
-  // turn start (when CANVAS_RPA_ENABLED). The client echoes the token in a separate
-  // element-pick POST (/flow/pick/) so the pick reaches this turn's live page.
-  | { event: "flow_session"; token: string; viewport: { width: number; height: number } }
   // RPA v2 (Phase 4): one command the Agent wants run in the user's OWN browser via the
   // extension. The client relays it (by `op`) to the extension, correlates the reply by
   // `command_id`, and POSTs the result to /flow/ext-result/ (which unblocks the waiting
@@ -230,16 +226,9 @@ export interface FlowLocator {
   isPassword: boolean;
 }
 
-/** POST /flow/pick/ response. `locator` is null if nothing actionable was at the point;
- *  `image` is a fresh JPEG data-URL of the page (confirm against ground truth). */
-export interface FlowPickResult {
-  locator: FlowLocator | null;
-  image: string;
-}
-
 /** One step of an RPA robot's DSL. `target` is the rich locator from a pick; `provenance`
- *  records how the target was obtained. Persisted per robot-steps frame. Both executors
- *  (the extension's CDP runStep + the server robot_runner) implement the same actions.
+ *  records how the target was obtained. Persisted per robot-steps frame. Executed by the
+ *  extension's CDP runStep (in the user's own browser).
  *
  *  Actions:
  *   - navigate {url}                    — go to a URL
@@ -296,16 +285,3 @@ export interface CanvasRobot {
   created_at: string;
   updated_at: string;
 }
-
-/** SSE events from POST /robots/<id>/run/ — deterministic run, no LLM per step. */
-export type CanvasRobotRunEvent =
-  | {
-      event: "robot_step";
-      index: number;
-      action: string;
-      status: "running" | "ok" | "failed";
-      error?: string;
-    }
-  | { event: "browse_frame"; image: string; final: boolean }
-  | { event: "error"; detail: string }
-  | { event: "done" };

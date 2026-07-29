@@ -1,12 +1,8 @@
-import base64
 import json
 import logging
-import queue
-import threading
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import connections
 from django.db.models import Count, Max
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -55,14 +51,6 @@ from .services.agent.builder import (
     CanvasAgentInvocationError,
     StreamEvent,
     stream_canvas_agent,
-)
-from .services.agent.playwright_session import PlaywrightSessionClosed, get_session
-from .services.agent.robot_runner import stream_robot_run
-from .services.agent.tools.browser_primitives import (
-    _op_screenshot,
-    drive_on_session,
-    pick_on_session,
-    ping_session,
 )
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
@@ -191,65 +179,6 @@ def _sse_event(event: dict) -> bytes:
         logger.warning("sse: falling back to default=str for event %s", event.get("event"))
         payload = json.dumps(event, cls=DjangoJSONEncoder, ensure_ascii=False, default=str)
     return (f"data: {payload}\n\n").encode("utf-8")
-
-
-# Emit an SSE keepalive comment at least this often while a stream is idle, so a slow
-# robot step (a browser op blocks up to CANVAS_BROWSER_OP_TIMEOUT, and the initial
-# Chromium launch + first navigate can run tens of seconds before the first event) can't
-# leave the byte stream silent long enough for a reverse proxy to idle-timeout it.
-_SSE_KEEPALIVE_INTERVAL_S = 15.0
-
-
-def _sse_comment(text: str = "keepalive") -> bytes:
-    """An SSE COMMENT line (`: <text>\\n\\n`). EventSource clients ignore it, but the bytes
-    keep the connection warm past reverse-proxy read timeouts."""
-    return f": {text}\n\n".encode("utf-8")
-
-
-def _sse_stream_with_keepalive(events, *, interval_s: float | None = None):
-    """Wrap a BLOCKING event-dict generator as an SSE byte stream that never goes silent
-    longer than the keepalive interval: a daemon thread drains `events` into a queue while
-    this generator emits each event (via _sse_event) as it arrives, or a keepalive COMMENT
-    on each idle interval. Needed because the source generator blocks in-thread (a browser
-    op / Chromium launch), so it cannot interleave keepalives itself. The source's
-    exception is re-raised here so the caller's error handling still runs. `interval_s`
-    defaults to the module constant, read at call time (patchable in tests).
-
-    The drain thread runs the source generator, which opens its OWN DB connection (the run
-    writes RobotRun rows); it closes that connection on exit so the spawned thread does not
-    leak one. On client disconnect the outer generator is closed but the drain thread keeps
-    running the source to completion — bounded by the run's wall-clock deadline."""
-    # A non-positive interval would busy-loop (q.get(timeout<=0) returns Empty at once);
-    # fall back to the default rather than spin (guards a misconfigured constant).
-    interval = interval_s if (interval_s is not None and interval_s > 0) else _SSE_KEEPALIVE_INTERVAL_S
-    q: queue.Queue = queue.Queue()
-    _END = object()
-
-    def _drain():
-        err: Exception | None = None
-        try:
-            for ev in events:
-                q.put(ev)
-        except Exception as exc:  # noqa: BLE001 — ferry to the SSE thread; re-raised below
-            err = exc
-        finally:
-            connections.close_all()  # this thread's DB connection(s) — avoid a leak
-            q.put((_END, err))
-
-    threading.Thread(target=_drain, name="sse-keepalive-drain", daemon=True).start()
-
-    while True:
-        try:
-            item = q.get(timeout=interval)
-        except queue.Empty:
-            yield _sse_comment()
-            continue
-        # Terminal sentinel is a 2-tuple (_END, err); real events are dicts, never tuples.
-        if isinstance(item, tuple) and len(item) == 2 and item[0] is _END:
-            if item[1] is not None:
-                raise item[1]
-            return
-        yield _sse_event(item)
 
 
 class SceneAttachmentUploadView(APIView):
@@ -398,176 +327,6 @@ class SceneChatView(APIView):
         return response
 
 
-def _jpeg_data_url(raw: bytes) -> str:
-    return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
-
-
-class FlowPickView(APIView):
-    """RPA element pick — resolve the actionable element at a page coordinate on the
-    LIVE authoring browser and return a rich locator + a FRESH screenshot.
-
-    A SEPARATE request from the chat SSE turn that opened the browser, so it finds the
-    session by the session_token the stream emitted (flow_session event). That token is
-    an unguessable per-turn value — the auth boundary for v1 (this app is single-
-    workspace / AllowAny like every other view). Pick is RESOLVE-ONLY: it never
-    dispatches input and never CREATES a browser — get_session returns None if the
-    authoring session is gone, and the client re-arms. (Input dispatch for login is a
-    separate /flow/drive endpoint, added with the frontend.)"""
-
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request, scene_id):
-        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
-        token = (request.data.get("token") or "").strip()
-        if not token:
-            raise ValidationError("token is required")
-        try:
-            x = float(request.data["x"])
-            y = float(request.data["y"])
-        except (KeyError, TypeError, ValueError):
-            raise ValidationError("x and y (page viewport px) are required numbers")
-
-        session = get_session(token)
-        if session is None:
-            # Authoring browser gone (turn ended w/o keep-alive, idle-reaped, or a
-            # different worker). Tell the client to re-arm, never a silent no-op.
-            return Response(
-                {"detail": "authoring browser session unavailable — re-arm the pick",
-                 "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            result = pick_on_session(session, x, y)
-        except PlaywrightSessionClosed:
-            return Response(
-                {"detail": "authoring browser session expired — re-arm the pick",
-                 "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        except Exception as exc:  # noqa: BLE001 — Playwright/eval error → 502, not 500
-            logger.exception("flow pick failed: scene=%s", scene_id)
-            return Response(
-                {"detail": f"pick failed: {type(exc).__name__}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        return Response({
-            "locator": result["locator"],           # None if nothing actionable there
-            "image": _jpeg_data_url(result["image"]),
-        })
-
-
-# Keys the drive endpoint accepts (allowlist — an arbitrary keyboard.press is needless
-# attack surface). Enough for form login / captcha navigation.
-_DRIVE_KEYS = {
-    "Enter", "Tab", "Escape", "Backspace", "Delete", "Space",
-    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End",
-}
-_DRIVE_MAX_TEXT = 4096  # bound drive `text` so a huge string can't wedge the owner thread
-
-
-class FlowDriveView(APIView):
-    """RPA DRIVE / takeover: dispatch REAL input (click / type / key) to the live
-    authoring browser so the user can log in / pass a captcha, then continue picking.
-    Distinct from /flow/pick (resolve-only) — here a click TRIGGERS the element. Returns
-    a FRESH screenshot for the live view; the client must NOT persist it (design §11:
-    drive frames may show credentials / an authenticated page, so they never touch the
-    DB / scene.data). The token is the same unguessable per-turn bearer as pick."""
-
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request, scene_id):
-        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
-        token = (request.data.get("token") or "").strip()
-        if not token:
-            raise ValidationError("token is required")
-        action = (request.data.get("action") or "").strip()
-
-        session = get_session(token)
-        if session is None:
-            return Response(
-                {"detail": "authoring browser session unavailable — re-open authoring",
-                 "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            if action == "click":
-                try:
-                    x = float(request.data["x"])
-                    y = float(request.data["y"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValidationError(f"click needs numeric x, y ({exc})")
-                drive_on_session(session, action="click", x=x, y=y)
-            elif action == "type":
-                text = str(request.data.get("text") or "")
-                if len(text) > _DRIVE_MAX_TEXT:
-                    raise ValidationError(f"text too long (max {_DRIVE_MAX_TEXT} chars)")
-                drive_on_session(session, action="type", text=text)
-            elif action == "key":
-                key = str(request.data.get("key") or "Enter")
-                if key not in _DRIVE_KEYS:
-                    raise ValidationError(f"unsupported key {key!r}")
-                drive_on_session(session, action="key", key=key)
-            else:
-                raise ValidationError("action must be one of: click, type, key")
-            image = _jpeg_data_url(session.call(_op_screenshot))
-        except ValidationError:
-            raise  # 400 for bad action / coords / text / key — not the 502 below
-        except PlaywrightSessionClosed:
-            return Response(
-                {"detail": "authoring browser session expired", "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        except Exception as exc:  # noqa: BLE001 — Playwright/input error → 502, not 500
-            logger.exception("flow drive failed: scene=%s", scene_id)
-            return Response(
-                {"detail": f"drive failed: {type(exc).__name__}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        # Live-only screenshot — never persisted (secret suppression).
-        return Response({"image": image})
-
-
-class FlowKeepaliveView(APIView):
-    """Keep the live authoring browser warm across human think-time (login / 2FA /
-    captcha) so it doesn't idle-reap mid-authoring. The client pings this on an interval
-    while an authoring frame is armed; each ping resets the session's idle timer. Cheap
-    and resolve-only — it never creates a browser and returns no screenshot. A 409 means
-    the session is already gone (idle-reaped, turn ended, or a different worker), so the
-    client stops pinging and prompts the user to re-open authoring. Same unguessable
-    per-turn token bearer as pick / drive."""
-
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request, scene_id):
-        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
-        token = (request.data.get("token") or "").strip()
-        if not token:
-            raise ValidationError("token is required")
-
-        session = get_session(token)
-        if session is None:
-            return Response(
-                {"detail": "authoring browser session unavailable — re-open authoring",
-                 "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            ping_session(session)
-        except PlaywrightSessionClosed:
-            return Response(
-                {"detail": "authoring browser session expired — re-open authoring",
-                 "code": "session_gone"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        except Exception as exc:  # noqa: BLE001 — Playwright error → 502, not 500
-            logger.exception("flow keepalive failed: scene=%s", scene_id)
-            return Response(
-                {"detail": f"keepalive failed: {type(exc).__name__}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        return Response({"ok": True})
-
-
 class FlowExtResultView(APIView):
     """RPA v2 (Phase 4): the browser EXTENSION's result for one Agent command, relayed
     back through the Canvas page. The chat Agent emitted an `ext_command` (open+snapshot /
@@ -634,52 +393,6 @@ class SceneRobotListCreateView(APIView):
             allow_writes=ser.validated_data.get("allow_writes", False),
         )
         return Response(RobotSerializer(robot).data, status=status.HTTP_201_CREATED)
-
-
-class SceneRobotRunView(APIView):
-    """Run a saved robot deterministically (no LLM), streaming per-step status as SSE.
-
-    Mirrors SceneChatView's SSE transport; the actual step execution lives in
-    robot_runner.stream_robot_run (a plain generator — no graph, no background pump)."""
-
-    permission_classes = [permissions.AllowAny]
-    # Accept the client's `Accept: text/event-stream` (else DRF content-negotiation 406s).
-    renderer_classes = [JSONRenderer, SSEStreamingRenderer]
-
-    def post(self, request, scene_id, robot_id):
-        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
-        scene_id_str = str(scene_id)
-        robot_id_str = str(robot_id)
-
-        def event_stream():
-            # The run's DB writes happen in the keepalive drain thread on its own
-            # connection; the request thread does no more ORM during the (up-to-deadline)
-            # stream. Release this thread's connection now instead of pinning it idle for
-            # the whole run, so a run's connection footprint stays at 1, not 2. (Runs
-            # post-middleware, so nothing reopens it; request_finished still cleans up.)
-            connections.close_all()
-            try:
-                # Keepalive-wrapped: a long step or the initial Chromium launch can't leave
-                # the SSE stream silent past a reverse-proxy read timeout (: keepalive lines).
-                yield from _sse_stream_with_keepalive(
-                    stream_robot_run(robot_id_str, scene_id=scene_id_str)
-                )
-            except Exception as exc:  # noqa: BLE001 — surface a run-error frame, don't 500
-                logger.exception(
-                    "robot run failed: scene=%s robot=%s", scene_id_str, robot_id_str
-                )
-                yield _sse_event({
-                    "event": StreamEvent.ERROR,
-                    "detail": f"run_failed: {type(exc).__name__}",
-                })
-            yield _sse_event({"event": StreamEvent.DONE})
-
-        response = StreamingHttpResponse(
-            event_stream(), content_type=SSE_MEDIA_TYPE, status=status.HTTP_200_OK,
-        )
-        response["X-Accel-Buffering"] = "no"
-        response["Cache-Control"] = "no-cache"
-        return response
 
 
 def _build_history_payload(scene) -> list[dict]:

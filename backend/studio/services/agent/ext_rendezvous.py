@@ -12,7 +12,7 @@ Same in-process, single-worker assumption as `playwright_session._sessions`: it 
 because `runserver` is one process, thread-per-request, so the pump thread and the
 result-POST thread share this registry. Under multi-process (gunicorn prefork) the POST
 could land on a different process than the blocked tool and never meet — a cross-process
-deploy needs a shared store (Redis/DB). Documented here, matching FlowPickView's note.
+deploy needs a shared store (Redis/DB). Documented here, matching playwright_session's note.
 
 Auth model: the (token, command_id) pair IS the unguessable bearer — both are uuid4 hex
 minted server-side and only reach the client via the SSE `ext_command` frame. `resolve`

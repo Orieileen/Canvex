@@ -16,9 +16,7 @@ import type {
   CanvasSkill,
   CanvasVideoJob,
   ChatAttachment,
-  FlowPickResult,
   CanvasRobot,
-  CanvasRobotRunEvent,
   RobotStep,
 } from "@/types/canvex";
 
@@ -146,15 +144,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * advances through `buffer` instead of reslicing per frame — reslicing is O(buffer²) for
  * many small frames (matters for big screenshot frames). CR is stripped so CRLF/CR line
  * endings (a proxy may rewrite them) still split on "\n\n"; safe because json.dumps escapes
- * any real CR inside payloads. `[DONE]` sentinels are skipped. With `skipMalformed`, a frame
- * that fails JSON.parse is dropped; otherwise the error propagates and aborts the stream.
- * On any exit the reader is cancelled (so the server stops producing into an orphan
- * connection) and released. Shared by postChatStream + postRobotRun — the frontend's only
- * two SSE consumers.
+ * any real CR inside payloads. `[DONE]` sentinels are skipped; a frame that fails JSON.parse
+ * propagates the error and aborts the stream (our payloads are our own single-line JSON, so
+ * a parse failure means real corruption). On any exit the reader is cancelled (so the server
+ * stops producing into an orphan connection) and released. Used by postChatStream (the
+ * frontend's only SSE consumer).
  */
 async function* parseSSEStream<T>(
   reader: ReadableStreamDefaultReader<string>,
-  { skipMalformed = false }: { skipMalformed?: boolean } = {},
 ): AsyncGenerator<T, void, void> {
   const frameData = (frame: string): string => {
     let data = "";
@@ -166,17 +163,10 @@ async function* parseSSEStream<T>(
     }
     return data;
   };
-  // Returns undefined for an empty/[DONE]/skipped-malformed frame (JSON.parse never yields
-  // undefined, so it's a safe "no event" sentinel — a literal `null` payload still yields).
-  const parse = (data: string): T | undefined => {
-    if (!data || data === "[DONE]") return undefined;
-    if (!skipMalformed) return JSON.parse(data) as T;
-    try {
-      return JSON.parse(data) as T;
-    } catch {
-      return undefined;
-    }
-  };
+  // Returns undefined for an empty/[DONE] frame (JSON.parse never yields undefined, so it's
+  // a safe "no event" sentinel — a literal `null` payload still yields).
+  const parse = (data: string): T | undefined =>
+    !data || data === "[DONE]" ? undefined : (JSON.parse(data) as T);
   let buffer = "";
   let cursor = 0;
   try {
@@ -307,39 +297,6 @@ export interface AngleCreatePayload {
   zoom: number;
 }
 
-/** POST JSON to a `/flow/<path>/` endpoint on the live authoring browser. Encodes the
- *  shared flow-endpoint error contract once: a 409 becomes an Error with
- *  `code:"session_gone"` (the browser is gone → the caller re-arms); any other non-2xx
- *  throws. Returns the parsed JSON body. */
-async function postFlowJson<T>(sceneId: string, path: string, body: object): Promise<T> {
-  const resp = await fetch(
-    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/${path}/`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-      body: JSON.stringify(body),
-    },
-  );
-  if (resp.status === 409) {
-    const err = new Error("authoring browser session gone") as Error & { code?: string };
-    err.code = "session_gone";
-    throw err;
-  }
-  if (!resp.ok) throw new Error(`flow ${path} failed: HTTP ${resp.status}`);
-  return (await resp.json()) as T;
-}
-
-/** RPA element pick: POST a page-viewport coordinate to the live authoring browser and
- *  get back the resolved rich locator + a fresh screenshot. Throws Error with
- *  `code: "session_gone"` on 409 (the authoring browser is gone → the caller re-arms). */
-export async function postFlowPick(
-  sceneId: string,
-  body: { token: string; x: number; y: number },
-): Promise<FlowPickResult> {
-  return postFlowJson<FlowPickResult>(sceneId, "pick", body);
-}
-
-
 /** Save the authored steps as a named, reusable robot. `allow_writes` opts the robot
  *  into running write/state-changing steps (submit / pay / delete); omitted → read-only. */
 export async function saveRobot(
@@ -356,27 +313,6 @@ export async function saveRobot(
   );
   if (!resp.ok) throw new Error(`save robot failed: HTTP ${resp.status}`);
   return (await resp.json()) as CanvasRobot;
-}
-
-/** RPA drive / takeover: dispatch REAL input (click / type / key) to the live authoring
- *  browser (login / captcha). Returns a fresh screenshot for the live view — the caller
- *  must NOT persist it. Throws Error with `code:"session_gone"` on 409. */
-export async function postFlowDrive(
-  sceneId: string,
-  body: { token: string; action: "click" | "type" | "key"; x?: number; y?: number; text?: string; key?: string },
-): Promise<{ image: string }> {
-  return postFlowJson<{ image: string }>(sceneId, "drive", body);
-}
-
-/** Keep the live authoring browser warm (reset its idle timer) across human think-time
- *  — the client pings this on an interval while an authoring frame is armed, so a long
- *  login / 2FA / captcha pause doesn't idle-reap the session. Throws Error with
- *  `code:"session_gone"` on 409 (the session is gone → the caller stops pinging + re-arms). */
-export async function postFlowKeepalive(
-  sceneId: string,
-  token: string,
-): Promise<void> {
-  await postFlowJson<{ ok: boolean }>(sceneId, "keepalive", { token });
 }
 
 /** RPA v2 (Phase 4): return the browser extension's result for ONE Agent command to the
@@ -399,32 +335,6 @@ export async function postFlowExtResult(
   return resp.ok;
 }
 
-/** Run a saved robot; yields per-step status + monitor frames as SSE events. */
-export async function* postRobotRun(
-  sceneId: string,
-  robotId: string,
-  options: { signal?: AbortSignal } = {},
-): AsyncGenerator<CanvasRobotRunEvent, void, void> {
-  const resp = await fetch(
-    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/robots/${encodeURIComponent(robotId)}/run/`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        "ngrok-skip-browser-warning": "true",
-      },
-      signal: options.signal,
-    },
-  );
-  if (!resp.ok || !resp.body) throw new Error(`robot run failed: HTTP ${resp.status}`);
-  const reader = resp.body.pipeThrough(new TextDecoderStream("utf-8")).getReader();
-  // skipMalformed: a robot run interleaves screenshot frames; tolerate a stray/truncated
-  // one rather than aborting the whole run.
-  yield* parseSSEStream<CanvasRobotRunEvent>(reader, { skipMalformed: true });
-}
-
-
 export const canvasService = {
   // ── Scene CRUD ────────────────────────────────────────────────────────────
   listScenes: () => request.get<CanvasSceneListItem[]>(SCENES),
@@ -440,17 +350,10 @@ export const canvasService = {
     }),
   // POST 返 SSE 流 —— 见顶部 postChatStream 函数 (async generator)
   postChatStream,
-  // RPA 元素拾取: POST 坐标 → 富定位 + 新截图 (见顶部 postFlowPick)
-  postFlowPick,
-  // RPA 接管: 真实输入 (click/type/key), 用于登录/验证码 (见顶部 postFlowDrive)
-  postFlowDrive,
-  // RPA 保活: 编写期间定时 ping 活着的浏览器会话, 防登录/验证码久停被 idle-reap
-  postFlowKeepalive,
   // RPA v2 (Phase 4): 把扩展执行一条 Agent 命令的结果回传后端 (解阻塞 Agent 工具)
   postFlowExtResult,
-  // RPA 机器人: 保存 + 运行 (见顶部 saveRobot / postRobotRun)
+  // RPA 机器人: 保存已编写的步骤为可复用机器人 (扩展在用户浏览器里跑)
   saveRobot,
-  postRobotRun,
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜

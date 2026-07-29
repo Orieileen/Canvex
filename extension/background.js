@@ -81,6 +81,24 @@ function activeTab() {
   );
 }
 
+// The most-recently-focused http(s) tab that ISN'T the Canvas app — used by manual pick
+// "on the current page": when the user clicks Pick in the Canvas the ACTIVE tab is the
+// Canvas itself, so we target the page they were last looking at instead. null if none.
+async function lastNonCanvasTab(excludeTabId) {
+  const tabs = await new Promise((res) => chrome.tabs.query({}, res));
+  return (
+    tabs
+      .filter(
+        (t) =>
+          t.id !== excludeTabId &&
+          t.url &&
+          /^https?:/i.test(t.url) &&
+          !/^https?:\/\/localhost:(5199|5173)\b/i.test(t.url),
+      )
+      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] || null
+  );
+}
+
 // Deliver a message to the extension's own contexts (the popup) via runtime, AND — when a
 // Canvas/authoring tab id is known — to that tab's content-script bridge (content scripts
 // don't receive runtime.sendMessage, only tabs.sendMessage to their tab). Both sends
@@ -653,7 +671,25 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       // Phase 4: msg.tabId pins the pick to the AUTHORING tab (not the active tab); the
       // command_id + requesting Canvas tab are remembered (pendingPick) so the eventual
       // pick — which fires LATER, from the authoring tab — routes back to that Agent.
-      const tabId = msg.tabId != null ? msg.tabId : (await activeTab()).id;
+      // msg.useLastTab (manual "pick on current page"): the active tab is the Canvas, so
+      // target the page the user was last on; error back if there's no such tab.
+      let tabId = msg.tabId;
+      if (tabId == null && msg.useLastTab) {
+        const t = await lastNonCanvasTab(sender.tab ? sender.tab.id : null);
+        if (!t) {
+          broadcast(
+            {
+              type: "canvex-picked-saved",
+              command_id: msg.command_id || null,
+              error: "no page to pick on — open the target site in a browser tab first",
+            },
+            sender.tab ? sender.tab.id : null,
+          );
+          return;
+        }
+        tabId = t.id;
+      }
+      if (tabId == null) tabId = (await activeTab()).id;
       if (tabId != null) {
         const entry = {
           command_id: msg.command_id || null,

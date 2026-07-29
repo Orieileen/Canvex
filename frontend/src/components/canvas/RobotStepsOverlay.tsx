@@ -1,4 +1,4 @@
-import { useMemo, type RefObject } from "react";
+import { useMemo, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -40,19 +40,20 @@ interface RobotStepsOverlayProps {
   /** Rename the robot (persisted to customData; Save sends it as the robot name). */
   onEditTitle: (frameId: string, title: string) => void;
   onSave: (frameId: string) => void;
-  onRun: (frameId: string) => void;
   /** Toggle the robot's write-gate opt-in (allow submits / pay·delete clicks). The
    *  current value is read from the frame's customData, so no companion state prop. */
   onToggleAllowWrites: (frameId: string, allow: boolean) => void;
   /** Per-frame, per-step-index run state (status + failure error) while a robot runs. */
   runStatus: Record<string, Record<number, RunStepState>>;
-  /** frameId → saved robot id (presence enables Run). */
-  savedFrames: Record<string, string>;
   /** True when the Canvex browser extension is installed → enables "run in my browser". */
   extAvailable?: boolean;
   /** Run the robot in the user's OWN browser via the extension (real IP + login state).
-   *  Unlike onRun (server-side, needs a saved robot), this sends the current steps directly. */
+   *  Sends the current steps directly to the extension. */
   onRunInBrowser?: (frameId: string) => void;
+  /** Pick/re-pick a step's target element in the user's REAL browser (via the extension).
+   *  stepIndex < 0 appends a new click step. source: "url" opens the robot's start URL first;
+   *  "current" picks the page the user was last on. Only shown when the extension is present. */
+  onPickTarget?: (frameId: string, stepIndex: number, source: "url" | "current") => void;
 }
 
 /** Human-readable target of a step: "role · name/text/css". */
@@ -71,6 +72,9 @@ const STATUS_DOT: Record<RunStatus, string> = {
   failed: "bg-red-500",
 };
 
+/** Actions whose target is a picked rich locator → eligible for the "🎯 pick element" flow. */
+const TARGETED_ACTIONS = new Set(["click", "type", "scroll", "hover", "select", "wait_for"]);
+
 /**
  * Editable step-cards panels anchored to the scene's robot-steps frames — the DSL of
  * the robot being authored, as clickable cards. Each pick appends a step; here the user
@@ -85,12 +89,11 @@ export function RobotStepsOverlay({
   onEditSteps,
   onEditTitle,
   onSave,
-  onRun,
   onToggleAllowWrites,
   runStatus,
-  savedFrames,
   extAvailable,
   onRunInBrowser,
+  onPickTarget,
 }: RobotStepsOverlayProps) {
   void tick; // re-render trigger; live state read fresh below
   const api = excalidrawApiRef.current;
@@ -109,12 +112,11 @@ export function RobotStepsOverlay({
           onEditSteps={onEditSteps}
           onEditTitle={onEditTitle}
           onSave={onSave}
-          onRun={onRun}
           onToggleAllowWrites={onToggleAllowWrites}
           status={runStatus?.[frame.id] ?? EMPTY_STATUS}
-          saved={!!savedFrames?.[frame.id]}
           extAvailable={extAvailable}
           onRunInBrowser={onRunInBrowser}
+          onPickTarget={onPickTarget}
         />
       ))}
     </>
@@ -128,12 +130,11 @@ function RobotStepsPanel({
   onEditSteps,
   onEditTitle,
   onSave,
-  onRun,
   onToggleAllowWrites,
   status,
-  saved,
   extAvailable,
   onRunInBrowser,
+  onPickTarget,
 }: {
   frame: ExcalidrawElement;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
@@ -141,14 +142,15 @@ function RobotStepsPanel({
   onEditSteps: (frameId: string, steps: RobotStep[]) => void;
   onEditTitle: (frameId: string, title: string) => void;
   onSave: (frameId: string) => void;
-  onRun: (frameId: string) => void;
   onToggleAllowWrites: (frameId: string, allow: boolean) => void;
   status: Record<number, RunStepState>;
-  saved: boolean;
   extAvailable?: boolean;
   onRunInBrowser?: (frameId: string) => void;
+  onPickTarget?: (frameId: string, stepIndex: number, source: "url" | "current") => void;
 }) {
   const { t } = useTranslation("canvasUi");
+  // Which step's "pick element" chooser is open (-1 = the footer "pick to add"); null = none.
+  const [pickFor, setPickFor] = useState<number | null>(null);
   // Parse the frame's customData once per frame change. Used both for allow_writes
   // (persisted-only, never in live authoring state) and as the post-reload fallback for
   // title/steps — reading it through this memo avoids a JSON.parse on every render tick
@@ -211,6 +213,53 @@ function RobotStepsPanel({
       <button type="button" onClick={() => remove(i)} title={t("browseLog.stepDelete")} className={iconBtn + " text-[32px] hover:!text-red-400"}>×</button>
     </div>
   );
+
+  // "🎯 pick element": the robot targets a page in the user's real browser, not the Canvas,
+  // so binding a click/type/… target means clicking the actual element over there. The button
+  // is shown only when the extension is present; it opens a chooser (below) for where to pick.
+  const canPick = !!(extAvailable && onPickTarget);
+  const hasStartUrl = steps.some((s) => s.action === "navigate" && !!s.url);
+  const pickBtn = (i: number, action: string) =>
+    canPick && TARGETED_ACTIONS.has(action) ? (
+      <button
+        type="button"
+        onClick={() => setPickFor(pickFor === i ? null : i)}
+        title={t("browseLog.pickBtn")}
+        className={iconBtn + (pickFor === i ? " !text-emerald-300" : "")}
+      >
+        🎯
+      </button>
+    ) : null;
+  // The where-to-pick chooser (honors the "两者都要 / ask first" choice): open the robot's
+  // start URL in a fresh tab, or pick on the page the user is already on.
+  const chooserRow = (i: number) =>
+    pickFor === i ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {hasStartUrl && (
+          <button
+            type="button"
+            onClick={() => { setPickFor(null); onPickTarget?.(frame.id, i, "url"); }}
+            className="rounded bg-emerald-500/15 px-3 py-2 text-[24px] text-emerald-200 hover:bg-emerald-500/25"
+          >
+            {t("browseLog.pickFromUrl")}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => { setPickFor(null); onPickTarget?.(frame.id, i, "current"); }}
+          className="rounded bg-emerald-500/15 px-3 py-2 text-[24px] text-emerald-200 hover:bg-emerald-500/25"
+        >
+          {t("browseLog.pickFromCurrent")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setPickFor(null)}
+          className="rounded px-3 py-2 text-[24px] text-white/40 hover:text-white/70"
+        >
+          {t("browseLog.pickCancel")}
+        </button>
+      </div>
+    ) : null;
 
   // The action-specific field(s) shown in a normal step card's flexible middle column.
   const field = "min-w-0 flex-1 rounded bg-black/40 px-3 py-2 text-[26px] text-white placeholder:text-white/30";
@@ -328,17 +377,6 @@ function RobotStepsPanel({
         >
           {t("browseLog.robotSave")}
         </button>
-        <button
-          type="button"
-          disabled={!saved}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRun(frame.id);
-          }}
-          className="rounded bg-emerald-500 px-5 py-2 text-[26px] font-medium text-black enabled:hover:bg-emerald-400 disabled:opacity-40"
-        >
-          {t("browseLog.robotRun")}
-        </button>
         {extAvailable && onRunInBrowser && (
           <button
             type="button"
@@ -436,8 +474,12 @@ function RobotStepsPanel({
                     {step.provenance}
                   </span>
                 )}
+                {pickBtn(i, step.action)}
                 {controls(i)}
               </div>
+
+              {/* Where-to-pick chooser (only while this step's 🎯 is toggled open). */}
+              {chooserRow(i)}
 
               {/* Failure reason from the last run — surfaced instead of just a red dot. */}
               {st?.status === "failed" && st.error && (
@@ -466,7 +508,23 @@ function RobotStepsPanel({
           >
             🔁 {t("browseLog.stepAddLoop")}
           </button>
+          {/* Pick a real element in the browser and append it as a new click step. */}
+          {canPick && (
+            <button
+              type="button"
+              onClick={() => setPickFor(pickFor === -1 ? null : -1)}
+              className={
+                "flex-1 rounded-md border border-dashed px-4 py-3 text-[26px] " +
+                (pickFor === -1
+                  ? "border-emerald-400/60 text-emerald-200"
+                  : "border-emerald-400/30 text-emerald-200/60 hover:border-emerald-400/50 hover:text-emerald-200/90")
+              }
+            >
+              🎯 {t("browseLog.pickAdd")}
+            </button>
+          )}
         </div>
+        {chooserRow(-1)}
       </div>
     </div>
   );

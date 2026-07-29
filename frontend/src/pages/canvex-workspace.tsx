@@ -14,9 +14,9 @@ import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
-import { BrowseMonitorOverlay, type BrowseMonitorLive, type BrowserMode, type DriveAction } from "@/components/canvas/BrowseMonitorOverlay";
+import { BrowseMonitorOverlay, type BrowseMonitorLive } from "@/components/canvas/BrowseMonitorOverlay";
 import { RobotStepsOverlay, type RobotStepsLive, type RunStepState } from "@/components/canvas/RobotStepsOverlay";
-import { detectExtension, postToExtension, runInBrowser, sendExtCommand } from "@/lib/extension-bridge";
+import { detectExtension, pickInBrowser, postToExtension, runInBrowser, sendExtCommand } from "@/lib/extension-bridge";
 import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
@@ -62,7 +62,6 @@ import type {
   CanvasSceneData,
   CanvasSkill,
   ChatAttachment,
-  FlowLocator,
   RobotStep,
 } from "@/types/canvex";
 
@@ -79,12 +78,6 @@ import { FloatingAdjustPanel, ImageEditBar } from "@/components/canvas/ImageEdit
 
 const SAVE_DEBOUNCE_MS = 1500;
 const STATUS_FADE_MS = 2500;
-// RPA authoring keepalive: while an authoring browser is armed, ping the backend this
-// often to reset its idle-reap timer, so a long login / 2FA / captcha pause doesn't
-// kill the session mid-authoring. Must stay comfortably below the backend
-// CANVAS_BROWSER_SESSION_IDLE_TIMEOUT (default 300s) — 60s gives a 5× margin and
-// tolerates background-tab timer throttling.
-const AUTHORING_KEEPALIVE_MS = 60_000;
 
 // Canvas product policy, forced into every scene's appState by buildInitialData
 // on load (so they win over stale values older autosaves persisted):
@@ -378,29 +371,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the visual sibling of browseLogs. BrowseMonitorOverlay renders these; frames
   // absent here fall back to their persisted final-frame URL (reload).
   const [browseMonitors, setBrowseMonitors] = useState<Record<string, BrowseMonitorLive>>({});
-  // RPA authoring: this turn's live browser-session token + page viewport (from the
-  // flow_session SSE frame). Present => an authoring browser is live and the monitor
-  // frame can be switched to Pick mode. Survives past the streaming turn (the backend
-  // keeps the session alive) until a pick 409s or a new session arrives.
-  const [flowSession, setFlowSession] = useState<{
-    token: string;
-    viewport: { width: number; height: number };
-  } | null>(null);
-  const [browserMode, setBrowserMode] = useState<BrowserMode>("watch");
-  // The last element resolved by a pick — drives the highlight + label on the monitor.
-  const [pickedLocator, setPickedLocator] = useState<FlowLocator | null>(null);
   // The robot being authored: DSL steps keyed by robot-steps frame id (each pick
   // appends a `click` step). Live in React state; persisted to the frame's customData.
   const [robotSteps, setRobotSteps] = useState<Record<string, RobotStepsLive>>({});
-  // Mirror for synchronous reads in handlePick — avoids a stale closure when several
-  // picks land before a re-render.
+  // Mirror for synchronous reads when several edits land before a re-render.
   const robotStepsRef = useRef(robotSteps);
   useEffect(() => {
     robotStepsRef.current = robotSteps;
   }, [robotSteps]);
-  // Saved robot id per steps-frame (presence enables Run); + per-step status a run
-  // streams back onto the cards.
-  const [savedRobotIds, setSavedRobotIds] = useState<Record<string, string>>({});
   // Is the Canvex browser extension installed? Detected once on mount; enables the
   // "run in my browser" path (robot runs in the user's own browser — real IP + login).
   const [extAvailable, setExtAvailable] = useState(false);
@@ -412,7 +390,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     Record<string, Record<number, RunStepState>>
   >({});
 
-  // handlePick + handleEditSteps are defined AFTER the pinning destructure below —
+  // handleEditSteps / handlePickTarget are defined AFTER the pinning destructure below —
   // they depend on ensureRobotStepsFrame / persistRobotSteps (declared there).
 
   const latestDataRef = useRef<CanvasSceneData>({});
@@ -488,16 +466,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     resetPackRow,
   } = pinning;
 
-  // A saved robot is a SNAPSHOT of the authored state (steps + allow_writes) at Save
-  // time; Run executes that stored robot by id. So ANY later edit — steps or the
-  // allow_writes toggle — must invalidate the saved id (disabling Run until re-Save),
-  // else Run would silently execute the stale robot. Critically for allow_writes: without
-  // this, toggling the switch OFF would show read-only while Run still ran the stored
-  // write-enabled robot (submit / pay / delete) — a visible-vs-enforced safety mismatch.
-  const invalidateSavedRobot = useCallback((frameId: string) => {
-    dropLiveEntry(setSavedRobotIds, frameId);
-  }, []);
-
   // Edit a robot's steps (change action / type-text / delete) from the step cards.
   const handleEditSteps = useCallback(
     (frameId: string, steps: RobotStep[]) => {
@@ -506,36 +474,18 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         [frameId]: { title: prev[frameId]?.title ?? "", steps },
       }));
       persistRobotSteps(frameId, steps);
-      invalidateSavedRobot(frameId);
     },
-    [persistRobotSteps, invalidateSavedRobot],
+    [persistRobotSteps],
   );
 
   // Toggle the robot's write-gate opt-in. Persisted straight to the steps frame's
   // customData (no React state) — the overlay reads it back from there, and Save sends
   // it as allow_writes; it round-trips scene autosave + reload like the steps do.
-  // Invalidate any saved robot so the write-gate the run enforces can't diverge from the
-  // toggle the user sees (they must re-Save to make the new setting runnable).
   const handleToggleAllowWrites = useCallback(
     (frameId: string, allow: boolean) => {
       persistRobotAllowWrites(frameId, allow);
-      invalidateSavedRobot(frameId);
     },
-    [persistRobotAllowWrites, invalidateSavedRobot],
-  );
-
-  // A 409 from any flow endpoint means the authoring browser session is gone: drop it,
-  // revert to watch, and tell the user to re-arm. Returns true if it handled a
-  // session_gone error, so callers can fall through to their own error toast otherwise.
-  const handleSessionGone = useCallback(
-    (err: unknown): boolean => {
-      if ((err as { code?: string }).code !== "session_gone") return false;
-      setFlowSession(null);
-      setBrowserMode("watch");
-      toast.error(t("browseLog.pickRearm"));
-      return true;
-    },
-    [t],
+    [persistRobotAllowWrites],
   );
 
   // A robot steps-frame's effective data: this session's LIVE authoring state when present,
@@ -579,99 +529,42 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     [getEffectiveRobotData, persistRobotTitle],
   );
 
-  // Element pick: POST the clicked page-viewport coord to the live authoring browser,
-  // show the fresh screenshot + highlight the resolved element, AND append it as a
-  // `click` step to the robot's step list. On 409 the session is gone — drop it.
-  const handlePick = useCallback(
-    async (frameId: string, vx: number, vy: number) => {
-      if (!flowSession) return;
-      try {
-        const res = await canvasService.postFlowPick(activeSceneId, {
-          token: flowSession.token,
-          x: vx,
-          y: vy,
-        });
-        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
-        if (!res.locator) {
-          toast.info(t("browseLog.pickNothing"));
-          return;
-        }
-        setPickedLocator(res.locator);
-        const stepsFrameId = ensureRobotStepsFrame("");
-        if (stepsFrameId) {
-          // Base steps: live authoring state, else the frame's persisted customData — else
-          // the first pick after a reload would overwrite the authored steps with just this one.
-          const cur = getEffectiveRobotData(stepsFrameId).steps;
-          const next: RobotStep[] = [
-            ...cur,
-            { action: "click", target: res.locator, provenance: "picked" },
-          ];
-          setRobotSteps((prev) => ({
-            ...prev,
-            [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps: next },
-          }));
-          persistRobotSteps(stepsFrameId, next);
-          invalidateSavedRobot(stepsFrameId); // a new step supersedes any saved snapshot
-        }
-      } catch (err) {
-        if (!handleSessionGone(err)) toast.error(extractApiError(err, "pick failed"));
+  // Manual element pick: the robot's target is a page in the user's REAL browser (not the
+  // Canvas), so binding a step's target means clicking the actual element over there — via
+  // the extension. `source:"url"` opens the robot's start URL in a fresh tab first; "current"
+  // picks the page the user was last on. stepIndex < 0 appends a new picked click step.
+  const handlePickTarget = useCallback(
+    async (frameId: string, stepIndex: number, source: "url" | "current") => {
+      const { steps } = getEffectiveRobotData(frameId);
+      const startUrl =
+        source === "url" ? steps.find((s) => s.action === "navigate" && s.url)?.url : undefined;
+      if (source === "url" && !startUrl) {
+        toast.error(t("browseLog.pickNoStartUrl"));
+        return;
       }
+      toast.info(t("browseLog.pickInBrowserPrompt"));
+      const res = await pickInBrowser({ url: startUrl, label: t("browseLog.pickInBrowserLabel") });
+      if (res.error || !res.locator) {
+        toast.error(res.error ? String(res.error) : t("browseLog.pickInBrowserFailed"));
+        return;
+      }
+      // Re-read steps (the pick was async) and bind the locator to the step (or append one).
+      const cur = getEffectiveRobotData(frameId).steps;
+      const picked = { target: res.locator, provenance: "picked" as const, ref: res.ref ?? null };
+      const next: RobotStep[] =
+        stepIndex >= 0 && stepIndex < cur.length
+          ? cur.map((s, i) => (i === stepIndex ? { ...s, ...picked } : s))
+          : [...cur, { action: "click", ...picked }];
+      setRobotSteps((prev) => ({
+        ...prev,
+        [frameId]: { title: prev[frameId]?.title ?? "", steps: next },
+      }));
+      persistRobotSteps(frameId, next);
     },
-    [
-      flowSession, activeSceneId, t, handleSessionGone, getEffectiveRobotData,
-      ensureRobotStepsFrame, persistRobotSteps, invalidateSavedRobot,
-    ],
+    [getEffectiveRobotData, persistRobotSteps, t],
   );
 
-  // Drive (takeover): dispatch REAL input to the live browser (login / captcha), then
-  // show the fresh screenshot — NEVER persisted (it may show credentials). 409 => gone.
-  const handleDrive = useCallback(
-    async (frameId: string, drive: DriveAction) => {
-      if (!flowSession) return;
-      try {
-        const res = await canvasService.postFlowDrive(activeSceneId, {
-          token: flowSession.token,
-          action: drive.action,
-          x: drive.x,
-          y: drive.y,
-          text: drive.text,
-          key: drive.key,
-        });
-        setBrowseMonitors((prev) => ({ ...prev, [frameId]: { image: res.image } }));
-      } catch (err) {
-        if (!handleSessionGone(err)) toast.error(extractApiError(err, "drive failed"));
-      }
-    },
-    [flowSession, activeSceneId, handleSessionGone],
-  );
-
-  // Authoring keepalive: while a live authoring browser is armed, ping it on an interval
-  // so a long login / 2FA / captcha pause doesn't idle-reap the session mid-authoring
-  // (picks/drives keep it warm, but human think-time between them can exceed the idle
-  // window). On 409 the session is already gone — stop pinging, drop it, revert to watch,
-  // and tell the user to re-open authoring rather than leaving a dead armed frame.
-  useEffect(() => {
-    if (!flowSession) return;
-    const token = flowSession.token;
-    let cancelled = false;
-    const ping = async () => {
-      try {
-        await canvasService.postFlowKeepalive(activeSceneId, token);
-      } catch (err) {
-        if (cancelled) return;
-        handleSessionGone(err);
-        // Transient errors (network blip, 502): ignore — the next tick retries, and a
-        // truly dead session surfaces as 409 on the following ping or the user's next pick.
-      }
-    };
-    const id = window.setInterval(ping, AUTHORING_KEEPALIVE_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [flowSession, activeSceneId, t, handleSessionGone]);
-
-  // Save the authored steps as a named robot (POST /robots/); enables Run.
+  // Save the authored steps as a named robot (POST /robots/) so it can be reused.
   const handleSaveRobot = useCallback(
     async (frameId: string) => {
       // Prefer this session's live steps; after a reload they live only in the frame's
@@ -686,12 +579,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         return;
       }
       try {
-        const robot = await canvasService.saveRobot(activeSceneId, {
+        await canvasService.saveRobot(activeSceneId, {
           name: name || "Robot",
           steps,
           allow_writes: allowWrites,
         });
-        setSavedRobotIds((prev) => ({ ...prev, [frameId]: robot.id }));
         toast.success(t("browseLog.robotSaved"));
       } catch (err) {
         toast.error(extractApiError(err, "save robot failed"));
@@ -700,49 +592,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     [activeSceneId, t, getEffectiveRobotData],
   );
 
-  // Run a saved robot; stream per-step status onto the cards + the page into the monitor.
-  const handleRunRobot = useCallback(
-    async (frameId: string) => {
-      const robotId = savedRobotIds[frameId];
-      if (!robotId) {
-        toast.info(t("browseLog.robotSaveFirst"));
-        return;
-      }
-      setRunStatus((prev) => ({ ...prev, [frameId]: {} }));
-      // A run repaints the monitor with the RUN's browser (not the authoring one) —
-      // clear the drive session + revert to watch so a drive click can't hit the wrong
-      // browser (security review HIGH).
-      setFlowSession(null);
-      setBrowserMode("watch");
-      let monitorId: string | null = null;
-      try {
-        for await (const ev of canvasService.postRobotRun(activeSceneId, robotId)) {
-          if (ev.event === "robot_step") {
-            setRunStatus((prev) => ({
-              ...prev,
-              [frameId]: { ...(prev[frameId] ?? {}), [ev.index]: { status: ev.status, error: ev.error } },
-            }));
-          } else if (ev.event === "browse_frame") {
-            if (!monitorId) monitorId = ensureBrowseMonitorFrame(null);
-            const mid = monitorId;
-            if (mid) {
-              setBrowseMonitors((prev) => ({ ...prev, [mid]: { image: ev.image } }));
-              if (ev.final) persistBrowseMonitorImage(mid, ev.image);
-            }
-          } else if (ev.event === "error") {
-            toast.error(ev.detail);
-          }
-        }
-      } catch (err) {
-        toast.error(extractApiError(err, "run failed"));
-      }
-    },
-    [activeSceneId, t, savedRobotIds, ensureBrowseMonitorFrame, persistBrowseMonitorImage],
-  );
-
   // Run the robot in the user's OWN browser via the extension (real IP + login state).
-  // Sends the current steps straight to the extension — no server-side session, and no
-  // saved-robot requirement (unlike handleRunRobot). Per-step status streams onto the cards.
+  // Sends the current steps straight to the extension — no server-side session, no saved-
+  // robot requirement. Per-step status streams onto the cards.
   const handleRunInBrowser = useCallback(
     (frameId: string) => {
       const { steps, allowWrites } = getEffectiveRobotData(frameId);
@@ -1323,13 +1175,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         finalized: boolean;
         lastImage: string | null;
       } = { frameId: null, attempted: false, finalized: false, lastImage: null };
-      // True once THIS turn emitted flow_session (an author_robot turn opened a drivable
-      // authoring browser, before its first frame). A browse_frame arriving WITHOUT it
-      // means the singleton monitor is being repainted by a NON-authoring browser → drop
-      // the now-mismatched drive session so a drive click can't fire real input on the
-      // wrong (kept-alive, authenticated) browser (security review HIGH).
-      let flowSessionThisTurn = false;
-
       setIsStreaming(true);
       setChatStatus(null);
       setToolBadge(null);
@@ -1497,14 +1342,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               break;
             }
             case "browse_frame": {
-              // If this frame is NOT from an authoring turn (no flow_session this turn),
-              // the monitor now shows a DIFFERENT browser than flowSession points at —
-              // drop the drive session + revert to watch so a click can't fire real input
-              // on the wrong browser (security review HIGH).
-              if (!flowSessionThisTurn) {
-                setFlowSession(null);
-                setBrowserMode("watch");
-              }
               // Live browser monitor. Spin up the panel (right of this turn's log
               // frame) on the first frame; then either stream a live data-URL into
               // React state, or — on the final frame — persist its media URL to the
@@ -1528,13 +1365,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               }
               break;
             }
-            case "flow_session":
-              // A live authoring browser opened this turn — remember its token +
-              // viewport so the monitor frame can be switched to Pick / Drive. (Emitted
-              // only when CANVAS_RPA_ENABLED, and BEFORE the first browse_frame.)
-              flowSessionThisTurn = true;
-              setFlowSession({ token: event.token, viewport: event.viewport });
-              break;
             case "ext_command":
               // RPA v2 (Phase 4): the Agent is driving the user's OWN browser via the
               // extension. Relay this command + return its result to the backend (which
@@ -1553,7 +1383,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
                   [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps },
                 }));
                 persistRobotSteps(stepsFrameId, steps);
-                invalidateSavedRobot(stepsFrameId);
               }
               break;
             }
@@ -1653,7 +1482,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       clearBrowseMonitorImage,
       ensureRobotStepsFrame,
       persistRobotSteps,
-      invalidateSavedRobot,
       relayExtCommand,
       pollAndPinJob,
       resetPackRow,
@@ -1805,13 +1633,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         excalidrawApiRef={excalidrawApiRef}
         tick={excalidrawTick}
         liveFrames={browseMonitors}
-        mode={browserMode}
-        onModeChange={setBrowserMode}
-        onPick={handlePick}
-        onDrive={handleDrive}
-        viewport={flowSession?.viewport ?? null}
-        picked={pickedLocator}
-        pickable={!!flowSession}
       />
       <RobotStepsOverlay
         excalidrawApiRef={excalidrawApiRef}
@@ -1820,12 +1641,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         onEditSteps={handleEditSteps}
         onEditTitle={handleEditRobotTitle}
         onSave={handleSaveRobot}
-        onRun={handleRunRobot}
         onToggleAllowWrites={handleToggleAllowWrites}
         runStatus={runStatus}
-        savedFrames={savedRobotIds}
         extAvailable={extAvailable}
         onRunInBrowser={handleRunInBrowser}
+        onPickTarget={handlePickTarget}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
