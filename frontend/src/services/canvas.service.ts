@@ -16,6 +16,8 @@ import type {
   CanvasSkill,
   CanvasVideoJob,
   ChatAttachment,
+  CanvasRobot,
+  RobotStep,
 } from "@/types/canvex";
 
 // NDJSON 流式 (fetch) 的 base —— 复用 canvas-media-url 的同一 api base
@@ -136,12 +138,80 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Chat stream — NDJSON via fetch (NOT axios).
+ * Parse an SSE byte stream into typed JSON events. Frames are separated by a blank line
+ * ("\n\n"); within a frame the `data:` lines carry the payload (joined by "\n" per spec)
+ * and other lines (":" keep-alive comments, event:/id:/retry:) are ignored. A cursor
+ * advances through `buffer` instead of reslicing per frame — reslicing is O(buffer²) for
+ * many small frames (matters for big screenshot frames). CR is stripped so CRLF/CR line
+ * endings (a proxy may rewrite them) still split on "\n\n"; safe because json.dumps escapes
+ * any real CR inside payloads. `[DONE]` sentinels are skipped; a frame that fails JSON.parse
+ * propagates the error and aborts the stream (our payloads are our own single-line JSON, so
+ * a parse failure means real corruption). On any exit the reader is cancelled (so the server
+ * stops producing into an orphan connection) and released. Used by postChatStream (the
+ * frontend's only SSE consumer).
+ */
+async function* parseSSEStream<T>(
+  reader: ReadableStreamDefaultReader<string>,
+): AsyncGenerator<T, void, void> {
+  const frameData = (frame: string): string => {
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("data:")) {
+        const v = line.slice(5);
+        data += (data ? "\n" : "") + (v.startsWith(" ") ? v.slice(1) : v);
+      }
+    }
+    return data;
+  };
+  // Returns undefined for an empty/[DONE] frame (JSON.parse never yields undefined, so it's
+  // a safe "no event" sentinel — a literal `null` payload still yields).
+  const parse = (data: string): T | undefined =>
+    !data || data === "[DONE]" ? undefined : (JSON.parse(data) as T);
+  let buffer = "";
+  let cursor = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (value) buffer += value.replace(/\r/g, "");
+      let sep = buffer.indexOf("\n\n", cursor);
+      while (sep !== -1) {
+        const evt = parse(frameData(buffer.slice(cursor, sep)));
+        cursor = sep + 2;
+        if (evt !== undefined) yield evt;
+        sep = buffer.indexOf("\n\n", cursor);
+      }
+      // Compact once the backlog is large enough that trailing unparsed bytes aren't a
+      // material fraction — bounded memory even on very long streams.
+      if (cursor > 4096) {
+        buffer = buffer.slice(cursor);
+        cursor = 0;
+      }
+      if (done) break;
+    }
+    // Defensive: a final frame not terminated by a blank line.
+    const tail = parse(frameData(buffer.slice(cursor)));
+    if (tail !== undefined) yield tail;
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    throw err;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released via cancel()
+    }
+  }
+}
+
+/**
+ * Chat stream — SSE via fetch (NOT axios, NOT EventSource).
  *
- * 直接用 fetch 的原因, 轮不到 axios:
+ * 直接用 fetch 的原因:
  * 1. axios 的浏览器 adapter 不暴露 ReadableStream, 它把整个响应 buffer 完才
  *    resolve, 流式的意义直接丢掉
- * 2. EventSource 更原生但无法挂自定义 header (如 ngrok-skip-browser-warning)
+ * 2. EventSource 是 SSE 的原生客户端, 但只能 GET、不能带 POST body, 也无法挂
+ *    自定义 header (如 ngrok-skip-browser-warning) —— 聊天是带 body 的 POST,
+ *    所以只能用 fetch 自己解析 SSE 帧。
  * Canvex 后端 AllowAny, 无需 Authorization —— 不带 token。
  */
 export async function* postChatStream(
@@ -151,6 +221,7 @@ export async function* postChatStream(
     signal?: AbortSignal;
     disabledSkills?: string[];
     attachments?: ChatAttachment[];
+    extAvailable?: boolean;
   } = {},
 ): AsyncGenerator<CanvasChatStreamEvent, void, void> {
   // Empty / undefined optional fields → omit so backend serializer's
@@ -163,13 +234,18 @@ export async function* postChatStream(
   if (options.attachments && options.attachments.length > 0) {
     body.attachments = options.attachments;
   }
+  // RPA v2 (Phase 4): tell the backend whether the Canvex extension is available so the
+  // authoring tool can drive the user's browser (or refuse + guide install).
+  if (options.extAvailable) {
+    body.ext_available = true;
+  }
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/chat/`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/x-ndjson",
+        Accept: "text/event-stream",
         "ngrok-skip-browser-warning": "true",
       },
       body: JSON.stringify(body),
@@ -182,47 +258,9 @@ export async function* postChatStream(
   const reader = resp.body
     .pipeThrough(new TextDecoderStream("utf-8"))
     .getReader();
-  // Parse NDJSON by advancing a cursor through `buffer` instead of reslicing
-  // on every newline — reslicing is O(buffer²) across the whole stream for
-  // short lines (each slice copies the remaining tail).
-  let buffer = "";
-  let cursor = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (value) buffer += value;
-      let nl = buffer.indexOf("\n", cursor);
-      while (nl !== -1) {
-        const line = buffer.slice(cursor, nl).trim();
-        cursor = nl + 1;
-        if (line) {
-          yield JSON.parse(line) as CanvasChatStreamEvent;
-        }
-        nl = buffer.indexOf("\n", cursor);
-      }
-      // Compact once the backlog is large enough that trailing unparsed bytes
-      // aren't a material fraction — bounded memory even on very long streams.
-      if (cursor > 4096) {
-        buffer = buffer.slice(cursor);
-        cursor = 0;
-      }
-      if (done) break;
-    }
-    const trailing = buffer.slice(cursor).trim();
-    if (trailing) yield JSON.parse(trailing) as CanvasChatStreamEvent;
-  } catch (err) {
-    // Tell the server we're done so it stops producing into an orphan
-    // connection. cancel() releases the lock too, so releaseLock in the
-    // finally below would throw — swallow it there.
-    await reader.cancel().catch(() => {});
-    throw err;
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // already released via cancel()
-    }
-  }
+  // A malformed chat frame aborts the stream (no skipMalformed) — the payloads are our
+  // own single-line JSON, so a parse failure means real corruption, not a stray frame.
+  yield* parseSSEStream<CanvasChatStreamEvent>(reader);
 }
 
 // list 返回无 data 字段, retrieve 带 data —— createResource 默认 list 返回
@@ -259,6 +297,44 @@ export interface AngleCreatePayload {
   zoom: number;
 }
 
+/** Save the authored steps as a named, reusable robot. `allow_writes` opts the robot
+ *  into running write/state-changing steps (submit / pay / delete); omitted → read-only. */
+export async function saveRobot(
+  sceneId: string,
+  body: { name: string; steps: RobotStep[]; allow_writes?: boolean },
+): Promise<CanvasRobot> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/robots/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!resp.ok) throw new Error(`save robot failed: HTTP ${resp.status}`);
+  return (await resp.json()) as CanvasRobot;
+}
+
+/** RPA v2 (Phase 4): return the browser extension's result for ONE Agent command to the
+ *  backend, which unblocks the waiting tool. Resolves true when delivered (200); a 409
+ *  (command_gone — the Agent already timed out / the turn ended) or any other non-2xx
+ *  resolves false, never throws, so the relay caller simply stops. The result payload
+ *  (AXTree / real-browser data) is NOT persisted server-side. */
+export async function postFlowExtResult(
+  sceneId: string,
+  body: { token: string; command_id: string; result: unknown },
+): Promise<boolean> {
+  const resp = await fetch(
+    `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/flow/ext-result/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify(body),
+    },
+  );
+  return resp.ok;
+}
+
 export const canvasService = {
   // ── Scene CRUD ────────────────────────────────────────────────────────────
   listScenes: () => request.get<CanvasSceneListItem[]>(SCENES),
@@ -272,8 +348,12 @@ export const canvasService = {
     request.get<CanvasChatMessage[]>(`${SCENES}${sceneId}/chat/`, {
       params: { limit },
     }),
-  // POST 返 NDJSON 流 —— 见顶部 postChatStream 函数 (async generator)
+  // POST 返 SSE 流 —— 见顶部 postChatStream 函数 (async generator)
   postChatStream,
+  // RPA v2 (Phase 4): 把扩展执行一条 Agent 命令的结果回传后端 (解阻塞 Agent 工具)
+  postFlowExtResult,
+  // RPA 机器人: 保存已编写的步骤为可复用机器人 (扩展在用户浏览器里跑)
+  saveRobot,
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜

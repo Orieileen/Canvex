@@ -162,7 +162,7 @@ export interface ChatAttachment {
   height: number;
 }
 
-/** POST /api/v1/canvas/scenes/<id>/chat/ 流式响应 (application/x-ndjson)。
+/** POST /api/v1/canvas/scenes/<id>/chat/ 流式响应 (text/event-stream, SSE)。
  *
  * 每行一个 JSON 对象,顺序:
  *   1. `user_created` —— 后端落库后的 user ChatMessage, 用来替换乐观气泡
@@ -176,7 +176,112 @@ export type CanvasChatStreamEvent =
   | { event: "user_created"; message: CanvasChatMessage }
   | { event: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { event: "tool_result"; id: string; content: string }
+  | { event: "assistant_delta"; id: string; content: string }
   | { event: "assistant_final"; content: string }
   | { event: "assistant"; message: CanvasChatMessage }
+  // A canvas asset a tool produced this turn (e.g. a browse screenshot) — the
+  // client places it on the Excalidraw board via pinImage.
+  | { event: "canvas_asset"; url: string }
+  // One live browser-use step-log line while a `browse` tool runs — the client
+  // appends it to a per-turn log frame below the chat frame.
+  | { event: "browse_log"; line: string }
+  // One live browser MONITOR frame (current-page screenshot) while a `browse`
+  // tool runs — `image` is a JPEG data-URL (live) or a media URL (final=true,
+  // which the client persists to the monitor frame's customData for reload).
+  | { event: "browse_frame"; image: string; final: boolean }
+  // RPA v2 (Phase 4): one command the Agent wants run in the user's OWN browser via the
+  // extension. The client relays it (by `op`) to the extension, correlates the reply by
+  // `command_id`, and POSTs the result to /flow/ext-result/ (which unblocks the waiting
+  // Agent tool). `op:"heartbeat"` is a byte-only keepalive the client ignores. `token` is
+  // this turn's session token, echoed back on the result POST.
+  | {
+      event: "ext_command";
+      command_id: string;
+      token: string;
+      op: "open_tab" | "snapshot" | "pick" | "ref_locator" | "heartbeat";
+      url?: string;
+      tabId?: number;
+      ref?: string;
+      epoch?: number;
+      label?: string;
+      max?: number;
+    }
+  // RPA v2 (Phase 4): the Agent's drafted steps to lay down as step cards (replacing the
+  // steps frame's contents). Each step carries a rich locator (+ optional AXTree ref).
+  | { event: "robot_steps"; steps: RobotStep[] }
   | { event: "error"; detail: string }
   | { event: "done" };
+
+/** A rich element locator resolved by an RPA element pick (FlowPickView). Sourced by a
+ *  user click on the live DOM; the same shape drives run-time resolution + self-heal. */
+export interface FlowLocator {
+  tag: string;
+  role: string;
+  name: string;
+  text: string;
+  css: string;
+  nth: number;
+  /** [x, y, width, height] in page CSS-viewport pixels. */
+  bbox: [number, number, number, number];
+  isPassword: boolean;
+}
+
+/** One step of an RPA robot's DSL. `target` is the rich locator from a pick; `provenance`
+ *  records how the target was obtained. Persisted per robot-steps frame. Executed by the
+ *  extension's CDP runStep (in the user's own browser).
+ *
+ *  Actions:
+ *   - navigate {url}                    — go to a URL
+ *   - click {target}                    — click an element
+ *   - type {target, text, submit?}      — type text, optional Enter
+ *   - wait {ms}                         — pause for ms milliseconds
+ *   - wait_for {target, ms?}            — wait until the target is visible (ms = timeout)
+ *   - key {key}                         — press a key (Enter/Tab/Escape/Arrow…)
+ *   - scroll {target}                   — scroll the target into view
+ *   - hover {target}                    — move the pointer onto the target
+ *   - select {target, value}            — pick a <select> option (by value or label)
+ *   - loop_start {count} … loop_end     — repeat the enclosed steps `count` times (nestable)
+ */
+export interface RobotStep {
+  action:
+    | "navigate"
+    | "click"
+    | "type"
+    | "wait"
+    | "wait_for"
+    | "key"
+    | "scroll"
+    | "hover"
+    | "select"
+    | "loop_start"
+    | "loop_end";
+  target?: FlowLocator; // click / type / wait_for / scroll / hover / select
+  text?: string; // type
+  url?: string; // navigate
+  /** for type: press Enter after (submits the form). Both runners execute on this. */
+  submit?: boolean;
+  /** wait: delay in ms. wait_for: visibility timeout in ms. */
+  ms?: number;
+  /** key: the key name to press (e.g. "Enter", "Tab", "Escape", "ArrowDown"). */
+  key?: string;
+  /** select: the option to choose (matched against option value, then label). */
+  value?: string;
+  /** loop_start: how many times to repeat the enclosed steps (1–100). */
+  count?: number;
+  provenance?: "picked" | "guessed" | "self-healed";
+  /** AXTree snapshot ref this step's target came from (Agent-drafted or picked). */
+  ref?: string | null;
+}
+
+/** A saved robot (GET/POST /scenes/<id>/robots/). */
+export interface CanvasRobot {
+  id: string;
+  scene: string;
+  name: string;
+  steps: RobotStep[];
+  variables: Record<string, unknown>;
+  /** Whether the robot may run write/state-changing steps (submit / pay / delete). */
+  allow_writes: boolean;
+  created_at: string;
+  updated_at: string;
+}

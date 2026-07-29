@@ -1,10 +1,10 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
-import { elementScreenRect } from "@/lib/excalidraw-bounds";
-import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
 import { findChatFrame } from "@/lib/canvas-chat-frame";
+import { useFrameAnchoredPanel } from "@/hooks/use-frame-anchored-panel";
 import { cn } from "@/lib/utils";
 import type { CanvasChatMessage } from "@/types/canvex";
 
@@ -16,6 +16,14 @@ interface ChatFrameOverlayProps {
   messages: CanvasChatMessage[];
   /** A reply is streaming — show a typing indicator at the bottom. */
   streaming: boolean;
+  /** Live assistant text accumulated from token deltas; rendered as a typing
+   *  bubble until the persisted message replaces it. */
+  streamingText?: string;
+  /** True once the persisted reply arrived — the typewriter finishes dripping
+   *  the remaining text, then calls onStreamSettled. */
+  streamFinalizing?: boolean;
+  /** Fired when the typewriter has revealed the full text and is finalizing. */
+  onStreamSettled?: () => void;
 }
 
 /**
@@ -32,67 +40,27 @@ export function ChatFrameOverlay({
   tick,
   messages,
   streaming,
+  streamingText = "",
+  streamFinalizing = false,
+  onStreamSettled,
 }: ChatFrameOverlayProps) {
+  const { t } = useTranslation("canvasUi");
   void tick; // re-render trigger; live state read fresh below
-  const scrollRef = useRef<HTMLDivElement>(null);
-
   const api = excalidrawApiRef.current;
   const frame = api ? findChatFrame(api.getSceneElements()) : null;
-  const app = api?.getAppState();
-  const zoom = app?.zoom?.value ?? 1;
-  const rect =
-    frame && app
-      ? elementScreenRect(frame, {
-          zoom,
-          scrollX: app.scrollX ?? 0,
-          scrollY: app.scrollY ?? 0,
-        })
-      : null;
-  // 「像图片一样」: 内容按 frame 的世界宽高一次性渲染成固定像素 (text 也是固定 px,
-  // 不重排), 再整体 transform: scale(zoom) —— 文字和气泡随缩放等比放大/缩小, 跟
-  // 一张图被缩放完全一样, 永不 reflow。scale 以左上角为原点 + 定位在 frame 屏幕
-  // 左上角, 所以缩放后正好铺满 frame 屏幕框 (width*zoom × height*zoom)。
-  const width = frame?.width ?? 0;
-  const height = frame?.height ?? 0;
 
-  // Stick to the bottom as messages arrive / the panel resizes.
+  // Projection + wheel routing + stick-to-bottom live in the shared hook (see
+  // useFrameAnchoredPanel — same shell as BrowseLogOverlay). The panel renders
+  // content at the frame's world width/height then transform: scale(zoom), so
+  // text scales like an image instead of reflowing. Stick key: a new message id
+  // or a streaming-state flip (StreamingBubble pins itself while typing, so the
+  // live token text isn't part of the key).
   const lastId = messages.length ? messages[messages.length - 1].id : "";
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lastId, streaming, height]);
-
-  // Wheel routing gated on selection:
-  //   - Chat frame SELECTED → plain wheel scrolls the chat content, canvas停住。
-  //   - NOT selected → wheel is forwarded to the Excalidraw canvas, so it pans
-  //     the whole canvas (上下滚动整个画布) even with the cursor over the panel.
-  //   - A zoom gesture (ctrl/⌘ + wheel) always drives the canvas zoom either way.
-  // Native listener (not React onWheel) because forwarding needs preventDefault,
-  // which a passive React handler can't do. Re-attached when the frame appears.
-  const frameId = frame?.id ?? null;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      const isZoom = e.ctrlKey || e.metaKey;
-      const api = excalidrawApiRef.current;
-      const selected =
-        !!frameId && !!api?.getAppState().selectedElementIds?.[frameId];
-      if (selected && !isZoom) {
-        // 选中时: 滚轮滚动聊天内容 (原生滚动), 不动画布。
-        e.stopPropagation();
-        return;
-      }
-      // 未选中 (或缩放手势) → 转发给画布, 平移/缩放整个画布。preventDefault 压住
-      // 面板自身的原生滚动, 避免画布动的同时聊天也跟着滚 (需非 passive 监听)。
-      e.preventDefault();
-      e.stopPropagation();
-      forwardWheelToExcalidrawCanvas(e);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [frameId, excalidrawApiRef]);
-
+  const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
+    frame,
+    excalidrawApiRef,
+    `${lastId}:${streaming ? 1 : 0}`,
+  );
   if (!rect) return null;
 
   return (
@@ -114,15 +82,27 @@ export function ChatFrameOverlay({
       <div className="flex flex-col gap-4 p-6">
         {messages.length === 0 && !streaming ? (
           <p className="px-1 py-8 text-center text-2xl text-muted-foreground/70">
-            Send a message to start.
+            {t("chatFrame.emptyState")}
           </p>
         ) : (
-          messages.map((m) => <MessageBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <MessageBubble key={m.id} role={m.role} content={m.content} />
+          ))
         )}
-        {streaming && (
-          <div className="flex items-center gap-2.5 px-1 text-2xl text-muted-foreground">
+        {/* Live assistant reply, typed out at a constant rate (smooths the
+            batched flushes the dev server delivers). */}
+        {streamingText && (
+          <StreamingBubble
+            target={streamingText}
+            finalizing={streamFinalizing}
+            onSettled={onStreamSettled}
+            scrollRef={scrollRef}
+          />
+        )}
+        {/* Thinking spinner (icon only) until the first token lands. */}
+        {streaming && !streamingText && (
+          <div className="flex items-center px-1 text-muted-foreground">
             <Loader2 className="size-6 animate-spin" />
-            Thinking…
           </div>
         )}
       </div>
@@ -130,18 +110,103 @@ export function ChatFrameOverlay({
   );
 }
 
-function MessageBubble({ message }: { message: CanvasChatMessage }) {
-  const isUser = message.role === "user";
+function MessageBubble({
+  role,
+  content,
+  typing = false,
+}: {
+  role: CanvasChatMessage["role"];
+  content: string;
+  /** Append a blinking caret — used by the live streaming bubble. */
+  typing?: boolean;
+}) {
+  const isUser = role === "user";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-6 py-4 text-[40px] leading-relaxed",
+          "max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-6 py-4 text-[64px] leading-relaxed",
           isUser ? "bg-ember text-white" : "bg-card text-foreground",
         )}
       >
-        {message.content}
+        {content}
+        {typing && <span className="ml-1 animate-pulse text-muted-foreground">▍</span>}
       </div>
     </div>
   );
+}
+
+/**
+ * Live assistant reply typed out at a constant rate ("匀速吐字"). `target` may
+ * jump in batches (the dev server / proxies buffer the SSE stream), but the
+ * revealed text advances at a steady chars/sec so it reads as smooth typing.
+ * Owning the per-frame state here (not in the parent) keeps the rest of the
+ * canvas off the 60fps render path. Once the full target is revealed AND the
+ * reply is finalizing, calls onSettled so the parent swaps in the identical
+ * persisted bubble with no visible jump.
+ */
+function StreamingBubble({
+  target,
+  finalizing,
+  onSettled,
+  scrollRef,
+}: {
+  target: string;
+  finalizing: boolean;
+  onSettled?: () => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [displayed, setDisplayed] = useState("");
+  const lenRef = useRef(0);
+  const settledRef = useRef(false);
+
+  // Constant-rate reveal toward `target`. The loop runs ONLY while there's
+  // backlog and re-arms whenever `target` grows (effect dep), so it never spins
+  // idle between batches or after catching up. CPS = typing speed; MAX_LAG caps
+  // how far behind a huge batch we fall so very long replies still finish
+  // promptly without sacrificing the steady feel on normal ones.
+  useEffect(() => {
+    // Caught up — or `target` shrank/was replaced (e.g. persisted content shorter
+    // than the accumulated deltas): sync the visible text to it exactly so we
+    // never leave stale extra characters on screen for a frame.
+    if (lenRef.current >= target.length) {
+      lenRef.current = target.length;
+      setDisplayed(target);
+      return;
+    }
+    const CPS = 70;
+    const MAX_LAG = 160;
+    let raf = 0;
+    let last = 0;
+    const step = (ts: number) => {
+      if (!last) last = ts;
+      const dt = ts - last;
+      last = ts;
+      const backlog = target.length - lenRef.current;
+      let reveal = Math.max(1, Math.round((CPS * dt) / 1000));
+      if (backlog > MAX_LAG) reveal = Math.max(reveal, backlog - MAX_LAG);
+      const next = Math.min(target.length, lenRef.current + reveal);
+      lenRef.current = next;
+      setDisplayed(target.slice(0, next));
+      if (next < target.length) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+
+  // Keep pinned to the bottom as text types in.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [displayed, scrollRef]);
+
+  // Caught up + finalizing → hand off to the persisted bubble (once).
+  useEffect(() => {
+    if (finalizing && target && displayed.length >= target.length && !settledRef.current) {
+      settledRef.current = true;
+      onSettled?.();
+    }
+  }, [finalizing, displayed, target, onSettled]);
+
+  return <MessageBubble role="assistant" content={displayed} typing />;
 }

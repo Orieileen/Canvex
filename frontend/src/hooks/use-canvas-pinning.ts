@@ -33,6 +33,33 @@ import {
   findChatFrame,
   isChatNoteElement,
 } from "@/lib/canvas-chat-frame";
+import {
+  BROWSE_LOG_FRAME_HEIGHT,
+  BROWSE_LOG_FRAME_MARKER,
+  BROWSE_LOG_FRAME_WIDTH,
+  BROWSE_LOG_TEXT_KEY,
+  BROWSE_LOG_TITLE_KEY,
+  findBrowseLogFrame,
+  serializeBrowseLog,
+} from "@/lib/canvas-browse-log-frame";
+import {
+  BROWSE_MONITOR_FRAME_HEIGHT,
+  BROWSE_MONITOR_FRAME_MARKER,
+  BROWSE_MONITOR_FRAME_WIDTH,
+  BROWSE_MONITOR_IMAGE_KEY,
+  findBrowseMonitorFrame,
+} from "@/lib/canvas-browse-monitor-frame";
+import {
+  ROBOT_STEPS_ALLOW_WRITES_KEY,
+  ROBOT_STEPS_FRAME_HEIGHT,
+  ROBOT_STEPS_FRAME_MARKER,
+  ROBOT_STEPS_FRAME_WIDTH,
+  ROBOT_STEPS_KEY,
+  ROBOT_STEPS_TITLE_KEY,
+  findRobotStepsFrame,
+  serializeRobotSteps,
+} from "@/lib/canvas-robot-steps-frame";
+import type { RobotStep } from "@/types/canvex";
 
 /**
  * Pin chat messages / generated assets onto the Excalidraw canvas.
@@ -601,6 +628,39 @@ export interface UseCanvasPinning {
   /** Find or create the scene's chat frame (native Excalidraw frame the
    *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
   ensureChatFrame: () => string | null;
+  /** Find-or-create the scene's SINGLE "browse log" frame (like ensureChatFrame),
+   *  reused across browse turns: on reuse it retitles to the triggering message
+   *  and clears the old transcript; a fresh one is placed below the chat frame.
+   *  Returns its id, or null if the API isn't mounted / creation failed. */
+  ensureBrowseLogFrame: (title: string) => string | null;
+  /** Persist the accumulated log lines into a browse-log frame's customData (as
+   *  a JSON array — faithful per-line round-trip) so they survive a scene reload;
+   *  the live transcript otherwise lives only in React state during the turn.
+   *  No-op if the frame is gone. */
+  persistBrowseLogText: (frameId: string, lines: string[]) => void;
+  /** Find-or-create the scene's SINGLE live-browser monitor frame, reused across
+   *  browse turns (clears the old image on reuse). A fresh one is placed to the
+   *  RIGHT of the log frame (or the chat frame when `logFrameId` is null / gone).
+   *  Returns its id, or null if the API isn't mounted / creation failed. */
+  ensureBrowseMonitorFrame: (logFrameId: string | null) => string | null;
+  /** Persist the final page-screenshot URL into a monitor frame's customData so a
+   *  reload shows the end-state view. No-op if the frame is gone. */
+  persistBrowseMonitorImage: (frameId: string, url: string) => void;
+  /** Clear the singleton monitor frame's persisted image (no-op if none); returns
+   *  its id so the caller can also evict a stale live-state entry. Call when a new
+   *  browse starts so the monitor doesn't keep a prior browse's screenshot on a
+   *  turn that logs but never screenshots. */
+  clearBrowseMonitorImage: () => string | null;
+  /** Find-or-create the scene's SINGLE robot-steps frame (RPA authoring), placed to the
+   *  RIGHT of the monitor frame; reused across the authoring session (retitles on reuse,
+   *  steps are appended not cleared). Returns its id, or null. */
+  ensureRobotStepsFrame: (title: string) => string | null;
+  /** Persist the robot's steps into the steps frame's customData (JSON array) so they
+   *  survive a scene reload; the live steps otherwise live only in React state. No-op if
+   *  the frame is gone. */
+  persistRobotSteps: (frameId: string, steps: RobotStep[]) => void;
+  /** Persist the robot's write-gate opt-in (allow_writes) to the steps frame. */
+  persistRobotAllowWrites: (frameId: string, allow: boolean) => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -874,6 +934,28 @@ export async function pinCanvasJobResult(
   return { ok: true };
 }
 
+/** Build a native Excalidraw frame element at exact geometry with our name +
+ *  customData. Centralizes the fragile convert incantation shared by the chat
+ *  frame and the browse-log frame: a frame skeleton MUST carry `children: []`
+ *  (convertToExcalidrawElements does `children.forEach` and throws otherwise),
+ *  the skeleton type doesn't include `frame` (hence the cast), and convert drops
+ *  name/customData so they're re-applied after. Returns null if convert yields
+ *  nothing. Caller does the updateScene. */
+function buildFrameElement(opts: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  name: string;
+  customData: Record<string, unknown>;
+}): ExcalidrawElement | null {
+  const created = convertToExcalidrawElements([
+    { type: "frame", x: opts.x, y: opts.y, width: opts.width, height: opts.height, children: [] },
+  ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
+  if (!created.length) return null;
+  return { ...created[0], name: opts.name, customData: opts.customData } as ExcalidrawElement;
+}
+
 export function useCanvasPinning(
   apiRef: RefObject<ExcalidrawImperativeAPI | null>,
 ): UseCanvasPinning {
@@ -1006,19 +1088,13 @@ export function useCanvasPinning(
       const viewH = (app.height ?? 800) / zoom;
       const x = -(app.scrollX ?? 0) + Math.min(80, viewW * 0.06);
       const y = -(app.scrollY ?? 0) + Math.max(40, (viewH - CHAT_FRAME_HEIGHT) / 2);
-      // skeleton 必须带 children (空也要给) —— convertToExcalidrawElements 内部对
-      // frame skeleton 做 `children.forEach`, 缺了直接抛。TS skeleton 类型未含 frame,
-      // 故 cast 收口。customData / name 会被 convert 丢掉, 创建后再盖上 (findChatFrame
-      // 靠 customData.aiChatType 认这个聊天框)。
-      const created = convertToExcalidrawElements([
-        { type: "frame", x, y, width: CHAT_FRAME_WIDTH, height: CHAT_FRAME_HEIGHT, children: [] },
-      ] as unknown as Parameters<typeof convertToExcalidrawElements>[0]);
-      if (!created.length) return null;
-      const frame = {
-        ...created[0],
-        name: "Chat",
-        customData: { aiChatType: CHAT_FRAME_MARKER },
-      } as ExcalidrawElement;
+      // findChatFrame 靠 customData.aiChatType 认这个聊天框 (convert 会丢 name/
+      // customData, buildFrameElement 创建后再盖上)。
+      const frame = buildFrameElement({
+        x, y, width: CHAT_FRAME_WIDTH, height: CHAT_FRAME_HEIGHT,
+        name: "Chat", customData: { aiChatType: CHAT_FRAME_MARKER },
+      });
+      if (!frame) return null;
       // 迁移: 去掉旧版聊天文字 pin —— 现在聊天在面板里, 不再撒到画布上。
       const kept = elements.filter((el) => !isChatNoteElement(el));
       api.updateScene({ elements: [...kept, frame] });
@@ -1028,6 +1104,243 @@ export function useCanvasPinning(
       return null;
     }
   }, [apiRef]);
+
+  /** Shallow-merge `patch` into one frame's customData (found by id). The single
+   *  write path shared by the browse-log / monitor persisters and the ensure*
+   *  reuse-branches. No-op if the API isn't mounted or the frame is gone. */
+  const patchFrameCustomData = useCallback(
+    (frameId: string, patch: Record<string, unknown>): void => {
+      const api = apiRef.current;
+      if (!api) return;
+      try {
+        const elements = api.getSceneElements();
+        const frame = elements.find((el) => el.id === frameId && !el.isDeleted);
+        if (!frame) return;
+        const next = newElementWith(frame, {
+          customData: { ...(frame.customData ?? {}), ...patch },
+        });
+        api.updateScene({ elements: elements.map((el) => (el.id === frameId ? next : el)) });
+      } catch (err) {
+        console.error("patchFrameCustomData failed", err);
+      }
+    },
+    [apiRef],
+  );
+
+  /** Find-or-create the scene's SINGLE browse-log frame (like ensureChatFrame),
+   *  reusing it across browse turns instead of stacking a new one each time. On
+   *  reuse it retitles to this turn's message and clears the old transcript so the
+   *  frame reflects the CURRENT browse; a fresh frame is placed below the chat
+   *  frame. Wrapped in try — a placement failure must never break the chat turn. */
+  const ensureBrowseLogFrame = useCallback(
+    (title: string): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const existing = findBrowseLogFrame(elements);
+        if (existing) {
+          // Reuse the singleton: retitle + clear so the panel shows this browse
+          // (live state fills it while streaming; persist overwrites at settle).
+          patchFrameCustomData(existing.id, {
+            [BROWSE_LOG_TITLE_KEY]: title,
+            [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
+          });
+          // Scroll to it like a fresh one — the singleton may be off-screen if the
+          // user panned away since the last browse, and a silent off-screen update
+          // reads as "nothing happened".
+          api.scrollToContent([existing], { fitToViewport: false, animate: true });
+          return existing.id;
+        }
+        // First time in this scene: place it below the chat frame, walking down
+        // past any existing content in that band.
+        const chat = findChatFrame(elements);
+        const startX = chat ? chat.x : PIN_ORIGIN_X;
+        const startY = (chat ? chat.y + chat.height : PIN_ORIGIN_Y) + PIN_GAP;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          BROWSE_LOG_FRAME_WIDTH, BROWSE_LOG_FRAME_HEIGHT, PIN_GAP, "down",
+        );
+        const frame = buildFrameElement({
+          x, y, width: BROWSE_LOG_FRAME_WIDTH, height: BROWSE_LOG_FRAME_HEIGHT,
+          name: "Browse log",
+          customData: {
+            aiChatType: BROWSE_LOG_FRAME_MARKER,
+            [BROWSE_LOG_TITLE_KEY]: title,
+            [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog([]),
+          },
+        });
+        if (!frame) return null;
+        api.updateScene({ elements: [...elements, frame] });
+        api.scrollToContent([frame], { fitToViewport: false, animate: true });
+        return frame.id;
+      } catch (err) {
+        console.error("ensureBrowseLogFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef, patchFrameCustomData],
+  );
+
+  const persistBrowseLogText = useCallback(
+    (frameId: string, lines: string[]): void => {
+      patchFrameCustomData(frameId, { [BROWSE_LOG_TEXT_KEY]: serializeBrowseLog(lines) });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Find-or-create the scene's SINGLE live-browser monitor frame, reusing it
+   *  across browse turns. On reuse it clears the old image so the panel reflects
+   *  the CURRENT browse (live frames fill it immediately). A fresh frame is placed
+   *  to the RIGHT of the log frame and both panels are framed into view. */
+  const ensureBrowseMonitorFrame = useCallback(
+    (logFrameId: string | null): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const logFrame = logFrameId
+          ? elements.find((el) => el.id === logFrameId && !el.isDeleted) ?? null
+          : null;
+        // Frame the pair (log + monitor) so both are visible — used by BOTH the
+        // create and reuse paths so a reused, panned-away monitor is brought back
+        // into view exactly like a fresh one.
+        const frameIntoView = (monitor: ExcalidrawElement) =>
+          api.scrollToContent(logFrame ? [logFrame, monitor] : [monitor], {
+            fitToViewport: true,
+            viewportZoomFactor: 0.9,
+            animate: true,
+          });
+        const existing = findBrowseMonitorFrame(elements);
+        if (existing) {
+          // Reuse the singleton in place; clear the stale image (live state takes
+          // over immediately, persist/finally overwrites for reload).
+          patchFrameCustomData(existing.id, { [BROWSE_MONITOR_IMAGE_KEY]: "" });
+          frameIntoView(existing);
+          return existing.id;
+        }
+        const anchor = logFrame ?? findChatFrame(elements);
+        const startX = anchor ? anchor.x + anchor.width + PIN_GAP : PIN_ORIGIN_X;
+        const startY = anchor ? anchor.y : PIN_ORIGIN_Y;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          BROWSE_MONITOR_FRAME_WIDTH, BROWSE_MONITOR_FRAME_HEIGHT, PIN_GAP, "down",
+        );
+        const frame = buildFrameElement({
+          x, y, width: BROWSE_MONITOR_FRAME_WIDTH, height: BROWSE_MONITOR_FRAME_HEIGHT,
+          name: "Live browser",
+          customData: { aiChatType: BROWSE_MONITOR_FRAME_MARKER, [BROWSE_MONITOR_IMAGE_KEY]: "" },
+        });
+        if (!frame) return null;
+        api.updateScene({ elements: [...elements, frame] });
+        frameIntoView(frame);
+        return frame.id;
+      } catch (err) {
+        console.error("ensureBrowseMonitorFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef, patchFrameCustomData],
+  );
+
+  const persistBrowseMonitorImage = useCallback(
+    (frameId: string, url: string): void => {
+      patchFrameCustomData(frameId, { [BROWSE_MONITOR_IMAGE_KEY]: url });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Find-or-create the scene's SINGLE robot-steps frame, placed to the RIGHT of the
+   *  monitor frame (the browser the user picks on). Reused across the authoring session;
+   *  on reuse it only retitles (steps are appended by the caller, not cleared here). */
+  const ensureRobotStepsFrame = useCallback(
+    (title: string): string | null => {
+      const api = apiRef.current;
+      if (!api) return null;
+      try {
+        const elements = api.getSceneElements();
+        const existing = findRobotStepsFrame(elements);
+        if (existing) {
+          // Deliberately NO scroll-into-view here (unlike the log / monitor frames):
+          // this reuse path runs on EVERY pick, and the user is clicking on the
+          // monitor frame — scrolling to the steps frame would yank them away from the
+          // element they're picking. The steps frame is framed once, on create.
+          if (title) patchFrameCustomData(existing.id, { [ROBOT_STEPS_TITLE_KEY]: title });
+          return existing.id;
+        }
+        const anchor =
+          findBrowseMonitorFrame(elements) ??
+          findBrowseLogFrame(elements) ??
+          findChatFrame(elements);
+        const startX = anchor ? anchor.x + anchor.width + PIN_GAP : PIN_ORIGIN_X;
+        const startY = anchor ? anchor.y : PIN_ORIGIN_Y;
+        const { x, y } = findNonOverlappingPinPosition(
+          elements, startX, startY,
+          ROBOT_STEPS_FRAME_WIDTH, ROBOT_STEPS_FRAME_HEIGHT, PIN_GAP, "down",
+        );
+        const frame = buildFrameElement({
+          x, y, width: ROBOT_STEPS_FRAME_WIDTH, height: ROBOT_STEPS_FRAME_HEIGHT,
+          name: "Robot steps",
+          customData: {
+            aiChatType: ROBOT_STEPS_FRAME_MARKER,
+            [ROBOT_STEPS_TITLE_KEY]: title,
+            [ROBOT_STEPS_KEY]: serializeRobotSteps([]),
+            [ROBOT_STEPS_ALLOW_WRITES_KEY]: false, // read-only by default (write-gate)
+          },
+        });
+        if (!frame) return null;
+        api.updateScene({ elements: [...elements, frame] });
+        api.scrollToContent([frame], { fitToViewport: false, animate: true });
+        return frame.id;
+      } catch (err) {
+        console.error("ensureRobotStepsFrame failed", err);
+        return null;
+      }
+    },
+    [apiRef, patchFrameCustomData],
+  );
+
+  const persistRobotSteps = useCallback(
+    (frameId: string, steps: RobotStep[]): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_KEY]: serializeRobotSteps(steps) });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Persist the robot's user-edited name to the steps frame's customData so it
+   *  round-trips scene autosave + reload like the steps do; Save reads it back as the
+   *  robot name. */
+  const persistRobotTitle = useCallback(
+    (frameId: string, title: string): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_TITLE_KEY]: title });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Persist the robot's write-gate opt-in to the steps frame's customData. Kept in
+   *  customData (not React state) so it round-trips scene autosave + reload exactly like
+   *  the steps do; Save reads it back to send allow_writes. */
+  const persistRobotAllowWrites = useCallback(
+    (frameId: string, allow: boolean): void => {
+      patchFrameCustomData(frameId, { [ROBOT_STEPS_ALLOW_WRITES_KEY]: allow });
+    },
+    [patchFrameCustomData],
+  );
+
+  /** Clear the singleton monitor frame's persisted image (no-op if none exists),
+   *  and RETURN its id so the caller can also drop any stale live-state entry.
+   *  Called when a NEW browse starts so the monitor doesn't keep showing the
+   *  previous browse's screenshot on a turn that logs but never screenshots (the
+   *  log frame is retitled/cleared on its own first line; this keeps the two panels
+   *  in sync). A browse that does screenshot refills it from its first live frame. */
+  const clearBrowseMonitorImage = useCallback((): string | null => {
+    const api = apiRef.current;
+    if (!api) return null;
+    const existing = findBrowseMonitorFrame(api.getSceneElements());
+    if (!existing) return null;
+    patchFrameCustomData(existing.id, { [BROWSE_MONITOR_IMAGE_KEY]: "" });
+    return existing.id;
+  }, [apiRef, patchFrameCustomData]);
 
   const commitImagePin = useCallback(
     async ({ dataURL, mimeType, customData, startAt }: {
@@ -1591,6 +1904,15 @@ export function useCanvasPinning(
 
   return {
     ensureChatFrame,
+    ensureBrowseLogFrame,
+    persistBrowseLogText,
+    ensureBrowseMonitorFrame,
+    persistBrowseMonitorImage,
+    clearBrowseMonitorImage,
+    ensureRobotStepsFrame,
+    persistRobotSteps,
+    persistRobotTitle,
+    persistRobotAllowWrites,
     pinImage,
     pinVideo,
     pinMergedImage,

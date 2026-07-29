@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import * as THREE from "three";
 
 import {
@@ -91,6 +92,7 @@ export function AngleCube({
   width = 320,
   height = 240,
 }: AngleCubeProps) {
+  const { t } = useTranslation("canvasUi");
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef({
     renderer: null as THREE.WebGLRenderer | null,
@@ -613,9 +615,9 @@ export function AngleCube({
           pointerEvents: "none",
         }}
       >
-        <span><span style={{ color: "#f97316" }}>●</span> Azimuth</span>
-        <span><span style={{ color: "#38bdf8" }}>●</span> Elevation</span>
-        <span><span style={{ color: "#fbbf24" }}>●</span> Zoom</span>
+        <span><span style={{ color: "#f97316" }}>●</span> {t("angle.legend.azimuth")}</span>
+        <span><span style={{ color: "#38bdf8" }}>●</span> {t("angle.legend.elevation")}</span>
+        <span><span style={{ color: "#fbbf24" }}>●</span> {t("angle.legend.zoom")}</span>
       </div>
     </div>
   );

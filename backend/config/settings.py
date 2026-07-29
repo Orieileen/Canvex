@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 
@@ -166,6 +167,119 @@ CANVAS_CHAT_MODEL = os.getenv("CANVAS_CHAT_MODEL", "gpt-4o-mini")
 # "postgres" 跨 web/worker 可见 + 持久, 需 langgraph-checkpoint-postgres 包 + DSN。
 CANVAS_AGENT_STORE_BACKEND = os.getenv("CANVAS_AGENT_STORE_BACKEND", "memory")
 CANVAS_AGENT_STORE_DSN = os.getenv("CANVAS_AGENT_STORE_DSN", "")
+
+# ── Agentic browser tool (`browse`) ───────────────────────────────────────────
+# OFF by default. When true, build_canvas_agent mounts a `browse` tool that runs
+# an autonomous browser-use loop (headless Chromium) to research / gather from the
+# web, persists screenshots to the scene canvas folder, and returns a text summary
+# to the agent so it can reason over the findings in the same turn. Requires the
+# optional deps (requirements-browser.txt) + `python -m playwright install chromium`.
+# The agent loop runs in the web process (gthread, NOT gevent), so the tool drives
+# browser-use synchronously on its own event loop in a bounded worker thread with a
+# hard timeout — see browser_runner.py.
+CANVAS_BROWSER_ENABLED = _as_bool(os.getenv("CANVAS_BROWSER_ENABLED"), False)
+
+# Browser LLM slot — falls back to the main chat model (CANVAS_CHAT_*). browser-use
+# is DOM-first and drives fine with the SAME OpenAI-compatible tool-calling model,
+# so no vision model is needed by default. Point these at a vision / computer-use
+# model only if you later enable pixel mode for pages with no usable DOM.
+CANVAS_BROWSER_API_KEY = os.getenv("CANVAS_BROWSER_API_KEY", "") or CANVAS_CHAT_API_KEY
+CANVAS_BROWSER_BASE_URL = os.getenv("CANVAS_BROWSER_BASE_URL", "") or CANVAS_CHAT_BASE_URL
+CANVAS_BROWSER_MODEL = os.getenv("CANVAS_BROWSER_MODEL", "") or CANVAS_CHAT_MODEL
+
+# Safety rails for autonomous navigation. ALLOWLIST = comma-separated host suffixes
+# the agent may visit; when NON-EMPTY it is enforced per-navigation by browser-use
+# (allowed_domains), and browse refuses to run if that enforcement is unavailable.
+# EMPTY = no app-layer host restriction (the agent may follow wherever it navigates)
+# — production should set an allowlist and/or restrict egress at the infra layer.
+# MAX_STEPS + TIMEOUT hard-bound each browse so a stuck / looping page can never hang
+# the chat turn (the exact failure we want to avoid). MAX_SCREENSHOTS caps how many
+# frames get persisted to the canvas.
+CANVAS_BROWSER_ALLOWLIST = [
+    h.strip().lower()
+    for h in os.getenv("CANVAS_BROWSER_ALLOWLIST", "").split(",")
+    if h.strip()
+]
+CANVAS_BROWSER_MAX_STEPS = int(os.getenv("CANVAS_BROWSER_MAX_STEPS", "25") or 25)
+CANVAS_BROWSER_TIMEOUT_SECONDS = int(os.getenv("CANVAS_BROWSER_TIMEOUT_SECONDS", "180") or 180)
+CANVAS_BROWSER_MAX_SCREENSHOTS = int(os.getenv("CANVAS_BROWSER_MAX_SCREENSHOTS", "4") or 4)
+CANVAS_BROWSER_HEADLESS = _as_bool(os.getenv("CANVAS_BROWSER_HEADLESS"), True)
+# Browse-log frame content: keep ONLY the agent's per-step reasoning lines
+# (📍 Step / 🧠 Memory / 👍⚠️❔ Eval / 🎯 Next goal / ▶️ action / 📄 Final Result)
+# and drop browser-use's framework/infra noise (telemetry, extension downloads,
+# viewport setup, navigation confirms, session lifecycle). Default on; set false
+# to stream the full raw log. Dropped lines still go to stdout / docker logs.
+CANVAS_BROWSER_LOG_REASONING_ONLY = _as_bool(os.getenv("CANVAS_BROWSER_LOG_REASONING_ONLY"), True)
+# Max concurrent browses PER WORKER PROCESS. Each browse blocks its web (gthread)
+# worker for up to the timeout above while driving Chromium; this caps how many run
+# at once so a burst can't exhaust the thread pool or spawn unbounded Chromium.
+# Excess calls are refused fast (not queued). Default 2 fits a turn's two parallel
+# browse tool calls. NOTE: per-process — with N gunicorn workers the global cap is
+# N × this value.
+CANVAS_BROWSER_MAX_CONCURRENCY = int(os.getenv("CANVAS_BROWSER_MAX_CONCURRENCY", "2") or 2)
+
+# web_operator subagent — deterministic Playwright primitives (navigate / snapshot /
+# click / type) the agent drives step-by-step, an alternative to the autonomous
+# `browse` tool. OFF by default; shares the CANVAS_BROWSER_* deps + model slot.
+CANVAS_BROWSER_OPERATOR_ENABLED = _as_bool(os.getenv("CANVAS_BROWSER_OPERATOR_ENABLED"), False)
+# Per browser-operation timeout (navigate/click/…), and how long an idle session's
+# owner thread lives before self-reaping (safety net if turn-end cleanup is missed).
+CANVAS_BROWSER_OP_TIMEOUT = int(os.getenv("CANVAS_BROWSER_OP_TIMEOUT", "30") or 30)
+# Idle reap is only a BACKSTOP — the primary cleanup is close_session at turn end.
+# So keep it generous: a turn whose LLM stalls between browser steps must not lose
+# its session mid-flight. A leaked session (only if turn-end cleanup is missed)
+# lives at most this long.
+CANVAS_BROWSER_SESSION_IDLE_TIMEOUT = int(os.getenv("CANVAS_BROWSER_SESSION_IDLE_TIMEOUT", "300") or 300)
+# Extra Chromium launch args (comma-separated), empty by default (keeps the sandbox).
+# Set to "--no-sandbox" ONLY when running headless Chromium as root in a container.
+CANVAS_BROWSER_CHROMIUM_ARGS = [
+    a.strip() for a in os.getenv("CANVAS_BROWSER_CHROMIUM_ARGS", "").split(",") if a.strip()
+]
+# State-changing gate: form submission (browser_type submit=True → Enter) is the one
+# explicit write affordance the operator tools expose. OFF by default — the field is
+# still filled, but not submitted — so an injection-driven or confused turn can't
+# submit a form. Enable for deployments that need the operator to submit. (Broader
+# writes via button-click aren't caught here; the allowlist + read-only prompt +
+# absence of credentials remain the safety model. True interrupt() confirmation is a
+# poor fit — it needs a checkpointer and the per-turn browser session can't survive
+# an interrupt→resume request boundary.)
+CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT = _as_bool(os.getenv("CANVAS_BROWSER_OPERATOR_ALLOW_SUBMIT"), False)
+
+# AI-RPA (影刀式) authoring feature: natural language → deterministic step-DSL, live-DOM
+# element pick, reusable "robots". OFF by default; builds on the CANVAS_BROWSER_*
+# operator deps. Gates the author_robot tool + the flow_session/pick channel.
+CANVAS_RPA_ENABLED = _as_bool(os.getenv("CANVAS_RPA_ENABLED"), False)
+
+# SSRF: DNS-resolve request hostnames at the network route guard and block any that
+# resolve to a non-public IP (closes DNS-rebinding / redirect SSRF). ON by default; turn
+# OFF only in environments with a fake/split DNS (e.g. a proxy that maps every domain to
+# a reserved CIDR), where it would block all domain browsing.
+CANVAS_BROWSER_SSRF_STRICT = _as_bool(os.getenv("CANVAS_BROWSER_SSRF_STRICT"), True)
+
+# SSRF trust override: IP ranges (CIDRs) to treat as PUBLIC even though they'd otherwise
+# be classified private/reserved. For deployments that reach real destinations THROUGH an
+# egress proxy which resolves them to a reserved range — e.g. a dev sandbox whose fake DNS
+# maps every domain into 198.18.0.0/15, or a corporate forward proxy. EMPTY by default →
+# no override, full SSRF protection. Only the listed ranges are trusted; every other
+# internal IP (127.0.0.1, 169.254.169.254, 10/8, 192.168/16, …) stays blocked. Set this
+# ONLY to ranges whose egress path you control; NEVER leave a broad range set in prod.
+# Guard against a fat-fingered over-broad range (e.g. 0.0.0.0/0 would trust the whole
+# internet as "public"); such an entry, like a malformed one, is skipped (fail closed to
+# "no trust"). Realistic egress-proxy ranges are far narrower than these thresholds.
+_MIN_TRUSTED_PREFIX = {4: 8, 6: 16}
+CANVAS_BROWSER_SSRF_TRUSTED_CIDRS = []
+for _cidr in _as_list(os.getenv("CANVAS_BROWSER_SSRF_TRUSTED_CIDRS")):
+    try:
+        _net = ipaddress.ip_network(_cidr, strict=False)
+    except ValueError:
+        continue  # malformed CIDR — skip rather than crash startup
+    if _net.prefixlen < _MIN_TRUSTED_PREFIX[_net.version]:
+        continue  # too broad to trust — ignore
+    CANVAS_BROWSER_SSRF_TRUSTED_CIDRS.append(_net)
+
+# RPA run-mode wall-clock deadline (seconds): a whole robot run is aborted past this so a
+# long/looping robot can't pin a web worker (per-step timeout is CANVAS_BROWSER_OP_TIMEOUT).
+CANVAS_BROWSER_ROBOT_RUN_DEADLINE = int(os.getenv("CANVAS_BROWSER_ROBOT_RUN_DEADLINE", "300") or 300)
 
 # 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
 # 跑到就 raise 把 job 标 FAILED。

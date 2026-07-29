@@ -20,6 +20,7 @@ from .models import (
     ChatMessage,
     ImageEditJob,
     ImageEditResult,
+    Robot,
     Scene,
     VideoJob,
 )
@@ -36,6 +37,8 @@ from .serializers import (
     MediaLibraryFolderSerializer,
     MediaLibraryImageSerializer,
     MediaLibraryVideoSerializer,
+    RobotCreateSerializer,
+    RobotSerializer,
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
@@ -43,6 +46,7 @@ from .serializers import (
     VideoJobSerializer,
     result_asset_url,
 )
+from .services.agent import ext_rendezvous
 from .services.agent.builder import (
     CanvasAgentInvocationError,
     StreamEvent,
@@ -70,7 +74,7 @@ class ChatUserRateThrottle(UserRateThrottle):
     scope = "canvas_chat"
 
 
-NDJSON_MEDIA_TYPE = "application/x-ndjson"
+SSE_MEDIA_TYPE = "text/event-stream"
 
 DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 50
@@ -126,9 +130,10 @@ class SceneViewSet(viewsets.ModelViewSet):
 
 
 # ---------------------------------------------------------------------------
-# 聊天 — NDJSON 流式响应
+# 聊天 — SSE 流式响应
 #
-# POST 返回 `application/x-ndjson`: 每行一个 `\n` 结尾的 JSON 对象。
+# POST 返回 `text/event-stream`: 每个事件一帧 `data: <JSON>\n\n` (JSON 单行,
+# 与 OpenAI 兼容的 LLM 流式同格式)。事件负载结构不变 (仍是 `{"event": ...}`)。
 # 事件序列:
 #   1. `user_created` — 已持久化的用户 ChatMessage, 作为首帧发送以便客户端
 #      用标准行替换乐观渲染的气泡。
@@ -143,37 +148,37 @@ class SceneViewSet(viewsets.ModelViewSet):
 CHAT_HISTORY_WINDOW = 20
 
 
-class NDJSONStreamingRenderer(BaseRenderer):
-    """向 DRF 内容协商声明 `application/x-ndjson` 支持。
+class SSEStreamingRenderer(BaseRenderer):
+    """向 DRF 内容协商声明 `text/event-stream` 支持。
 
     视图直接返回 `StreamingHttpResponse`, 绕过渲染器管道 — `render()` 实际上
-    从不会被调用。此类的存在仅为了让客户端的 `Accept: application/x-ndjson`
+    从不会被调用。此类的存在仅为了让客户端的 `Accept: text/event-stream`
     在 `perform_content_negotiation()` 阶段不会触发 406 响应。
     """
 
-    media_type = NDJSON_MEDIA_TYPE
-    format = "ndjson"
+    media_type = SSE_MEDIA_TYPE
+    format = "sse"
     charset = "utf-8"
 
     def render(self, data, accepted_media_type=None, renderer_context=None):
         return b""
 
 
-def _ndjson_line(event: dict) -> bytes:
-    """序列化单个 NDJSON 帧。
+def _sse_event(event: dict) -> bytes:
+    """序列化单个 SSE 帧 (`data: <JSON>\\n\\n`)。
 
-    `DjangoJSONEncoder` 处理从 DRF 输出中带出的 UUID / datetime。
-    若有异常类型 (如 tool_call `args` 中的供应商特定枚举) 溜进来,
-    则回退到 `default=str` — 一旦 200 响应头已刷出, 我们无法将流中途的
-    TypeError 转换为干净的错误, 因此将其字符串化以保持流格式完整,
-    而非断开连接。
+    `json.dumps` (无缩进) 产出单行 JSON, 内部不含真实换行, 因此一行 `data:`
+    即可, 不会破坏 SSE 的空行分帧。`DjangoJSONEncoder` 处理从 DRF 输出中带出
+    的 UUID / datetime。若有异常类型 (如 tool_call `args` 中的供应商特定枚举)
+    溜进来, 则回退到 `default=str` — 一旦 200 响应头已刷出, 我们无法将流中途的
+    TypeError 转换为干净的错误, 因此将其字符串化以保持流格式完整, 而非断开连接。
     """
     try:
         payload = json.dumps(event, cls=DjangoJSONEncoder, ensure_ascii=False)
     except TypeError:
-        logger.warning("ndjson: falling back to default=str for event %s", event.get("event"))
+        logger.warning("sse: falling back to default=str for event %s", event.get("event"))
         payload = json.dumps(event, cls=DjangoJSONEncoder, ensure_ascii=False, default=str)
-    return (payload + "\n").encode("utf-8")
+    return (f"data: {payload}\n\n").encode("utf-8")
 
 
 class SceneAttachmentUploadView(APIView):
@@ -223,13 +228,13 @@ class SkillListView(APIView):
 
 class SceneChatView(APIView):
     """GET /scenes/<scene_id>/chat/   获取近期消息列表
-    POST                              以 NDJSON 流式返回用户 + 助手消息
+    POST                              以 SSE 流式返回用户 + 助手消息
     """
 
     permission_classes = [permissions.AllowAny]
-    # POST 的客户端发 `Accept: application/x-ndjson`, GET 用标准 JSON —— 两个
+    # POST 的客户端发 `Accept: text/event-stream`, GET 用标准 JSON —— 两个
     # renderer 都挂上让 DRF 内容协商能匹配任一方向
-    renderer_classes = [JSONRenderer, NDJSONStreamingRenderer]
+    renderer_classes = [JSONRenderer, SSEStreamingRenderer]
 
     def get_throttles(self):
         # POST 走高开销的 Agent 流程; GET 是低成本读取。仅对 POST 限流。
@@ -254,6 +259,9 @@ class SceneChatView(APIView):
         content = serializer.validated_data["content"].strip()
         disabled_skills = serializer.validated_data["disabled_skills"]
         attachments = serializer.validated_data["attachments"]
+        # RPA v2 (Phase 4): whether the user's browser has the Canvex extension, so the
+        # authoring tool can drive it (or refuse + guide install).
+        ext_available = serializer.validated_data["ext_available"]
 
         # 预先持久化用户消息, 使其在流中途失败时仍然保留。
         user_msg = ChatMessage.objects.create(
@@ -268,7 +276,7 @@ class SceneChatView(APIView):
         user_payload = ChatMessageSerializer(user_msg).data
 
         def event_stream():
-            yield _ndjson_line({"event": StreamEvent.USER_CREATED, "message": user_payload})
+            yield _sse_event({"event": StreamEvent.USER_CREATED, "message": user_payload})
 
             assistant_text = ""
             try:
@@ -277,8 +285,9 @@ class SceneChatView(APIView):
                     scene_id=scene_id_str,
                     disabled_skills=disabled_skills,
                     attachments=attachments,
+                    ext_available=ext_available,
                 ):
-                    yield _ndjson_line(event)
+                    yield _sse_event(event)
                     if event.get("event") == StreamEvent.ASSISTANT_FINAL:
                         assistant_text = event.get("content") or ""
             except CanvasAgentInvocationError as exc:
@@ -286,11 +295,11 @@ class SceneChatView(APIView):
                     "canvas chat stream failed: scene=%s user_msg=%s",
                     scene_id_str, user_msg_id,
                 )
-                yield _ndjson_line({
+                yield _sse_event({
                     "event": StreamEvent.ERROR,
                     "detail": f"assistant_failed: {type(exc).__name__}",
                 })
-                yield _ndjson_line({"event": StreamEvent.DONE})
+                yield _sse_event({"event": StreamEvent.DONE})
                 return
 
             if not assistant_text.strip():
@@ -300,15 +309,15 @@ class SceneChatView(APIView):
                 role=ChatMessage.Role.ASSISTANT,
                 content=assistant_text,
             )
-            yield _ndjson_line({
+            yield _sse_event({
                 "event": StreamEvent.ASSISTANT,
                 "message": ChatMessageSerializer(assistant_msg).data,
             })
-            yield _ndjson_line({"event": StreamEvent.DONE})
+            yield _sse_event({"event": StreamEvent.DONE})
 
         response = StreamingHttpResponse(
             event_stream(),
-            content_type=NDJSON_MEDIA_TYPE,
+            content_type=SSE_MEDIA_TYPE,
             status=status.HTTP_200_OK,
         )
         # 禁用反向代理 (nginx/gunicorn) 的缓冲, 使客户端能实时看到工具事件,
@@ -316,6 +325,74 @@ class SceneChatView(APIView):
         response["X-Accel-Buffering"] = "no"
         response["Cache-Control"] = "no-cache"
         return response
+
+
+class FlowExtResultView(APIView):
+    """RPA v2 (Phase 4): the browser EXTENSION's result for one Agent command, relayed
+    back through the Canvas page. The chat Agent emitted an `ext_command` (open+snapshot /
+    pick / ref-locator) on the SSE stream and is BLOCKED in ext_rendezvous.wait keyed by
+    (token, command_id); this POST resolves it and the tool resumes.
+
+    Unlike pick / drive / keepalive there is NO server Playwright session here — the whole
+    point of v2 is the user's own browser — so the (token, command_id) pair itself is the
+    unguessable bearer (both are uuid4 hex minted server-side, reaching the client only via
+    the SSE ext_command frame). A 409 `command_gone` means the Agent already timed out or
+    the turn ended, so the client stops relaying. The result payload (AXTree snapshot,
+    screenshots of the user's REAL browser) is NEVER persisted — it only unblocks the
+    in-flight tool (design §11 secret suppression, doubly so for the real browser)."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scene_id):
+        _get_scene_for_user(request.user, scene_id)  # 404 if the scene is missing
+        token = (request.data.get("token") or "").strip()
+        command_id = (request.data.get("command_id") or "").strip()
+        if not token or not command_id:
+            raise ValidationError("token and command_id are required")
+        result = request.data.get("result")
+        if not ext_rendezvous.resolve(token, command_id, result):
+            return Response(
+                {"detail": "no agent is waiting on this command — it timed out or the turn ended",
+                 "code": "command_gone"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response({"ok": True})
+
+
+def _strip_inlined_secrets(steps: list) -> list:
+    """Never persist plaintext into a password field: drop `text` on a type step whose
+    target is a password input. Credentials must come from a run-time variable / takeover,
+    not the saved DSL (design §11 secret suppression)."""
+    out = []
+    for s in steps:
+        if s.get("action") == "type" and (s.get("target") or {}).get("isPassword") and s.get("text"):
+            s = {**s, "text": ""}
+        out.append(s)
+    return out
+
+
+class SceneRobotListCreateView(APIView):
+    """List a scene's saved RPA robots, or save a new one from the authored steps."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, scene_id):
+        scene = _get_scene_for_user(request.user, scene_id)
+        robots = Robot.objects.filter(scene=scene)
+        return Response(RobotSerializer(robots, many=True).data)
+
+    def post(self, request, scene_id):
+        scene = _get_scene_for_user(request.user, scene_id)
+        ser = RobotCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        robot = Robot.objects.create(
+            scene=scene,
+            name=(ser.validated_data["name"].strip() or "Robot"),
+            steps=_strip_inlined_secrets(ser.validated_data["steps"]),
+            variables=ser.validated_data.get("variables") or {},
+            allow_writes=ser.validated_data.get("allow_writes", False),
+        )
+        return Response(RobotSerializer(robot).data, status=status.HTTP_201_CREATED)
 
 
 def _build_history_payload(scene) -> list[dict]:

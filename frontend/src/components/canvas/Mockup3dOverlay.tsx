@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import * as THREE from "three";
 import { DecalGeometry } from "three/examples/jsm/geometries/DecalGeometry.js";
@@ -28,27 +29,6 @@ import type { DepthStatus } from "@/hooks/use-mockup";
  *   - Bg mesh: depth-displaced PlaneGeometry from base + depth map
  *   - Decal: DecalGeometry projected onto that mesh from the anchor's normal
  */
-
-// Hardcoded English labels (Canvex has no `canvas` i18n namespace yet).
-// Folded back into i18n when the full string merge lands. Keys mirror the
-// meired `canvas` namespace so the merge is a mechanical lookup.
-const LABELS = {
-  "mockup.computingDepth": "Computing depth…",
-  "mockup.depthFailed": "Depth failed",
-  "mockup.dropDesign": "Drop a design here",
-  "mockup.badge": "3D Mockup",
-  "mockup.remove": "Remove mockup",
-  "gizmo.dragMove": "Drag to move",
-  "gizmo.dragResize": "Drag to resize · double-click to reset",
-  "gizmo.dragResizeWidth": "Drag to resize width · double-click to reset",
-  "gizmo.dragResizeHeight": "Drag to resize height · double-click to reset",
-  "gizmo.dragRotate": "Drag to rotate · double-click to reset",
-} as const;
-
-type LabelKey = keyof typeof LABELS;
-function t(key: LabelKey): string {
-  return LABELS[key];
-}
 
 interface Mockup3dOverlayProps {
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
@@ -142,6 +122,7 @@ export function Mockup3dOverlay({
   onRemove,
   onDetach,
 }: Mockup3dOverlayProps) {
+  const { t } = useTranslation("canvasUi");
   void tick;
 
   // Floating ghost during a move drag — a 2D thumbnail of the design that
@@ -503,7 +484,7 @@ export function Mockup3dOverlay({
               onPointerDown={(e) => startMoveDrag(e, r)}
               onWheel={forwardWheelToExcalidrawCanvas}
               className="pointer-events-auto absolute inset-3 cursor-move rounded-sm hover:bg-primary/5"
-              title={t("gizmo.dragMove")}
+              title={t("mockup.gizmo.dragMove")}
             />
             {CORNER_SPECS.map((c, i) => (
               <div
@@ -517,7 +498,7 @@ export function Mockup3dOverlay({
                 onWheel={forwardWheelToExcalidrawCanvas}
                 className="pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background shadow-md hover:scale-125"
                 style={{ left: `${c.x * 100}%`, top: `${c.y * 100}%`, cursor: c.cursor }}
-                title={t("gizmo.dragResize")}
+                title={t("mockup.gizmo.dragResize")}
               />
             ))}
             {EDGE_SPECS.map((s) => (
@@ -532,7 +513,7 @@ export function Mockup3dOverlay({
                 onWheel={forwardWheelToExcalidrawCanvas}
                 className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background shadow-md hover:scale-110"
                 style={{ left: s.left, top: s.top, cursor: s.cursor, width: s.w, height: s.h }}
-                title={s.axis === "x" ? t("gizmo.dragResizeWidth") : t("gizmo.dragResizeHeight")}
+                title={s.axis === "x" ? t("mockup.gizmo.dragResizeWidth") : t("mockup.gizmo.dragResizeHeight")}
               />
             ))}
             {/* External rotate stub: a dot above the top edge connected by a
@@ -549,7 +530,7 @@ export function Mockup3dOverlay({
               onWheel={forwardWheelToExcalidrawCanvas}
               className="pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-primary bg-background shadow-md hover:scale-125 active:cursor-grabbing"
               style={{ left: "50%", top: -ROTATE_HANDLE_OFFSET }}
-              title={t("gizmo.dragRotate")}
+              title={t("mockup.gizmo.dragRotate")}
             />
             {/* Delete button — clears the binding (design's file kept,
                 undo restores). Sits offset from the top-right corner so it

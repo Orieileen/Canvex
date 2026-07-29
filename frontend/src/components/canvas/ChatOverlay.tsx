@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
-import { Check, Image as ImageIcon, Loader2, SendHorizontal, Sparkles, Wrench, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Check, Image as ImageIcon, Loader2, SendHorizontal, Sparkles, Square, Wrench, X } from "lucide-react";
 
 import { SmartImage } from "@/components/SmartImage";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,8 @@ interface ChatOverlayProps {
     disabledSkills: string[],
     attachments: ChatAttachment[],
   ) => void;
+  /** Abort the in-flight reply — wired to the send button while streaming. */
+  onStop: () => void;
   isStreaming: boolean;
   status: ChatOverlayStatus | null;
   toolBadge: string | null;
@@ -55,6 +58,7 @@ interface ChatOverlayProps {
 
 export function ChatOverlay({
   onSubmit,
+  onStop,
   isStreaming,
   status,
   toolBadge,
@@ -64,6 +68,7 @@ export function ChatOverlay({
   attachments,
   onRemoveAttachment,
 }: ChatOverlayProps) {
+  const { t } = useTranslation("canvasUi");
   const [input, setInput] = useState("");
   // disabledSkills 状态留在 ChatOverlay 内 (不上提到 page) — 它本质就是
   // 输入框的一部分, 跟 input text 一起每条 message 提交后复位。
@@ -117,7 +122,7 @@ export function ChatOverlay({
             ) : (
               <X className="size-3" />
             )}
-            <span>{isStreaming ? "Thinking…" : (status?.label ?? "")}</span>
+            <span>{isStreaming ? t("chat.thinking") : (status?.label ?? "")}</span>
             {skillBadges?.map((slug) => {
               const meta = skills?.find((s) => s.name === slug);
               return (
@@ -165,7 +170,7 @@ export function ChatOverlay({
                       "ml-0.5 flex size-4 items-center justify-center rounded text-muted-foreground",
                       "hover:bg-muted hover:text-foreground disabled:opacity-40",
                     )}
-                    aria-label="Remove attachment"
+                    aria-label={t("chat.removeAttachment")}
                   >
                     <X className="size-3" />
                   </button>
@@ -174,12 +179,19 @@ export function ChatOverlay({
             ))}
           </div>
         )}
-        <div className="relative flex items-center">
+        <div
+          className={cn(
+            // rounded-xl matches the textarea so the streaming glow ring (a ::before
+            // that inherits this radius) hugs the input border.
+            "relative flex items-center rounded-xl",
+            isStreaming && "thinking-glow",
+          )}
+        >
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
-            placeholder={placeholder ?? "Describe what you want on the canvas…"}
+            placeholder={placeholder ?? t("chat.placeholder")}
             rows={1}
             disabled={isStreaming}
             className={cn(
@@ -202,17 +214,23 @@ export function ChatOverlay({
             />
           )}
           <Button
-            type="submit"
+            // While streaming, the button becomes a Stop control: type=button +
+            // onClick aborts the reply (instead of submitting a new one).
+            type={isStreaming ? "button" : "submit"}
             size="icon"
-            variant={canSend ? "default" : "ghost"}
+            // Always ghost — no orange fill in any state. When there's text to
+            // send, the send arrow's strokes turn orange (text-primary) to signal
+            // it's active; empty = muted (disabled); streaming = neutral stop glyph.
+            variant="ghost"
+            onClick={isStreaming ? onStop : undefined}
             className="absolute right-1.5 top-1/2 size-8 -translate-y-1/2 rounded-lg transition-all duration-150"
-            disabled={!canSend}
-            aria-label="Send"
+            disabled={isStreaming ? false : !canSend}
+            aria-label={isStreaming ? t("chat.stop") : t("chat.send")}
           >
             {isStreaming ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Square className="size-4" />
             ) : (
-              <SendHorizontal className="size-4" />
+              <SendHorizontal className={cn("size-4", canSend && "text-primary")} />
             )}
           </Button>
         </div>
