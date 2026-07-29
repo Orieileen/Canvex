@@ -371,32 +371,3 @@ class Robot(models.Model):
 
     def __str__(self):
         return f"Robot({self.id}, {self.name!r}, {len(self.steps or [])} steps)"
-
-
-class RobotRun(models.Model):
-    """One execution of a Robot (run history). Mirrors the job Status pattern."""
-
-    class Status(models.TextChoices):
-        QUEUED = "QUEUED", "Queued"
-        RUNNING = "RUNNING", "Running"
-        SUCCEEDED = "SUCCEEDED", "Succeeded"
-        FAILED = "FAILED", "Failed"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    robot = models.ForeignKey(Robot, on_delete=models.CASCADE, related_name="runs")
-    status = models.CharField(
-        max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True
-    )
-    error = models.TextField(blank=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "canvas_robot_runs"
-        verbose_name = "Canvas Robot Run"
-        verbose_name_plural = "Canvas Robot Runs"
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"RobotRun({self.id}, robot={self.robot_id}, {self.status})"
