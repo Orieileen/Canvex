@@ -1,4 +1,8 @@
-django
+# Django is capped: 6.1 dropped `django.utils.cache.cc_delim_re`, which DRF 3.17.2
+# still imports, so an unpinned rebuild installs 6.1 and the app dies on import
+# (ImportError at rest_framework/views.py). Raise this cap only together with a DRF
+# release that has dropped that import.
+django<6.1
 djangorestframework
 django-cors-headers
 celery
