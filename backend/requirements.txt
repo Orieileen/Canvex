@@ -20,8 +20,3 @@ rembg[cpu]
 python-dotenv
 gunicorn
 psycopg[binary]>=3.2
-# Agentic browser tool (`browse`) — optional, OFF by default (CANVAS_BROWSER_ENABLED).
-# Heavy (pulls Chromium) so kept out of the base image; install only when enabling:
-#   pip install -r requirements-browser.txt && python -m playwright install chromium
-# builder.py + browser_runner.py lazy-import browser_use, so a base deploy without
-# these packages runs unchanged as long as CANVAS_BROWSER_ENABLED stays false.

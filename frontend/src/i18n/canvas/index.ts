@@ -9,7 +9,6 @@
  */
 import { adjust } from './adjust'
 import { angle } from './angle'
-import { browseLog } from './browseLog'
 import { chat } from './chat'
 import { chatFrame } from './chatFrame'
 import { edit } from './edit'
@@ -29,7 +28,6 @@ import { workspace } from './workspace'
 const areas = {
   adjust,
   angle,
-  browseLog,
   chat,
   chatFrame,
   edit,

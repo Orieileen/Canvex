@@ -35,59 +35,6 @@ export function elementScreenRect(
   };
 }
 
-/** object-contain geometry: the sub-rect an image of intrinsic aspect `imgW:imgH`
- *  occupies (centered, letterboxed) inside a `boxW`×`boxH` container. When the box and
- *  image share an aspect (the 16:9 monitor frame + 16:9 viewport) there is no letterbox
- *  and this returns the full box. */
-export function containedImageRect(
-  boxW: number, boxH: number, imgW: number, imgH: number,
-): ScreenRect {
-  if (boxW <= 0 || boxH <= 0 || imgW <= 0 || imgH <= 0) {
-    return { left: 0, top: 0, width: boxW, height: boxH };
-  }
-  const boxAspect = boxW / boxH;
-  const imgAspect = imgW / imgH;
-  let width = boxW;
-  let height = boxH;
-  if (imgAspect > boxAspect) height = boxW / imgAspect; // image wider → bars top/bottom
-  else width = boxH * imgAspect;                        // image taller → bars left/right
-  return { left: (boxW - width) / 2, top: (boxH - height) / 2, width, height };
-}
-
-/** Map a click on an `object-contain` <img> to PAGE-VIEWPORT pixels (what the backend's
- *  document.elementFromPoint expects). `imgRect` is the img's getBoundingClientRect()
- *  (already folds in any CSS scale/zoom). Returns null if the click hit the letterbox. */
-export function imagePointToViewport(
-  imgRect: { left: number; top: number; width: number; height: number },
-  clientX: number,
-  clientY: number,
-  viewport: { width: number; height: number },
-): { vx: number; vy: number } | null {
-  const ci = containedImageRect(imgRect.width, imgRect.height, viewport.width, viewport.height);
-  const ix = clientX - imgRect.left - ci.left;
-  const iy = clientY - imgRect.top - ci.top;
-  if (ix < 0 || iy < 0 || ix > ci.width || iy > ci.height) return null; // clicked a bar
-  return { vx: (ix / ci.width) * viewport.width, vy: (iy / ci.height) * viewport.height };
-}
-
-/** Inverse of {@link imagePointToViewport} for a bbox: a page-viewport rect → the box
- *  inside an `object-contain` image of `boxW`×`boxH` (to draw the pick highlight, in the
- *  same content coordinate system the panel then scales). */
-export function viewportRectToImageBox(
-  bbox: [number, number, number, number],
-  boxW: number, boxH: number,
-  viewport: { width: number; height: number },
-): ScreenRect {
-  const ci = containedImageRect(boxW, boxH, viewport.width, viewport.height);
-  const [bx, by, bw, bh] = bbox;
-  return {
-    left: ci.left + (bx / viewport.width) * ci.width,
-    top: ci.top + (by / viewport.height) * ci.height,
-    width: (bw / viewport.width) * ci.width,
-    height: (bh / viewport.height) * ci.height,
-  };
-}
-
 /** Inverse of {@link elementScreenRect}'s point projection: a viewport pointer
  *  (clientX/clientY) → world coords. `paneRect` is the canvas pane's
  *  `getBoundingClientRect()` (to make the pointer pane-relative first). Shared by
