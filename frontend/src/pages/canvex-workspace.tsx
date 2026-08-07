@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { AnimatePresence, motion } from "framer-motion";
@@ -13,11 +13,6 @@ import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOve
 import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
-import { BrowseLogOverlay, type BrowseLogLive } from "@/components/canvas/BrowseLogOverlay";
-import { BrowseMonitorOverlay, type BrowseMonitorLive } from "@/components/canvas/BrowseMonitorOverlay";
-import { RobotStepsOverlay, type RobotStepsLive, type RunStepState } from "@/components/canvas/RobotStepsOverlay";
-import { detectExtension, pickInBrowser, postToExtension, runInBrowser, sendExtCommand } from "@/lib/extension-bridge";
-import { getRobotStepsFrameData } from "@/lib/canvas-robot-steps-frame";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { Button } from "@/components/ui/button";
@@ -55,14 +50,12 @@ import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
-  CanvasChatStreamEvent,
   CanvasMediaImage,
   CanvasMediaVideo,
   CanvasScene,
   CanvasSceneData,
   CanvasSkill,
   ChatAttachment,
-  RobotStep,
 } from "@/types/canvex";
 
 import "@excalidraw/excalidraw/index.css";
@@ -170,22 +163,6 @@ function appendUniqueMessage(
   message: CanvasChatMessage,
 ): CanvasChatMessage[] {
   return prev.some((m) => m.id === message.id) ? prev : [...prev, message];
-}
-
-/** Immutably drop one key from a Record-state via its setter — used to evict a
- *  browse turn's live entry (browseLogs / browseMonitors) once it's persisted to
- *  the frame's customData, so the overlay renders identically from persisted data
- *  and the state doesn't accumulate one entry per turn. */
-function dropLiveEntry<T>(
-  setter: Dispatch<SetStateAction<Record<string, T>>>,
-  key: string,
-): void {
-  setter((prev) => {
-    if (!(key in prev)) return prev;
-    const next = { ...prev };
-    delete next[key];
-    return next;
-  });
 }
 
 /**
@@ -363,35 +340,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // Bumped on every Excalidraw onChange tick; MockupOverlay needs to re-read
   // live API state (viewport + element positions) every change.
   const [excalidrawTick, setExcalidrawTick] = useState(0);
-  // Live browse step-logs keyed by browse-log frame id — one entry per turn that
-  // ran a `browse` tool. BrowseLogOverlay renders these into the on-canvas log
-  // frames; frames absent here fall back to their persisted customData (reload).
-  const [browseLogs, setBrowseLogs] = useState<Record<string, BrowseLogLive>>({});
-  // Live browser-monitor frames (latest screenshot) keyed by monitor frame id —
-  // the visual sibling of browseLogs. BrowseMonitorOverlay renders these; frames
-  // absent here fall back to their persisted final-frame URL (reload).
-  const [browseMonitors, setBrowseMonitors] = useState<Record<string, BrowseMonitorLive>>({});
-  // The robot being authored: DSL steps keyed by robot-steps frame id (each pick
-  // appends a `click` step). Live in React state; persisted to the frame's customData.
-  const [robotSteps, setRobotSteps] = useState<Record<string, RobotStepsLive>>({});
-  // Mirror for synchronous reads when several edits land before a re-render.
-  const robotStepsRef = useRef(robotSteps);
-  useEffect(() => {
-    robotStepsRef.current = robotSteps;
-  }, [robotSteps]);
-  // Is the Canvex browser extension installed? Detected once on mount; enables the
-  // "run in my browser" path (robot runs in the user's own browser — real IP + login).
-  const [extAvailable, setExtAvailable] = useState(false);
-  useEffect(() => {
-    detectExtension().then(setExtAvailable);
-  }, []);
-  // Per-frame, per-step-index run state — status + the failure error (shown on the card).
-  const [runStatus, setRunStatus] = useState<
-    Record<string, Record<number, RunStepState>>
-  >({});
-
-  // handleEditSteps / handlePickTarget are defined AFTER the pinning destructure below —
-  // they depend on ensureRobotStepsFrame / persistRobotSteps (declared there).
 
   const latestDataRef = useRef<CanvasSceneData>({});
   // Content hash `length:versionSum:fileCount` —— element.version 只在真实改动
@@ -446,15 +394,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
     ensureChatFrame,
-    ensureBrowseLogFrame,
-    persistBrowseLogText,
-    ensureBrowseMonitorFrame,
-    persistBrowseMonitorImage,
-    clearBrowseMonitorImage,
-    ensureRobotStepsFrame,
-    persistRobotSteps,
-    persistRobotTitle,
-    persistRobotAllowWrites,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -465,207 +404,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     reset: resetPinning,
     resetPackRow,
   } = pinning;
-
-  // Edit a robot's steps (change action / type-text / delete) from the step cards.
-  const handleEditSteps = useCallback(
-    (frameId: string, steps: RobotStep[]) => {
-      setRobotSteps((prev) => ({
-        ...prev,
-        [frameId]: { title: prev[frameId]?.title ?? "", steps },
-      }));
-      persistRobotSteps(frameId, steps);
-    },
-    [persistRobotSteps],
-  );
-
-  // Toggle the robot's write-gate opt-in. Persisted straight to the steps frame's
-  // customData (no React state) — the overlay reads it back from there, and Save sends
-  // it as allow_writes; it round-trips scene autosave + reload like the steps do.
-  const handleToggleAllowWrites = useCallback(
-    (frameId: string, allow: boolean) => {
-      persistRobotAllowWrites(frameId, allow);
-    },
-    [persistRobotAllowWrites],
-  );
-
-  // A robot steps-frame's effective data: this session's LIVE authoring state when present,
-  // else the frame's persisted customData. After a reload the live ref is empty while the
-  // frame still holds the authored steps — without the fallback, pick/save/run would each
-  // silently see zero steps. `allowWrites` lives ONLY in customData, so it's always read
-  // from the persisted frame. One accessor so the three callers can't drift on this rule.
-  const getEffectiveRobotData = useCallback(
-    (
-      frameId: string,
-    ): {
-      steps: RobotStep[];
-      allowWrites: boolean;
-      persisted: ReturnType<typeof getRobotStepsFrameData> | null;
-    } => {
-      const live = robotStepsRef.current[frameId];
-      const frame = excalidrawApiRef.current
-        ?.getSceneElements()
-        .find((el) => el.id === frameId && !el.isDeleted);
-      const persisted = frame ? getRobotStepsFrameData(frame) : null;
-      const steps = live?.steps?.length ? live.steps : persisted?.steps ?? [];
-      return { steps, allowWrites: persisted?.allowWrites ?? false, persisted };
-    },
-    [],
-  );
-
-  // Rename the robot from the steps-card header. Update live state (preserving the current
-  // steps — seeding from persisted when the live ref is empty post-reload, else setting
-  // {title, steps:[]} would blank the visible steps) AND persist the name to customData so
-  // it survives reload and Save picks it up. Cosmetic — does NOT invalidate a saved robot
-  // (the name doesn't affect execution), so Run stays enabled through a rename.
-  const handleEditRobotTitle = useCallback(
-    (frameId: string, title: string) => {
-      setRobotSteps((prev) => {
-        const cur = prev[frameId];
-        const steps = cur?.steps ?? getEffectiveRobotData(frameId).steps;
-        return { ...prev, [frameId]: { title, steps } };
-      });
-      persistRobotTitle(frameId, title);
-    },
-    [getEffectiveRobotData, persistRobotTitle],
-  );
-
-  // Manual element pick: the robot's target is a page in the user's REAL browser (not the
-  // Canvas), so binding a step's target means clicking the actual element over there — via
-  // the extension. `source:"url"` opens the robot's start URL in a fresh tab first; "current"
-  // picks the page the user was last on. stepIndex < 0 appends a new picked click step.
-  const handlePickTarget = useCallback(
-    async (frameId: string, stepIndex: number, source: "url" | "current") => {
-      const { steps } = getEffectiveRobotData(frameId);
-      const startUrl =
-        source === "url" ? steps.find((s) => s.action === "navigate" && s.url)?.url : undefined;
-      if (source === "url" && !startUrl) {
-        toast.error(t("browseLog.pickNoStartUrl"));
-        return;
-      }
-      toast.info(t("browseLog.pickInBrowserPrompt"));
-      const res = await pickInBrowser({ url: startUrl, label: t("browseLog.pickInBrowserLabel") });
-      if (res.error || !res.locator) {
-        toast.error(res.error ? String(res.error) : t("browseLog.pickInBrowserFailed"));
-        return;
-      }
-      // Re-read steps (the pick was async) and bind the locator to the step (or append one).
-      const cur = getEffectiveRobotData(frameId).steps;
-      const picked = { target: res.locator, provenance: "picked" as const, ref: res.ref ?? null };
-      const next: RobotStep[] =
-        stepIndex >= 0 && stepIndex < cur.length
-          ? cur.map((s, i) => (i === stepIndex ? { ...s, ...picked } : s))
-          : [...cur, { action: "click", ...picked }];
-      setRobotSteps((prev) => ({
-        ...prev,
-        [frameId]: { title: prev[frameId]?.title ?? "", steps: next },
-      }));
-      persistRobotSteps(frameId, next);
-    },
-    [getEffectiveRobotData, persistRobotSteps, t],
-  );
-
-  // Save the authored steps as a named robot (POST /robots/) so it can be reused.
-  const handleSaveRobot = useCallback(
-    async (frameId: string) => {
-      // Prefer this session's live steps; after a reload they live only in the frame's
-      // persisted customData, so fall back to that (else Save would silently no-op).
-      const { steps, allowWrites, persisted } = getEffectiveRobotData(frameId);
-      const live = robotStepsRef.current[frameId];
-      // Title: live authoring title, else the persisted title when we fell back (post-reload).
-      let name = live?.title || "";
-      if (!live?.steps?.length && persisted) name = name || persisted.title;
-      if (steps.length === 0) {
-        toast.info(t("browseLog.robotEmptySave"));
-        return;
-      }
-      try {
-        await canvasService.saveRobot(activeSceneId, {
-          name: name || "Robot",
-          steps,
-          allow_writes: allowWrites,
-        });
-        toast.success(t("browseLog.robotSaved"));
-      } catch (err) {
-        toast.error(extractApiError(err, "save robot failed"));
-      }
-    },
-    [activeSceneId, t, getEffectiveRobotData],
-  );
-
-  // Run the robot in the user's OWN browser via the extension (real IP + login state).
-  // Sends the current steps straight to the extension — no server-side session, no saved-
-  // robot requirement. Per-step status streams onto the cards.
-  const handleRunInBrowser = useCallback(
-    (frameId: string) => {
-      const { steps, allowWrites } = getEffectiveRobotData(frameId);
-      if (steps.length === 0) {
-        toast.info(t("browseLog.robotEmptySave"));
-        return;
-      }
-      setRunStatus((prev) => ({ ...prev, [frameId]: {} }));
-      runInBrowser(steps, allowWrites, (evt) => {
-        if (evt.type === "step") {
-          setRunStatus((prev) => ({
-            ...prev,
-            [frameId]: { ...(prev[frameId] ?? {}), [evt.index]: { status: evt.status, error: evt.error } },
-          }));
-        } else if (evt.type === "done") {
-          if (evt.ok) toast.success(t("browseLog.robotRanInBrowser"));
-          else toast.error(t("browseLog.robotRunFailedInBrowser"));
-        }
-      });
-    },
-    [t, getEffectiveRobotData],
-  );
-
-  // RPA v2 (Phase 4): relay ONE Agent `ext_command` to the extension (by op), then POST the
-  // reply back to the backend (which unblocks the waiting Agent tool). Correlated by
-  // command_id. Fire-and-forget from the SSE loop so heartbeats keep flowing while a slow
-  // human pick is outstanding. Errors/409s are swallowed — the Agent has already moved on.
-  const relayExtCommand = useCallback(
-    async (cmd: Extract<CanvasChatStreamEvent, { event: "ext_command" }>) => {
-      let extMsg: { type: string; command_id: string; [k: string]: unknown };
-      // Must outlive the backend's per-op wait so the backend gives up first and refuses
-      // cleanly (open_tab waits 30s server-side; snapshot 25s; ref_locator 20s). 35s covers
-      // all three; pick overrides below.
-      let timeoutMs = 35000;
-      switch (cmd.op) {
-        case "open_tab":
-          extMsg = { type: "canvex-open-tab", command_id: cmd.command_id, url: cmd.url };
-          break;
-        case "snapshot":
-          extMsg = { type: "canvex-snapshot", command_id: cmd.command_id, tabId: cmd.tabId, max: cmd.max };
-          break;
-        case "ref_locator":
-          extMsg = {
-            type: "canvex-ref-locator",
-            command_id: cmd.command_id,
-            tabId: cmd.tabId,
-            ref: cmd.ref,
-            epoch: cmd.epoch,
-          };
-          break;
-        case "pick":
-          extMsg = { type: "canvex-pick-start", command_id: cmd.command_id, tabId: cmd.tabId, label: cmd.label };
-          timeoutMs = 210000; // a human pick is slow — outlive the backend's pick wait
-          if (cmd.label) toast.info(`${t("browseLog.extPickPrompt")} ${cmd.label}`);
-          break;
-        default:
-          return; // heartbeat / unknown — nothing to relay
-      }
-      const result = await sendExtCommand(extMsg, timeoutMs);
-      // A pick that timed out (or errored) leaves the in-page pick banner armed, hijacking
-      // clicks in the user's tab after the Agent already gave up — disarm it. (A successful
-      // pick is disarmed by the extension's own one-shot handler.)
-      if (cmd.op === "pick" && (result as { error?: unknown })?.error) {
-        postToExtension({ type: "canvex-pick-stop", tabId: cmd.tabId });
-      }
-      await canvasService
-        .postFlowExtResult(activeSceneId, { token: cmd.token, command_id: cmd.command_id, result })
-        .catch(() => {});
-    },
-    [activeSceneId, t],
-  );
 
   // 素材库面板挂在这里 (而非外层 CanvasSidebar 所在组件) —— 插入要用本组件的
   // pinImage/pinVideo + 当前 sceneId。侧栏按钮发 window 事件, 这里接住打开。
@@ -1151,30 +889,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         string,
         { kind: JobKind; placeholders: PinPlaceholder[] }
       >();
-      // Browse-log bookkeeping is ALSO stream-local (not component refs) for the
-      // same reason: a fast re-submit starting turn B must not wipe turn A's
-      // frame id / line buffer before turn A's finally persists them. `frameId`
-      // is the log frame created on this turn's first browse_log line;
-      // `attempted` gates that one-shot creation (so a failed create isn't
-      // retried each line); `lines` accumulates for end-of-turn persistence.
-      const browseLog: { frameId: string | null; attempted: boolean; lines: string[] } = {
-        frameId: null,
-        attempted: false,
-        lines: [],
-      };
-      // Live browser-monitor bookkeeping, same stream-local shape. `frameId` is the
-      // monitor frame created on this turn's first browse_frame; `finalized` is set
-      // once the backend's final (persisted media-URL) frame lands; `lastImage` is
-      // the most recent LIVE frame (a data-URL) — the finally persists it as a
-      // fallback freeze frame when no final arrived (timeout / error / Stop / a
-      // browse that produced no persisted screenshot), so reload never shows a
-      // stuck "waiting" panel. Anchored to the RIGHT of browseLog.frameId.
-      const browseMonitor: {
-        frameId: string | null;
-        attempted: boolean;
-        finalized: boolean;
-        lastImage: string | null;
-      } = { frameId: null, attempted: false, finalized: false, lastImage: null };
+
       setIsStreaming(true);
       setChatStatus(null);
       setToolBadge(null);
@@ -1194,7 +909,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for await (const event of canvasService.postChatStream(
           activeSceneId,
           content,
-          { signal: abort.signal, disabledSkills, attachments, extAvailable },
+          { signal: abort.signal, disabledSkills, attachments },
         )) {
           switch (event.event) {
             case "user_created":
@@ -1307,85 +1022,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
               break;
             }
             case "canvas_asset":
-              // A tool (e.g. browse) produced a screenshot this turn — drop it
+              // A tool produced an image this turn — drop it
               // onto the board. dedupKey=url so it never double-places with the
               // assistant_final markdown fallback below.
               void pinImage({ url: event.url, dedupKey: event.url }).catch((err) => {
                 toast.error(extractApiError(err, t("workspace.toast.loadImageFailed")));
               });
               break;
-            case "browse_log": {
-              // A `browse` tool is narrating its steps live. On the first line,
-              // spin up a log frame below the chat frame titled with this turn's
-              // message; append every line (React state keyed by frame id for
-              // render + the stream-local `browseLog.lines` for end-of-turn
-              // persistence).
-              if (!browseLog.attempted) {
-                browseLog.attempted = true;
-                browseLog.frameId = ensureBrowseLogFrame(content);
-                // A new browse started — clear the singleton monitor's stale image
-                // (persisted + any lingering live entry) so a log-only browse doesn't
-                // leave the previous browse's page up beside this turn's fresh log.
-                // Screenshots, if any, refill it from the first browse_frame.
-                const staleMonitorId = clearBrowseMonitorImage();
-                if (staleMonitorId) dropLiveEntry(setBrowseMonitors, staleMonitorId);
-              }
-              const fid = browseLog.frameId;
-              if (fid) {
-                // Immutable append: one new array per line, shared by both the
-                // persistence buffer and the React state (React needs a fresh
-                // reference to re-render; a mutate-then-clone would copy twice).
-                browseLog.lines = [...browseLog.lines, event.line];
-                const lines = browseLog.lines;
-                setBrowseLogs((prev) => ({ ...prev, [fid]: { title: content, lines } }));
-              }
-              break;
-            }
-            case "browse_frame": {
-              // Live browser monitor. Spin up the panel (right of this turn's log
-              // frame) on the first frame; then either stream a live data-URL into
-              // React state, or — on the final frame — persist its media URL to the
-              // frame's customData (survives reload) and drop the live entry so the
-              // overlay renders identically from the persisted URL.
-              if (!browseMonitor.attempted) {
-                browseMonitor.attempted = true;
-                browseMonitor.frameId = ensureBrowseMonitorFrame(browseLog.frameId);
-              }
-              const mfid = browseMonitor.frameId;
-              if (mfid) {
-                if (event.final) {
-                  browseMonitor.finalized = true;
-                  persistBrowseMonitorImage(mfid, event.image);
-                  dropLiveEntry(setBrowseMonitors, mfid);
-                } else {
-                  const image = event.image;
-                  browseMonitor.lastImage = image;
-                  setBrowseMonitors((prev) => ({ ...prev, [mfid]: { image } }));
-                }
-              }
-              break;
-            }
-            case "ext_command":
-              // RPA v2 (Phase 4): the Agent is driving the user's OWN browser via the
-              // extension. Relay this command + return its result to the backend (which
-              // unblocks the Agent tool). Fire-and-forget so the SSE loop keeps consuming
-              // the heartbeat frames the Agent emits while it blocks on this command.
-              if (event.op !== "heartbeat") void relayExtCommand(event);
-              break;
-            case "robot_steps": {
-              // RPA v2 (Phase 4): the Agent drafted a robot — lay its steps down as cards,
-              // replacing the steps frame's contents (same persistence as a manual pick).
-              const stepsFrameId = ensureRobotStepsFrame("");
-              if (stepsFrameId && Array.isArray(event.steps)) {
-                const steps = event.steps;
-                setRobotSteps((prev) => ({
-                  ...prev,
-                  [stepsFrameId]: { title: prev[stepsFrameId]?.title ?? "", steps },
-                }));
-                persistRobotSteps(stepsFrameId, steps);
-              }
-              break;
-            }
             case "assistant_final":
               setToolBadge(null);
               setSkillBadges(clearIfNonEmpty);
@@ -1432,14 +1075,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for (const { placeholders } of pendingCalls.values()) {
           markPlaceholdersFailed(placeholders, t("workspace.tombstone.streamEnded"));
         }
-        // Only the CURRENT turn owns the shared streaming UI state AND the singleton
-        // browse-log / monitor frames. A turn superseded by a fast re-submit (its
-        // `abort` !== the current ref) must NOT touch them: the new turn already
-        // reuses the same singleton frames, so a superseded turn persisting its
-        // stale transcript / dropping the live entry would clobber the new turn's
-        // in-flight stream. Losing the superseded turn's content is correct here —
-        // the singleton frame shows only the latest browse, and the new turn
-        // persists its own at its settle.
+        // Only the CURRENT turn owns the shared streaming UI state. A turn superseded
+        // by a fast re-submit (its `abort` !== the current ref) must NOT touch it.
         if (streamAbortRef.current === abort) {
           streamAbortRef.current = null;
           setIsStreaming(false);
@@ -1449,41 +1086,16 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           // settles via handleStreamSettled. Only drop the partial text when
           // there was no reply to finalize (error / abort / empty).
           if (!pendingAssistantRef.current) resetStream(false);
-          // Persist THIS turn's browse log to its frame's customData (survives
-          // reload; live lines otherwise live only in React state) + drop the
-          // now-redundant live entry. Runs on a normal end / user Stop / error too.
-          if (browseLog.frameId && browseLog.lines.length) {
-            const fid = browseLog.frameId;
-            persistBrowseLogText(fid, browseLog.lines);
-            dropLiveEntry(setBrowseLogs, fid);
-          }
-          // Monitor: if never finalized (timeout / error / Stop / no screenshot),
-          // freeze it on the last live frame so reload shows the end state instead
-          // of a stuck "waiting" placeholder, and drop the live entry.
-          if (browseMonitor.frameId && !browseMonitor.finalized) {
-            const mfid = browseMonitor.frameId;
-            if (browseMonitor.lastImage) persistBrowseMonitorImage(mfid, browseMonitor.lastImage);
-            dropLiveEntry(setBrowseMonitors, mfid);
-          }
         }
       }
     },
     [
       activeSceneId,
-      extAvailable,
       createPlaceholder,
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
-      ensureBrowseLogFrame,
-      persistBrowseLogText,
-      ensureBrowseMonitorFrame,
-      persistBrowseMonitorImage,
-      clearBrowseMonitorImage,
-      ensureRobotStepsFrame,
-      persistRobotSteps,
-      relayExtCommand,
-      pollAndPinJob,
+                pollAndPinJob,
       resetPackRow,
       resetStream,
       showTransientStatus,
@@ -1623,29 +1235,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         streamingText={streamingText}
         streamFinalizing={streamFinalizing}
         onStreamSettled={handleStreamSettled}
-      />
-      <BrowseLogOverlay
-        excalidrawApiRef={excalidrawApiRef}
-        tick={excalidrawTick}
-        liveLogs={browseLogs}
-      />
-      <BrowseMonitorOverlay
-        excalidrawApiRef={excalidrawApiRef}
-        tick={excalidrawTick}
-        liveFrames={browseMonitors}
-      />
-      <RobotStepsOverlay
-        excalidrawApiRef={excalidrawApiRef}
-        tick={excalidrawTick}
-        liveSteps={robotSteps}
-        onEditSteps={handleEditSteps}
-        onEditTitle={handleEditRobotTitle}
-        onSave={handleSaveRobot}
-        onToggleAllowWrites={handleToggleAllowWrites}
-        runStatus={runStatus}
-        extAvailable={extAvailable}
-        onRunInBrowser={handleRunInBrowser}
-        onPickTarget={handlePickTarget}
       />
       <Mockup3dOverlay
         excalidrawApiRef={excalidrawApiRef}
