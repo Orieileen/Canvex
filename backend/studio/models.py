@@ -142,6 +142,74 @@ class ChatMessage(models.Model):
         return f"{self.role}: {self.content[:40]}"
 
 
+class ImageProvider(models.Model):
+    """一个生图供应商端点 —— 用户在前端配的「一把 key + 一个 base_url + 一套请求参数」。
+
+    存在的理由: 生图参数以前只能写在后端 env 里, 固定两条通道 (PRIMARY / FALLBACK),
+    只有部署者能改。用户想这张图用 Google、下张用豆包就做不到。现在通道进库、由前端配。
+
+    `defaults` 是那 16 个请求参数的默认值; 具体某个模型可以在 ImageModel.overrides 里
+    覆盖任意一项 —— 同一把聚合商 key 下面挂的豆包和 Google 就需要不同的 size_mode。
+    键名与 ImageChannel 的字段名一致 (image_field / poll_enabled / …), 解析时直接展开。
+
+    api_key 明文存储: 这是本地单机开源项目, 加密密钥只能放 env、和库在同一台机器同一个
+    人手里, 加了等于没加, 却要付一个"加密密钥必须存在"的 env 依赖。只要求它不要进日志
+    和错误响应 —— 用户会把报错贴到 GitHub issue 求助。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    label = models.CharField(max_length=100)
+    # 允许私有地址 (http://host.docker.internal:11434 这类本机推理服务) —— 不做 SSRF
+    # 公网校验, 那会把"接本地模型"这个自部署项目最有价值的场景整个砍掉。
+    base_url = models.URLField(max_length=500)
+    api_key = models.CharField(max_length=500, blank=True)
+    defaults = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_image_providers"
+        verbose_name = "Canvas Image Provider"
+        verbose_name_plural = "Canvas Image Providers"
+        ordering = ["label"]
+
+    def __str__(self):
+        return f"ImageProvider({self.label})"
+
+
+class ImageModel(models.Model):
+    """供应商下面的一个可选模型 —— 工具栏模型选择器里的一项。
+
+    `model` 是那家供应商要的模型字符串原文。**刻意不建别名映射表**
+    (`gemini-2.5 → 各家叫什么`): 穷举「所有供应商 × 所有模型」的命名差异是无底洞,
+    每条记录自己声明它那家的写法就够了。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(
+        ImageProvider, on_delete=models.CASCADE, related_name="models",
+    )
+    label = models.CharField(max_length=100)
+    model = models.CharField(max_length=200)
+    # 只存与 provider.defaults 不同的项; 解析 = {**provider.defaults, **overrides}
+    overrides = models.JSONField(default=dict, blank=True)
+    enabled = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_image_models"
+        verbose_name = "Canvas Image Model"
+        verbose_name_plural = "Canvas Image Models"
+        ordering = ["sort_order", "label"]
+
+    def __str__(self):
+        return f"ImageModel({self.label} @ {self.provider_id})"
+
+
 class ImageEditJob(models.Model):
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -166,6 +234,13 @@ class ImageEditJob(models.Model):
         max_length=4, choices=Resolution.choices, default=Resolution.TWO_K,
     )
     num_images = models.PositiveSmallIntegerField(default=1)
+    # 用户在工具栏选中的模型。**必须落在 job 行上**, 因为这条路径是异步的 —— 请求早就
+    # 返回了, celery worker 之后才捞这条记录去跑, 光靠请求参数传不到那时候。
+    # 空 = 没选 / 老任务 → 回退到 env 通道 (primary→fallback)。SET_NULL: 用户删了一个
+    # 模型配置不该把历史任务一起删掉。
+    image_model = models.ForeignKey(
+        "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
     # cutout=True 切到 rembg(去背景);否则是 refine/edit
     is_cutout = models.BooleanField(default=False)
     # Split: 一次 split 起两条 leg(background inpaint + cutout subject),互填 split_partner.

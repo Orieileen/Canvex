@@ -38,8 +38,8 @@ from langchain.tools import ToolRuntime, tool
 from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
-from studio.services.image_client import build_image_client
-from studio.services.listings_utils import env, env_bool, handle_poll_if_needed
+from studio.services.image_client import ImageChannel, build_image_client, channel_from_env
+from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
 from .common import (
@@ -141,43 +141,42 @@ def _volc_size(size: str, resolution: str) -> str:
 
 
 def _single_generation(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
 ) -> bytes:
     """单次 provider 调用, n=1 固定, 返单张 image bytes.
 
-    POLL_ENABLED=true (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
+    poll_enabled (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
     其他 (tu-zi / 火山 同步) 走 extract_images_from_response 取 data[0].
     任何错误冒泡到调用方 (_generate 的 fan-out 会 catch + 计入失败数).
 
-    size 适配按 {prefix}_SIZE_MODE: "pixel" → 火山合法像素 (_volc_size); 否则沿用旧
+    size 适配按 channel.size_mode: "pixel" → 火山合法像素 (_volc_size); 否则沿用旧
     行为 —— 异步 poll provider (apimart) 把像素归一成比例串喂过去.
     """
-    client = build_image_client(prefix)
-    poll_enabled = env_bool(f"{prefix}_POLL_ENABLED")
-    if env(f"{prefix}_SIZE_MODE").lower() == "pixel":
+    client = build_image_client(channel)
+    if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
-    elif poll_enabled:
+    elif channel.poll_enabled:
         size = _canvas_size_to_ratio(size)
 
     response = client.generate(
         prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
     )
-    if not poll_enabled:
+    if not channel.poll_enabled:
         return extract_images_from_response(response)[0]
 
     return handle_poll_if_needed(
         response=response, poll_enabled=True,
         api_key=client.api_key,
-        poll_url=os.getenv(f"{prefix}_POLL_URL") or client.base_url,
-        max_attempts=int(os.getenv(f"{prefix}_POLL_MAX_ATTEMPTS", "60")),
-        interval=int(os.getenv(f"{prefix}_POLL_INTERVAL", "5")),
-        req_timeout=int(os.getenv(f"{prefix}_POLL_TIMEOUT", "30")),
+        poll_url=channel.poll_url or client.base_url,
+        max_attempts=channel.poll_max_attempts,
+        interval=channel.poll_interval,
+        req_timeout=channel.poll_timeout,
     )
 
 
 def _generate(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
 ) -> list[bytes]:
     """Provider 生成 n 张图. 不论 sync (tu-zi) 还是 async poll (apimart), 底层
     `client.generate(n=1)` 始终, 多张通过 fan-out (N 个并发 1-shot) 实现.
@@ -194,7 +193,7 @@ def _generate(
     """
     if n == 1:
         return [_single_generation(
-            prefix, prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
+            channel, prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
         )]
 
     # 兜底: serializer 允许 1/2/4 但万一上层放开 num_images, 不让 thread 数无界涨
@@ -202,7 +201,7 @@ def _generate(
     with ThreadPoolExecutor(max_workers=min(n, 8)) as pool:
         futures = [
             pool.submit(
-                _single_generation, prefix,
+                _single_generation, channel,
                 prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
             )
             for _ in range(n)
@@ -211,9 +210,9 @@ def _generate(
             try:
                 results.append(f.result())
             except Exception:
-                logger.exception("image_gen fan-out: single call failed: prefix=%s", prefix)
+                logger.exception("image_gen fan-out: single call failed: channel=%s", channel.label)
     if not results:
-        raise RuntimeError(f"image_gen fan-out: all {n} parallel calls failed: prefix={prefix}")
+        raise RuntimeError(f"image_gen fan-out: all {n} parallel calls failed: channel={channel.label}")
     return results
 
 
@@ -227,7 +226,7 @@ _RETRY_BACKOFF_SECONDS = (0, 3)
 
 
 def _call_with_retries(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
 ) -> list[bytes]:
     """Wrap _generate with attempt-level retry. ValueError/TypeError 不重试 (编码 bug).
     HTTP 4xx (除 408/425/429) 不 retry —— schema/quota/auth 类错误重发同 payload 永远
@@ -238,7 +237,7 @@ def _call_with_retries(
             time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
         try:
             return _generate(
-                prefix, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
             )
         except (ValueError, TypeError):
             raise
@@ -249,20 +248,20 @@ def _call_with_retries(
             status = exc.response.status_code if exc.response is not None else None
             if status is not None and 400 <= status < 500 and status not in (408, 425, 429):
                 logger.warning(
-                    "image_gen attempt %d/%d hit %d (deterministic 4xx): prefix=%s err=%s",
-                    attempt + 1, _RETRY_ATTEMPTS, status, prefix, exc,
+                    "image_gen attempt %d/%d hit %d (deterministic 4xx): channel=%s err=%s",
+                    attempt + 1, _RETRY_ATTEMPTS, status, channel.label, exc,
                 )
                 raise
             last_exc = exc
             logger.warning(
-                "image_gen attempt %d/%d failed: prefix=%s err=%s",
-                attempt + 1, _RETRY_ATTEMPTS, prefix, exc,
+                "image_gen attempt %d/%d failed: channel=%s err=%s",
+                attempt + 1, _RETRY_ATTEMPTS, channel.label, exc,
             )
         except Exception as exc:
             last_exc = exc
             logger.warning(
-                "image_gen attempt %d/%d failed: prefix=%s err=%s",
-                attempt + 1, _RETRY_ATTEMPTS, prefix, exc,
+                "image_gen attempt %d/%d failed: channel=%s err=%s",
+                attempt + 1, _RETRY_ATTEMPTS, channel.label, exc,
             )
     assert last_exc is not None  # _RETRY_ATTEMPTS >= 1 保证至少 1 次 except 命中
     raise last_exc
@@ -270,27 +269,41 @@ def _call_with_retries(
 
 def _generate_with_fallback(
     *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel | None = None,
 ) -> list[bytes]:
-    """Primary (with retries) 抛 → 切 fallback (with retries). 同 task 内 try/except,
-    credit_event 保 PENDING 不被 _load_or_skip rollback (Stage 4 commit/rollback 终态
-    不可逆, 跨 task 重试会撞 InvalidUsageEventState; 同 task 内 fallback 安全).
+    """生成 n 张图, 带重试, 必要时切备用通道.
+
+    `channel` 是用户在前端**显式选中**的通道 (工具栏的模型选择器 / agent 的 model 参数)。
+    给了就只用它, **失败不回退** —— 换供应商会换出完全不同的画风, 而用户并不知道发生了
+    什么; 明确告诉他"这个通道失败了"才是对的。
+
+    没给 (老路径 / 库里还没配) 才走 env: primary (with retries) 抛 → 切 fallback。同
+    task 内 try/except, credit_event 保 PENDING 不被 _load_or_skip rollback (Stage 4
+    commit/rollback 终态不可逆, 跨 task 重试会撞 InvalidUsageEventState; 同 task 内
+    fallback 安全)。
 
     Fallback 配置可选: CANVAS_IMAGE_FALLBACK_MODEL 未设时不切换, primary 错误冒泡
     → _load_or_skip rollback 退 credit. 这让 dev 环境无 fallback 配也行得通.
     """
+    if channel is not None:
+        return _call_with_retries(
+            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+        )
     try:
         return _call_with_retries(
-            _PRIMARY_PREFIX, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            channel_from_env(_PRIMARY_PREFIX),
+            prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
     except Exception:
         if not os.getenv(f"{_FALLBACK_PREFIX}_MODEL"):
             raise
         logger.exception(
-            "canvas image_gen: primary failed after retries, trying fallback: prefix=%s",
+            "canvas image_gen: primary failed after retries, trying fallback: channel=%s",
             _FALLBACK_PREFIX,
         )
         return _call_with_retries(
-            _FALLBACK_PREFIX, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            channel_from_env(_FALLBACK_PREFIX),
+            prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
 
 

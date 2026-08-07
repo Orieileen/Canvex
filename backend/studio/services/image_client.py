@@ -5,8 +5,13 @@
 不同服务商的差异通过字段映射 + 环境变量解决。
 
 用法:
-    client = build_image_client("PATTERN_PRIMARY")
+    channel = channel_from_env("CANVAS_IMAGE_PRIMARY")   # 或 channel_from_model(...)
+    client = build_image_client(channel)
     result = client.generate(prompt=..., image_urls=[...], size=...)
+
+「通道」(ImageChannel) 是一次调用需要的全部供应商参数。它有两个来源 —— env 前缀
+(channel_from_env) 和数据库里用户在前端配的 ImageProvider/ImageModel
+(services/image_channels.py) —— 但下游只认这个 dataclass, 不知道也不关心它从哪来。
 """
 
 import base64
@@ -187,13 +192,47 @@ class ImageClient:
         return result
 
 
-@functools.cache
-def build_image_client(prefix: str) -> ImageClient:
+@dataclass(frozen=True)
+class ImageChannel:
+    """一次生图调用需要的全部供应商参数 —— 「用哪个模型、怎么跟它说话」。
+
+    frozen 是刻意的: 它同时是 build_image_client 的**缓存键**, 所以必须可哈希。用户在
+    前端改了任何一个字段 → 新的 ImageChannel → 自然拿到新 client, 不需要任何显式失效
+    逻辑; 没改则命中缓存, 连接池照常复用。
+
+    字段分三组: 连接 / 请求形状(各家差异都在这里) / 异步轮询。为什么需要这些奇怪的
+    旋钮见 ImageClient 上各字段的注释 —— 那些注释就是前端配置表单的字段提示。
     """
-    从环境变量构建 ImageClient。同 prefix 同进程一个实例 (TCP 池跨 task 复用).
+
+    # ── 连接 ──
+    base_url: str
+    api_key: str
+    model: str
+    # ── 请求形状 ──
+    image_field: str = "image"
+    image_as_single: bool = False
+    response_format: str = "b64_json"
+    quality: str = ""
+    watermark: bool | None = None
+    inline_image: bool = False
+    timeout: int = 300
+    # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
+    size_mode: str = ""
+    # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
+    poll_enabled: bool = False
+    poll_url: str = ""          # 空则用 base_url
+    poll_max_attempts: int = 60
+    poll_interval: int = 5
+    poll_timeout: int = 30
+    # 只用于日志和报错文案, 不参与请求 (env 通道是前缀名, 库通道是"供应商 · 模型")
+    label: str = ""
+
+
+def channel_from_env(prefix: str) -> ImageChannel:
+    """从环境变量前缀构建通道 —— 老路径, 库里还没配置时的兜底。
 
     参数:
-        prefix: 环境变量前缀，如 "PATTERN_PRIMARY" 或 "PATTERN_FALLBACK"
+        prefix: 环境变量前缀，如 "CANVAS_IMAGE_PRIMARY" 或 "CANVAS_IMAGE_FALLBACK"
 
     读取的环境变量:
         {prefix}_BASE_URL           服务商端点      (可回退 OPENAI_BASE_URL)
@@ -206,6 +245,8 @@ def build_image_client(prefix: str) -> ImageClient:
         {prefix}_WATERMARK          是否打水印       (未设=不传; 火山默认 true 需显式 false)
         {prefix}_INLINE_IMAGE       外部源 URL 下载转 base64 (默认 false; 火山拉不到远程源时设 true)
         {prefix}_TIMEOUT            请求超时秒数     (默认 300)
+        {prefix}_SIZE_MODE          "pixel" → 火山合法像素
+        {prefix}_POLL_*             异步轮询 (ENABLED / URL / MAX_ATTEMPTS / INTERVAL / TIMEOUT)
     """
     base_url = env(f"{prefix}_BASE_URL") or env("OPENAI_BASE_URL")
     api_key = env(f"{prefix}_API_KEY") or env("OPENAI_API_KEY")
@@ -224,7 +265,7 @@ def build_image_client(prefix: str) -> ImageClient:
     # tri-state: env 未设 → None (不下发, 用 provider 默认); 设了 → 显式 true/false.
     watermark = env_bool(f"{prefix}_WATERMARK") if env(f"{prefix}_WATERMARK") else None
 
-    return ImageClient(
+    return ImageChannel(
         base_url=base_url,
         api_key=api_key,
         model=model,
@@ -235,4 +276,30 @@ def build_image_client(prefix: str) -> ImageClient:
         watermark=watermark,
         inline_image=env_bool(f"{prefix}_INLINE_IMAGE", default=False),
         timeout=env_int(f"{prefix}_TIMEOUT", 300),
+        size_mode=env(f"{prefix}_SIZE_MODE"),
+        poll_enabled=env_bool(f"{prefix}_POLL_ENABLED"),
+        poll_url=env(f"{prefix}_POLL_URL"),
+        poll_max_attempts=env_int(f"{prefix}_POLL_MAX_ATTEMPTS", 60),
+        poll_interval=env_int(f"{prefix}_POLL_INTERVAL", 5),
+        poll_timeout=env_int(f"{prefix}_POLL_TIMEOUT", 30),
+        label=prefix,
+    )
+
+
+# maxsize 而非无上限 cache: 通道现在可由用户在前端编辑, 每次改动产生一个新键, 无上限
+# 会一直堆积。32 远超任何人会配的通道数, 又保证旧 client (及其 TCP 池) 最终被回收。
+@functools.lru_cache(maxsize=32)
+def build_image_client(channel: ImageChannel) -> ImageClient:
+    """通道 → HTTP 客户端。同通道同进程一个实例 (TCP 池跨 task 复用)。"""
+    return ImageClient(
+        base_url=channel.base_url,
+        api_key=channel.api_key,
+        model=channel.model,
+        image_field=channel.image_field,
+        image_as_single=channel.image_as_single,
+        response_format=channel.response_format,
+        quality=channel.quality,
+        watermark=channel.watermark,
+        inline_image=channel.inline_image,
+        timeout=channel.timeout,
     )
