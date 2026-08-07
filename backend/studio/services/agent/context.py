@@ -29,3 +29,7 @@ class CanvasAgentContext:
     # clamped tool_result text) so long summaries can't truncate the URLs. Dicts
     # (not bare strings) leave room for richer fields later. Empty = nothing to place.
     produced_assets: list[dict] = field(default_factory=list)
+    # 用户这一轮在工具栏选中的生图模型 (ImageModel.id)。generate_image 建 job 时写到行上,
+    # worker 之后据此解析出通道。空 = 没选 → 回退 env 通道。跟 attachment_urls 一样是
+    # 每轮从 chat POST body 透传进来的。
+    image_model_id: str = ""

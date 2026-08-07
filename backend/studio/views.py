@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
@@ -15,6 +16,8 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .models import (
+    ImageModel,
+    ImageProvider,
     AngleJob,
     AngleResult,
     ChatMessage,
@@ -25,6 +28,8 @@ from .models import (
 )
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
 from .serializers import (
+    ImageModelChoiceSerializer,
+    ImageProviderSerializer,
     AngleJobCreateSerializer,
     AngleJobSerializer,
     AngleResultSerializer,
@@ -53,6 +58,8 @@ from .services.agent.tools.common import enqueue_on_commit
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job
 from .services.image import create_image_edit_job, create_split_jobs
+from .services.curl_import import CurlParseError, parse_curl
+from .services.image_channels import channel_for_model
 from .services.scenes import get_scene_and_org
 from .services.video import create_video_job
 
@@ -255,6 +262,7 @@ class SceneChatView(APIView):
         content = serializer.validated_data["content"].strip()
         disabled_skills = serializer.validated_data["disabled_skills"]
         attachments = serializer.validated_data["attachments"]
+        image_model_id = serializer.validated_data["image_model_id"]
 
         # 预先持久化用户消息, 使其在流中途失败时仍然保留。
         user_msg = ChatMessage.objects.create(
@@ -278,6 +286,7 @@ class SceneChatView(APIView):
                     scene_id=scene_id_str,
                     disabled_skills=disabled_skills,
                     attachments=attachments,
+                    image_model_id=image_model_id,
                 ):
                     yield _sse_event(event)
                     if event.get("event") == StreamEvent.ASSISTANT_FINAL:
@@ -871,3 +880,97 @@ class MediaLibraryFolderItemsView(APIView):
                 "has_more": end < total,
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# 生图供应商配置
+# ---------------------------------------------------------------------------
+
+class ImageProviderViewSet(viewsets.ModelViewSet):
+    """用户在前端配的生图供应商 + 其下模型的增删改查。
+
+    没有鉴权门: 这是本地单机开源项目, 只有屏幕前的人能访问。见设计文档。
+    """
+
+    queryset = ImageProvider.objects.prefetch_related("models")
+    serializer_class = ImageProviderSerializer
+    permission_classes = [permissions.AllowAny]
+
+
+class ImageModelChoiceListView(ListAPIView):
+    """GET /image-models/ —— 工具栏模型选择器拉的列表。
+
+    只返回展示需要的字段, **不含 base_url / api_key**: 选择器不需要它们, 少一个
+    把凭据带进前端日志/截图的地方。
+    """
+
+    permission_classes = [permissions.AllowAny]
+    serializer_class = ImageModelChoiceSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return ImageModel.objects.filter(enabled=True).select_related("provider")
+
+
+class ImageProviderTestView(APIView):
+    """POST /image-providers/<id>/test/ —— 拿某个模型真发一次最小生成。
+
+    为什么必须有: 没有内置预设之后, 这是用户唯一的反馈回路。配错一个字段 (比如
+    image_field 填成了另一家的写法), 不测的话表现是三分钟后 celery worker 里一个看不懂
+    的失败。这里当场发一次、把**供应商返回的原始错误**回传, 用户对着文档就能改。
+
+    注意: 这会真的产生一次生成消耗。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, pk):
+        provider = get_object_or_404(ImageProvider, pk=pk)
+        model_id = request.data.get("image_model")
+        model = provider.models.filter(id=model_id).first() if model_id else provider.models.first()
+        if model is None:
+            raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
+
+        # 延迟 import: tools.image → studio.tasks 有循环依赖, 模块顶层拉会炸
+        from .services.agent.tools.image import _single_generation
+
+        started = time.monotonic()
+        try:
+            data = _single_generation(
+                channel_for_model(model),
+                prompt="a small red circle on a white background",
+                image_urls=[], size="1024x1024", resolution="1K",
+            )
+        except Exception as exc:  # noqa: BLE001 — 原样回传才是这个接口的价值
+            logger.info("image provider test failed: provider=%s model=%s", provider.label, model.label)
+            return Response(
+                {
+                    "ok": False,
+                    "elapsed": round(time.monotonic() - started, 1),
+                    # str(exc) 可能带供应商回的整段报文。这是本地工具, 用户就是要看它;
+                    # 但**不要**把 channel / 请求头拼进去 —— 那里面有 api_key。
+                    "error": f"{type(exc).__name__}: {exc}"[:2000],
+                },
+                status=status.HTTP_200_OK,  # 测试"失败"本身是成功的测试结果, 不是 HTTP 错误
+            )
+        return Response({
+            "ok": True,
+            "elapsed": round(time.monotonic() - started, 1),
+            "bytes": len(data),
+        })
+
+
+class ImageProviderCurlImportView(APIView):
+    """POST /image-providers/import-curl/ —— 把供应商文档里的示例 curl 转成预填字段。
+
+    替代内置预设: 那 16 个旋钮是我们适配器的词汇而不是供应商的词汇, 用户没法直接从文档
+    抄; 但示例 curl 的请求体形状里就含着答案 (图字段叫什么、是数组还是单值)。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        try:
+            return Response(parse_curl(request.data.get("curl", "")))
+        except CurlParseError as exc:
+            raise ValidationError({"curl": [str(exc)]}) from exc

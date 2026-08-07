@@ -6,6 +6,8 @@ from .models import (
     ChatMessage,
     ImageEditJob,
     ImageEditResult,
+    ImageModel,
+    ImageProvider,
     Scene,
     VideoJob,
 )
@@ -78,6 +80,12 @@ class ChatMessageCreateSerializer(serializers.Serializer):
         default=list,
         max_length=20,
     )
+    # 用户在工具栏选中的生图模型 (ImageModel.id)。跟 attachments 一样是每轮透传:
+    # 生成是异步的, 这个值最终会落到 ImageEditJob 行上。空/未知 id → 回退 env 通道,
+    # 所以这里不校验存在性 (校验会让"刚删掉一个配置"变成整轮聊天失败)。
+    image_model_id = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=64,
+    )
     # Per-message canvas image attachments (user clicked "Send to chat" on
     # selected canvas image(s)). Each item: {url, width, height}. URLs come
     # from canvas → known CDN host; we don't re-validate beyond shape +
@@ -119,6 +127,12 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
         default=ImageEditJob.Resolution.TWO_K,
     )
     n = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
+    # 工具栏模型选择器。可空 = 用 env 默认通道。用 PrimaryKeyRelatedField 是要它在
+    # 这里就报"配置不存在", 而不是等到 worker 里静默回退 —— 显式选择失败该显式说。
+    image_model = serializers.PrimaryKeyRelatedField(
+        queryset=ImageModel.objects.filter(enabled=True),
+        required=False, allow_null=True, default=None,
+    )
 
     def validate(self, data):
         # cutout 算法 (rembg / LLM 同) 都是单图操作, n>1 没有"多个抠图变体"语义.
@@ -288,3 +302,74 @@ class MediaLibraryFolderSerializer(serializers.Serializer):
     video_count = serializers.IntegerField(read_only=True)
     cover_url = serializers.CharField(read_only=True, allow_blank=True)
     latest_at = serializers.DateTimeField(read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# 生图供应商配置 (用户在前端配, 取代 env 里写死的 PRIMARY/FALLBACK)
+# ---------------------------------------------------------------------------
+
+class ImageModelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ImageModel
+        fields = ("id", "label", "model", "overrides", "enabled", "sort_order")
+
+
+class ImageProviderSerializer(serializers.ModelSerializer):
+    """供应商 + 它下面的模型, 一次读写。
+
+    模型嵌在里面而不是单独一套 CRUD: 前端配置页就是"一个供应商一张卡片, 里面几行模型",
+    一次 PUT 带全量 models 数组比让前端管两套增删改简单得多。
+
+    api_key 明文返回 —— 本地单机项目, 配置页要能回显用户填过什么、直接改。见设计文档
+    「key 的处理」。
+    """
+
+    models = ImageModelSerializer(many=True, required=False)
+
+    class Meta:
+        model = ImageProvider
+        fields = ("id", "label", "base_url", "api_key", "defaults", "models",
+                  "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def _sync_models(self, provider, models_data):
+        """全量替换: 请求里没出现的模型行删掉, 带 id 的更新, 不带 id 的新建。
+
+        保留 id 而不是"删光重建"是为了 ImageEditJob.image_model 的外键 —— 重建会把历史
+        任务的关联 SET_NULL 抹掉。
+        """
+        keep_ids = []
+        for order, item in enumerate(models_data):
+            model_id = item.pop("id", None)
+            item.setdefault("sort_order", order)
+            if model_id and ImageModel.objects.filter(id=model_id, provider=provider).exists():
+                ImageModel.objects.filter(id=model_id).update(**item)
+                keep_ids.append(model_id)
+            else:
+                keep_ids.append(ImageModel.objects.create(provider=provider, **item).id)
+        provider.models.exclude(id__in=keep_ids).delete()
+
+    def create(self, validated_data):
+        models_data = validated_data.pop("models", [])
+        provider = ImageProvider.objects.create(**validated_data)
+        self._sync_models(provider, models_data)
+        return provider
+
+    def update(self, instance, validated_data):
+        models_data = validated_data.pop("models", None)
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+        if models_data is not None:
+            self._sync_models(instance, models_data)
+        return instance
+
+
+class ImageModelChoiceSerializer(serializers.ModelSerializer):
+    """工具栏模型选择器拉的列表 —— 只有展示需要的字段, 不含 key/base_url。"""
+
+    provider_label = serializers.CharField(source="provider.label", read_only=True)
+
+    class Meta:
+        model = ImageModel
+        fields = ("id", "label", "provider_label", "sort_order")

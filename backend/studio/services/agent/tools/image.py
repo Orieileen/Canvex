@@ -38,6 +38,7 @@ from langchain.tools import ToolRuntime, tool
 from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
+from studio.services.image_channels import channel_for_model_id
 from studio.services.image_client import ImageChannel, build_image_client, channel_from_env
 from studio.services.listings_utils import handle_poll_if_needed
 
@@ -330,6 +331,8 @@ def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
         size=job.size or "1024x1024",
         n=job.num_images,
         resolution=job.resolution or "",
+        # 用户选的通道(工具栏选择器 / agent 参数)。None = 没选 → 回退 env primary→fallback。
+        channel=channel_for_model_id(job.image_model_id),
     )
     return _persist_results(job, image_bytes_list)
 
@@ -457,6 +460,7 @@ def run_cutout_llm_step(job: ImageEditJob) -> None:
         size=job.size or "1024x1024",
         n=1,  # cutout 永远 1 张, num_images 上层 serializer 已 enforce
         resolution=job.resolution or "",
+        channel=channel_for_model_id(job.image_model_id),
     )
     if not image_bytes_list:
         raise RuntimeError("cutout LLM stage returned no images")
@@ -484,6 +488,7 @@ def enqueue_image_generation(
     n: int,
     scene_id: str,
     image_urls: list[str] | None = None,
+    image_model_id: str | None = None,
 ) -> str:
     """Pure-args helper: create ImageEditJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -515,6 +520,8 @@ def enqueue_image_generation(
             source_image=None,
             source_images=clean_urls,  # absolute URLs from chat attachments
             status=ImageEditJob.Status.QUEUED,
+            # 这条路是异步的 —— worker 之后才捞这行, 所以选择必须落在行上。
+            image_model_id=image_model_id or None,
         )
         reserve_error = reserve_or_friendly_message(job, action_label="image generation")
         if reserve_error:
@@ -680,6 +687,8 @@ def generate_image(
     return enqueue_image_generation(
         prompt=prompt, size=size, n=n, image_urls=image_urls,
         scene_id=ctx.scene_id,
+        # 用户在工具栏选的模型, 每轮从前端透传进来 (和 attachment_urls 同一条路)。
+        image_model_id=ctx.image_model_id,
     )
 
 

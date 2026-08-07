@@ -388,6 +388,7 @@ def _prepare_agent_call(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
 ) -> tuple[Any, dict, CanvasAgentContext, dict]:
     """Shared `invoke_` / `stream_` setup: cached agent, state dict, per-call
     context, langgraph config. Both wrappers diverge only in how they drive
@@ -410,7 +411,9 @@ def _prepare_agent_call(
     # unreliable about threading explicit kwargs through despite the
     # SystemMessage instructing it to.
     attachment_urls = [a["url"] for a in (attachments or []) if a.get("url")]
-    ctx = CanvasAgentContext(scene_id=scene_id, attachment_urls=attachment_urls)
+    ctx = CanvasAgentContext(
+        scene_id=scene_id, attachment_urls=attachment_urls, image_model_id=image_model_id,
+    )
     config = {"recursion_limit": AGENT_RECURSION_LIMIT}
     return agent, state, ctx, config
 
@@ -421,6 +424,7 @@ def invoke_canvas_agent(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
 ) -> str:
     """Sync invoke. Returns the final assistant message text.
 
@@ -430,6 +434,7 @@ def invoke_canvas_agent(
     agent, state, ctx, config = _prepare_agent_call(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
+        image_model_id=image_model_id,
     )
     try:
         result = agent.invoke(state, context=ctx, config=config)
@@ -516,6 +521,7 @@ def stream_canvas_agent(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
 ) -> Iterator[dict]:
     """Stream per-node updates from the agent as structured event dicts.
 
@@ -552,6 +558,7 @@ def stream_canvas_agent(
     agent, state, ctx, config = _prepare_agent_call(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
+        image_model_id=image_model_id,
     )
 
     # The graph runs on a background "pump" thread that puts frames on a thread-safe
