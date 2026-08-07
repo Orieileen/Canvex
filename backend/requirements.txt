@@ -1,26 +1,41 @@
-# Django is capped: 6.1 dropped `django.utils.cache.cc_delim_re`, which DRF 3.17.2
-# still imports, so an unpinned rebuild installs 6.1 and the app dies on import
-# (ImportError at rest_framework/views.py). Raise this cap only together with a DRF
-# release that has dropped that import.
-django<6.1
-djangorestframework
-django-cors-headers
-celery
-redis
+# Direct dependencies, exact-pinned. This file is the HUMAN list — what Canvex
+# actually depends on and why. It is NOT what the image installs.
+#
+#   requirements.txt       ← you edit this (direct deps + rationale)
+#   requirements.lock.txt  ← the image installs this (full tree, incl. transitive)
+#
+# After changing anything here, regenerate the lock in a throwaway container that
+# resolves from THIS file, then rebuild so the new lock is what ships:
+#
+#   docker run --rm -v "$PWD/backend:/w" -w /w python:3.13 \
+#     sh -c 'pip install -q -r requirements.txt && pip freeze' > backend/requirements.lock.txt
+#   docker compose build backend
+#
+# Why pinned at all: these were unpinned until 2026-08-07, so every rebuild
+# re-resolved. One did, and picked up Django 6.1 — which dropped
+# `django.utils.cache.cc_delim_re` that DRF still imports — and the container died
+# at import. The running stack had just never reinstalled (cached pip layer), so
+# the breakage had been latent for weeks.
+
+django==6.0.8                       # <6.1 until DRF drops its cc_delim_re import
+djangorestframework==3.17.2
+django-cors-headers==4.9.0
+celery==5.6.3
+redis==8.1.0
 # worker_canvas 用 celery --pool=gevent(IO 密集:图/视频/agent 长任务高并发轮询)
-gevent
-openai
-deepagents
-langchain
-langchain-openai
-langgraph
+gevent==26.7.0
+openai==2.53.0
+deepagents==0.7.5                   # 内置工具集随版本变化(execute/write_todos/delete)
+langchain==1.3.14
+langchain-openai==1.4.1
+langgraph==1.2.10
 # canvas agent /memories/ 可选 postgres 后端 (CANVAS_AGENT_STORE_BACKEND=postgres);
 # builder.py 懒加载 langgraph.store.postgres, 默认 memory 时不 import。
-langgraph-checkpoint-postgres
-psycopg-pool
-requests
-Pillow
-rembg[cpu]
-python-dotenv
-gunicorn
-psycopg[binary]>=3.2
+langgraph-checkpoint-postgres==3.1.1
+psycopg-pool==3.3.1
+requests==2.34.2
+Pillow==12.3.0
+rembg[cpu]==2.0.77
+python-dotenv==1.2.2
+gunicorn==26.0.0
+psycopg[binary]==3.3.4
