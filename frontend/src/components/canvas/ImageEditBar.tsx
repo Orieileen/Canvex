@@ -570,7 +570,8 @@ function PreviewImage({ url, className }: { url: string; className?: string }) {
 
 // ─── Image panel ────────────────────────────────────────────────────────────
 
-/** 参数行里的通道选择器。编辑栏的图标按钮统一 `m-1` 才凑够 h-10 行高。 */
+/** 参数行里的通道选择器 —— 文字形态, 跟同一行的 Auto / 2K / ×1 一致。
+ *  当前选的模型名直接显示在按钮上, 不用点开才知道。 */
 function PanelModelSelector({
   choice,
   disabled,
@@ -587,7 +588,7 @@ function PanelModelSelector({
       onChange={choice.onChange}
       onOpenSettings={choice.onOpenSettings}
       buttonDisabled={disabled}
-      className="m-1"
+      variant="text"
       title={title}
     />
   );

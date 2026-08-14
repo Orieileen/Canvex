@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Check, ImageIcon, Settings2 } from "lucide-react";
+import { Check, ChevronDown, ImageIcon, Settings2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -38,8 +38,13 @@ interface ImageModelSelectorProps {
   /** 打开供应商配置面板。 */
   onOpenSettings: () => void;
   buttonDisabled?: boolean;
-  /** 触发按钮的额外 class —— 两个宿主工具栏的间距规则不同(聊天栏无外边距,
-   *  编辑栏的图标按钮统一 m-1 才凑够 h-10 行高)。 */
+  /** 触发按钮长什么样, 取决于它站在哪一行:
+   *  - `icon` (默认) 聊天栏 —— 那一行全是图标按钮(技能、发送), 文字反而突兀。
+   *  - `text` 编辑栏 —— 那一行是 Auto / 2K / ×1 三个文字下拉。做成图标的话它既
+   *    跟邻居不一致, 又跟右边的 ✂ / 🪄 两个动作按钮混在一起, 用户根本认不出这是
+   *    "当前选的是什么"。文字版还顺带把选中的模型名写在脸上, 不用点开才知道。 */
+  variant?: "icon" | "text";
+  /** 触发按钮的额外 class —— 宿主工具栏的间距规则不同。 */
   className?: string;
   /** popover 抬头。Angle 面板要说"视角模型"—— 那里列的根本不是生图通道, 顶着
    *  "Image model" 会让人以为选错了地方。省略即生图。 */
@@ -52,33 +57,60 @@ export function ImageModelSelector({
   onChange,
   onOpenSettings,
   buttonDisabled,
+  variant = "icon",
   className,
   title,
 }: ImageModelSelectorProps) {
   const { t } = useTranslation("canvasUi");
   const selected = models.find((m) => m.id === value);
+  // 两种形态共用: 悬停提示要说全 (供应商 · 模型), 因为文字版会截断、图标版根本不显示。
+  const hoverTitle = selected
+    ? `${selected.provider_label} · ${selected.label}`
+    : t("imageModels.pick");
 
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          disabled={buttonDisabled}
-          aria-label={t("imageModels.pick")}
-          title={selected ? `${selected.provider_label} · ${selected.label}` : t("imageModels.pick")}
-          className={cn(
-            "relative size-8 rounded-lg text-muted-foreground hover:text-foreground",
-            className,
-          )}
-        >
-          <ImageIcon className="size-4" strokeWidth={2} />
-          {/* 选了非默认模型才点亮 —— 没配过的人看不出这里有东西 */}
-          {selected && (
-            <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary" />
-          )}
-        </Button>
+        {variant === "text" ? (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={buttonDisabled}
+            aria-label={t("imageModels.pick")}
+            title={hoverTitle}
+            // 刻意抄 ImageEditBar 的 selectClass —— 它跟 Auto / 2K / ×1 是同一行同一
+            // 类东西, 长得不一样就会被当成动作按钮。
+            className={cn(
+              "h-10 gap-1 rounded-none px-2 text-xs font-normal text-muted-foreground",
+              "hover:bg-transparent hover:text-foreground",
+              className,
+            )}
+          >
+            <span className="max-w-[120px] truncate">
+              {selected ? selected.label : t("imageModels.defaultShort")}
+            </span>
+            <ChevronDown className="size-3 shrink-0 opacity-60" strokeWidth={2} />
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            disabled={buttonDisabled}
+            aria-label={t("imageModels.pick")}
+            title={hoverTitle}
+            className={cn(
+              "relative size-8 rounded-lg text-muted-foreground hover:text-foreground",
+              className,
+            )}
+          >
+            <ImageIcon className="size-4" strokeWidth={2} />
+            {/* 选了非默认模型才点亮 —— 没配过的人看不出这里有东西 */}
+            {selected && (
+              <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary" />
+            )}
+          </Button>
+        )}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-0">
         <div className="border-b border-border px-3 py-2">
