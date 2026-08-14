@@ -184,3 +184,61 @@ export type CanvasChatStreamEvent =
   | { event: "canvas_asset"; url: string }
   | { event: "error"; detail: string }
   | { event: "done" };
+
+
+// ─── 生图供应商配置 ─────────────────────────────────────────────────────────
+
+/** 供应商下的一个可选模型。`overrides` 只存与 provider defaults 不同的项。 */
+export interface CanvasImageModel {
+  id: string;
+  label: string;
+  /** 供应商要的模型字符串原文(各家写法不同,不做别名映射)。 */
+  model: string;
+  overrides: Record<string, unknown>;
+  enabled: boolean;
+  sort_order: number;
+}
+
+/** 一个生图供应商端点 —— 一把 key + 一个 base_url + 一套请求参数默认值。
+ *  api_key 明文返回:本地单机项目,配置页要能回显用户填过什么、直接改。 */
+export interface CanvasImageProvider {
+  id: string;
+  label: string;
+  base_url: string;
+  api_key: string;
+  defaults: Record<string, unknown>;
+  models: CanvasImageModel[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** 工具栏模型选择器拉的列表项 —— 不含 base_url / api_key。 */
+export interface CanvasImageModelChoice {
+  id: string;
+  label: string;
+  provider_label: string;
+  sort_order: number;
+}
+
+/** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——
+ *  「测试成功了,失败的是被测对象」。`error` 是供应商返回的原始错误。 */
+export interface CanvasImageProviderTestResult {
+  ok: boolean;
+  elapsed: number;
+  bytes?: number;
+  error?: string;
+}
+
+/** POST /image-providers/import-curl/ 从示例 curl 推断出的预填字段。
+ *  只包含推断出来的项;`_unrecognized` 是示例里出现但我们不认识的请求体键。 */
+export interface CanvasCurlImportResult {
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  image_field?: string;
+  image_as_single?: boolean;
+  response_format?: string;
+  quality?: string;
+  watermark?: boolean;
+  _unrecognized?: string[];
+}

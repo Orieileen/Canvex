@@ -15,6 +15,7 @@ import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
+import { ImageProviderSettings } from "@/components/canvas/ImageProviderSettings";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
 import { canvasService, waitForCanvasJob } from "@/services/canvas.service";
@@ -50,6 +51,7 @@ import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
+  CanvasImageModelChoice,
   CanvasMediaImage,
   CanvasMediaVideo,
   CanvasScene,
@@ -68,6 +70,9 @@ import type {
 
 import { ChatOverlay, type ChatOverlayStatus } from "@/components/canvas/ChatOverlay";
 import { FloatingAdjustPanel, ImageEditBar } from "@/components/canvas/ImageEditBar";
+
+// 工具栏选中的生图模型存这里 —— 粘性选择, 跨刷新保留。
+const IMAGE_MODEL_KEY = "canvex:image-model";
 
 const SAVE_DEBOUNCE_MS = 1500;
 const STATUS_FADE_MS = 2500;
@@ -333,6 +338,44 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the textarea; cleared after every successful send. Per-message ephemeral
   // (matches disabledSkills lifetime).
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  // 工具栏选中的生图模型 (ImageModel.id)。**粘的** —— 画布是连续多轮的, 每次生成都重选
+  // 很烦; 这跟旁边 per-message 的 SkillSelector 刻意相反。空 = 用后端默认通道。
+  const [imageModels, setImageModels] = useState<CanvasImageModelChoice[]>([]);
+  const [selectedImageModelId, setSelectedImageModelId] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(IMAGE_MODEL_KEY) ?? "";
+    } catch {
+      return ""; // 隐私模式下 localStorage 会抛
+    }
+  });
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  // 提交那一刻读最新值, 免得把它塞进每个 callback 的依赖数组
+  const imageModelIdRef = useRef(selectedImageModelId);
+  useEffect(() => {
+    imageModelIdRef.current = selectedImageModelId;
+    try {
+      window.localStorage.setItem(IMAGE_MODEL_KEY, selectedImageModelId);
+    } catch {
+      // 持久化失败不影响本次会话
+    }
+  }, [selectedImageModelId]);
+  const reloadImageModels = useCallback(() => {
+    canvasService
+      .listImageModels()
+      .then(({ data }) => setImageModels(data))
+      .catch(() => setImageModels([])); // 没配过 → 选择器直接引导去配置页
+  }, []);
+  useEffect(() => reloadImageModels(), [reloadImageModels]);
+  // 配置被删掉后, 选中的那个可能已不存在 —— 退回默认, 否则会一直发一个死 id
+  useEffect(() => {
+    if (
+      selectedImageModelId &&
+      imageModels.length > 0 &&
+      !imageModels.some((m) => m.id === selectedImageModelId)
+    ) {
+      setSelectedImageModelId("");
+    }
+  }, [imageModels, selectedImageModelId]);
   const [showMinimap, setShowMinimap] = useState(false);
   // Bump 每次 Excalidraw 写入新 api —— 给 Minimap 一个 effect dep, 比靠 ref
   // 时序猜测可靠 (scene 切换 + StrictMode + HMR 多次重 mount, ref 反复换).
@@ -431,6 +474,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    imageModelIdRef,
   });
   const videoEdit = useVideoEdit({
     sceneId: activeSceneId,
@@ -909,7 +953,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for await (const event of canvasService.postChatStream(
           activeSceneId,
           content,
-          { signal: abort.signal, disabledSkills, attachments },
+          {
+            signal: abort.signal,
+            disabledSkills,
+            attachments,
+            // agent 调 generate_image 时用哪个通道, 跟工具栏那条路同一个选择
+            imageModelId: imageModelIdRef.current,
+          },
         )) {
           switch (event.event) {
             case "user_created":
@@ -1141,6 +1191,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
+        imageModels={imageModels}
+        selectedImageModelId={selectedImageModelId}
+        onSelectImageModel={setSelectedImageModelId}
+        onOpenImageSettings={() => setImageSettingsOpen(true)}
         onStop={handleStopStream}
         isStreaming={isStreaming}
         status={chatStatus}
@@ -1351,6 +1405,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           onClose={() => setAdjustOpen(false)}
         />
       )}
+      <ImageProviderSettings
+        open={imageSettingsOpen}
+        onOpenChange={setImageSettingsOpen}
+        onChanged={reloadImageModels}
+      />
       <MediaLibrary
         open={mediaLibraryOpen}
         onOpenChange={setMediaLibraryOpen}

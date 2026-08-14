@@ -5,7 +5,11 @@ import type {
   CanvasAngleJob,
   CanvasChatMessage,
   CanvasChatStreamEvent,
+  CanvasCurlImportResult,
   CanvasImageEditJob,
+  CanvasImageModelChoice,
+  CanvasImageProvider,
+  CanvasImageProviderTestResult,
   CanvasJobStatus,
   CanvasMediaFolderList,
   CanvasMediaFolderPage,
@@ -27,6 +31,8 @@ const IMAGE_EDIT_JOBS = "/api/v1/canvas/image-edit-jobs/";
 const VIDEO_JOBS = "/api/v1/canvas/video-jobs/";
 const ANGLE_JOBS = "/api/v1/canvas/angle-jobs/";
 const SKILLS = "/api/v1/canvas/skills/";
+const IMAGE_PROVIDERS = "/api/v1/canvas/image-providers/";
+const IMAGE_MODELS = "/api/v1/canvas/image-models/";
 const MEDIA_LIBRARY_FOLDERS = "/api/v1/canvas/media-library/folders/";
 
 const TERMINAL_JOB_STATUSES: readonly CanvasJobStatus[] = ["SUCCEEDED", "FAILED"];
@@ -153,6 +159,8 @@ export async function* postChatStream(
     signal?: AbortSignal;
     disabledSkills?: string[];
     attachments?: ChatAttachment[];
+    /** 工具栏选中的生图模型 (ImageModel.id)。空 = 用默认通道。 */
+    imageModelId?: string;
   } = {},
 ): AsyncGenerator<CanvasChatStreamEvent, void, void> {
   // Empty / undefined optional fields → omit so backend serializer's
@@ -164,6 +172,9 @@ export async function* postChatStream(
   }
   if (options.attachments && options.attachments.length > 0) {
     body.attachments = options.attachments;
+  }
+  if (options.imageModelId) {
+    body.image_model_id = options.imageModelId;
   }
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/chat/`,
@@ -258,6 +269,8 @@ export interface ImageEditCreatePayload {
   size?: string;
   resolution?: "1K" | "2K" | "4K";
   n?: 1 | 2 | 4;
+  /** 工具栏选中的生图模型 (ImageModel.id)。空 = 用后端默认通道。 */
+  imageModelId?: string;
 }
 
 export interface VideoCreatePayload {
@@ -341,12 +354,33 @@ export const canvasService = {
     if (payload.size) form.append("size", payload.size);
     if (payload.resolution) form.append("resolution", payload.resolution);
     if (payload.n) form.append("n", String(payload.n));
+    // 这条路是异步的 —— 选择会落到 ImageEditJob 行上, worker 之后据此解析通道。
+    if (payload.imageModelId) form.append("image_model", payload.imageModelId);
     // 不手填 Content-Type —— axios 会按 FormData 自动加 boundary
     return request.post<{ job_id: string; status: string }>(
       `${SCENES}${sceneId}/image-edit/`,
       form,
     );
   },
+  // ── 生图供应商配置 ────────────────────────────────────────────────────────
+  listImageProviders: () => request.get<CanvasImageProvider[]>(IMAGE_PROVIDERS),
+  createImageProvider: (body: Partial<CanvasImageProvider>) =>
+    request.post<CanvasImageProvider>(IMAGE_PROVIDERS, body),
+  updateImageProvider: (id: string, body: Partial<CanvasImageProvider>) =>
+    request.put<CanvasImageProvider>(`${IMAGE_PROVIDERS}${id}/`, body),
+  deleteImageProvider: (id: string) => request.delete(`${IMAGE_PROVIDERS}${id}/`),
+  /** 真发一次最小生成。ok=false 也是 200 —— 测试本身成功了, 失败的是被测对象。
+   *  会产生一次真实的生成消耗。 */
+  testImageProvider: (id: string, imageModelId?: string) =>
+    request.post<CanvasImageProviderTestResult>(`${IMAGE_PROVIDERS}${id}/test/`, {
+      image_model: imageModelId,
+    }),
+  /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
+  importImageProviderCurl: (curl: string) =>
+    request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),
+  /** 工具栏选择器的列表 —— 不含凭据。 */
+  listImageModels: () => request.get<CanvasImageModelChoice[]>(IMAGE_MODELS),
+
   listImageEditJobs: (sceneId: string, limit = 20) =>
     request.get<CanvasImageEditJob[]>(`${SCENES}${sceneId}/image-edit-jobs/`, {
       params: { limit },

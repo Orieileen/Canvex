@@ -16,6 +16,7 @@ import { errorPage } from './errorPage'
 import { generating } from './generating'
 import { help } from './help'
 import { image } from './image'
+import { imageModels, imageProviders } from './imageProviders'
 import { measure } from './measure'
 import { media } from './media'
 import { minimap } from './minimap'
@@ -35,6 +36,8 @@ const areas = {
   generating,
   help,
   image,
+  imageModels,
+  imageProviders,
   measure,
   media,
   minimap,
