@@ -1,6 +1,8 @@
 import json
 import logging
 import time
+import uuid
+from dataclasses import replace
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
@@ -54,6 +56,7 @@ from .services.agent.builder import (
     stream_canvas_agent,
 )
 from .services.agent.skills import list_skills
+from .services.agent.tools.image import _single_generation
 from .services.agent.tools.common import enqueue_on_commit
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job
@@ -924,20 +927,62 @@ class ImageProviderTestView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    # 测试必须在**一次同步 HTTP 请求**里返回。沿用通道自己的预算 (timeout 默认 300s,
+    # 外加 poll_max_attempts×poll_interval) 的话最长能跑十分钟, 浏览器和反代早就断了 ——
+    # 用户拿到的是一句通用网络错误, 而这个接口存在的全部价值就是把供应商的原始报文放到
+    # 他眼前。而且每次点击都占住一个同步 worker 那么久。
+    #
+    # 逐个钳制每个旋钮是不够的: 轮询的真实耗时是 POST + N×(单次超时 + 间隔), 而 interval
+    # 用户可以在界面上自己填。所以这里从**总墙钟预算**倒推出允许几轮, 让整体有个硬上限。
+    TEST_BUDGET_SECONDS = 60
+    TEST_OP_TIMEOUT = 15
+    TEST_POLL_INTERVAL = 3
+
+    @classmethod
+    def _budgeted(cls, channel):
+        """把通道压到一次同步请求撑得住的预算内。
+
+        轮询轮数由剩余墙钟倒推, 而不是写死一个次数 —— interval 和单次超时都是用户可编辑
+        的, 写死次数换个配置就又跑到几分钟。
+        """
+        op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
+        poll_timeout = min(channel.poll_timeout, cls.TEST_OP_TIMEOUT)
+        interval = min(channel.poll_interval, cls.TEST_POLL_INTERVAL)
+        per_attempt = max(1, poll_timeout + interval)
+        return replace(
+            channel,
+            timeout=op_timeout,
+            poll_timeout=poll_timeout,
+            poll_interval=interval,
+            poll_max_attempts=max(
+                1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
+            ),
+        )
+
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)
         model_id = request.data.get("image_model")
-        model = provider.models.filter(id=model_id).first() if model_id else provider.models.first()
+        if model_id:
+            try:
+                model_pk = uuid.UUID(str(model_id))
+            except (AttributeError, TypeError, ValueError) as exc:
+                # 前端给还没保存的模型行发的是本地临时 id ("new-1723…"), 直接丢给
+                # UUIDField 查询会抛 django 的 ValidationError → 500。说人话地拦下来。
+                raise ValidationError(
+                    {"image_model": ["这个模型还没有保存, 先保存供应商再测试"]}
+                ) from exc
+            model = provider.models.filter(id=model_pk).first()
+        else:
+            model = provider.models.first()
         if model is None:
             raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
 
-        # 延迟 import: tools.image → studio.tasks 有循环依赖, 模块顶层拉会炸
-        from .services.agent.tools.image import _single_generation
+        channel = self._budgeted(channel_for_model(model))
 
         started = time.monotonic()
         try:
             data = _single_generation(
-                channel_for_model(model),
+                channel,
                 prompt="a small red circle on a white background",
                 image_urls=[], size="1024x1024", resolution="1K",
             )

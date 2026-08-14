@@ -33,7 +33,6 @@ interface ImageModelSelectorProps {
   /** 打开供应商配置面板。 */
   onOpenSettings: () => void;
   buttonDisabled?: boolean;
-  className?: string;
 }
 
 export function ImageModelSelector({
@@ -42,7 +41,6 @@ export function ImageModelSelector({
   onChange,
   onOpenSettings,
   buttonDisabled,
-  className,
 }: ImageModelSelectorProps) {
   const { t } = useTranslation("canvasUi");
   const selected = models.find((m) => m.id === value);
@@ -57,7 +55,7 @@ export function ImageModelSelector({
           disabled={buttonDisabled}
           aria-label={t("imageModels.pick")}
           title={selected ? `${selected.provider_label} · ${selected.label}` : t("imageModels.pick")}
-          className={cn("relative size-8 rounded-lg text-muted-foreground hover:text-foreground", className)}
+          className="relative size-8 rounded-lg text-muted-foreground hover:text-foreground"
         >
           <ImageIcon className="size-4" strokeWidth={2} />
           {/* 选了非默认模型才点亮 —— 没配过的人看不出这里有东西 */}

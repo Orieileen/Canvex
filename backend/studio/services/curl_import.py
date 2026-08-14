@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 _IMAGE_KEYS = ("image_urls", "image_url", "images", "image", "reference_images", "init_images")
 # 我们自己会填的字段, 从 curl 推断时要忽略 (用户示例里常有占位值)
 _IGNORED_BODY_KEYS = {"prompt", "n", "size", "seed", "user"}
+# 能从请求体直接抄过来的标量字段 → 期望类型。一张表同时驱动"抄出来"和"哪些算认识的",
+# 分成两处写的话, 加第五个字段时漏掉后半边就会被当成"无法识别"报给用户。
+_SCALAR_KEYS = {"model": str, "response_format": str, "quality": str, "watermark": bool}
 
 # ImageClient 会自己拼 `/images/generations`, 所以 base_url 要把这段路径剥掉。
 # 只剥这一段, 不要连版本前缀一起剥 —— `/v1/images/generations` 的 base_url 是
@@ -131,14 +134,9 @@ def _from_body(body_raw: str) -> dict:
         return {}
 
     out: dict = {}
-    if isinstance(body.get("model"), str):
-        out["model"] = body["model"]
-    if isinstance(body.get("response_format"), str):
-        out["response_format"] = body["response_format"]
-    if isinstance(body.get("quality"), str):
-        out["quality"] = body["quality"]
-    if isinstance(body.get("watermark"), bool):
-        out["watermark"] = body["watermark"]
+    for key, expected in _SCALAR_KEYS.items():
+        if isinstance(body.get(key), expected):
+            out[key] = body[key]
 
     for key in _IMAGE_KEYS:
         if key in body:
@@ -149,12 +147,8 @@ def _from_body(body_raw: str) -> dict:
             break
 
     # 示例里出现但我们不认识的键 —— 报给用户看, 别假装没发生
-    unknown = [
-        k for k in body
-        if k not in _IGNORED_BODY_KEYS
-        and k not in _IMAGE_KEYS
-        and k not in ("model", "response_format", "quality", "watermark")
-    ]
+    known = _IGNORED_BODY_KEYS | set(_SCALAR_KEYS) | set(_IMAGE_KEYS)
+    unknown = [k for k in body if k not in known]
     if unknown:
         out["_unrecognized"] = unknown
     return out

@@ -308,10 +308,45 @@ class MediaLibraryFolderSerializer(serializers.Serializer):
 # 生图供应商配置 (用户在前端配, 取代 env 里写死的 PRIMARY/FALLBACK)
 # ---------------------------------------------------------------------------
 
+# defaults / overrides 里允许出现的值类型。ImageChannel 是 frozen dataclass 且被当作
+# build_image_client 的 lru_cache 键, 一个 list/dict 值会让它 unhashable —— 炸点在几
+# 分钟后的 worker 里 (TypeError: unhashable type), 而不是用户按下保存的这一刻。
+_TUNABLE_VALUE_TYPES = (str, bool, int, float)
+
+
+def _validate_tunables(value):
+    """校验 defaults / overrides 这类自由 JSON: 必须是对象, 值必须是标量。
+
+    键名不校验 —— channel_for_model 会把不认识的键丢掉并记 warning, 一个拼错的键不该
+    让保存失败。但值的**类型**必须拦在入口, 理由见 _TUNABLE_VALUE_TYPES。
+    """
+    if not isinstance(value, dict):
+        raise serializers.ValidationError("必须是一个 JSON 对象")
+    bad = sorted(
+        k for k, v in value.items()
+        if v is not None and not isinstance(v, _TUNABLE_VALUE_TYPES)
+    )
+    if bad:
+        raise serializers.ValidationError(
+            f"这些项的值必须是字符串 / 数字 / 布尔: {', '.join(bad)}"
+        )
+    return value
+
+
 class ImageModelSerializer(serializers.ModelSerializer):
+    # 显式声明成可写。ModelSerializer 默认把主键做成 read_only (id 是
+    # UUIDField(primary_key=True, editable=False)), 那样嵌套写时 id 根本进不到
+    # validated_data, _sync_models 就永远走"新建"分支 —— 每次保存都把模型行删掉重建,
+    # 换一批新 id: 历史 ImageEditJob.image_model 被 SET_NULL 抹掉, 前端存在
+    # localStorage 里的粘性选择也变成一个死 id。
+    id = serializers.UUIDField(required=False)
+
     class Meta:
         model = ImageModel
         fields = ("id", "label", "model", "overrides", "enabled", "sort_order")
+
+    def validate_overrides(self, value):
+        return _validate_tunables(value)
 
 
 class ImageProviderSerializer(serializers.ModelSerializer):
@@ -332,17 +367,22 @@ class ImageProviderSerializer(serializers.ModelSerializer):
                   "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
+    def validate_defaults(self, value):
+        return _validate_tunables(value)
+
     def _sync_models(self, provider, models_data):
         """全量替换: 请求里没出现的模型行删掉, 带 id 的更新, 不带 id 的新建。
 
         保留 id 而不是"删光重建"是为了 ImageEditJob.image_model 的外键 —— 重建会把历史
         任务的关联 SET_NULL 抹掉。
         """
+        # 成员判定一次查完, 别在循环里每行一次 exists()
+        existing = set(provider.models.values_list("id", flat=True))
         keep_ids = []
         for order, item in enumerate(models_data):
             model_id = item.pop("id", None)
             item.setdefault("sort_order", order)
-            if model_id and ImageModel.objects.filter(id=model_id, provider=provider).exists():
+            if model_id in existing:
                 ImageModel.objects.filter(id=model_id).update(**item)
                 keep_ids.append(model_id)
             else:

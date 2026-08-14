@@ -17,7 +17,7 @@
 import base64
 import functools
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 import requests
@@ -228,8 +228,13 @@ class ImageChannel:
     label: str = ""
 
 
-def channel_from_env(prefix: str) -> ImageChannel:
-    """从环境变量前缀构建通道 —— 老路径, 库里还没配置时的兜底。
+def channel_from_env(prefix: str) -> ImageChannel | None:
+    """从环境变量前缀构建通道 —— 老路径; **这个前缀没配全就返回 None**。
+
+    返回 None 而不是抛: 这次改造之后"env 里没有生图配置"是全新部署的**正常状态**, 不是
+    错误。抛一个点名 CANVAS_IMAGE_PRIMARY_* 的异常, 对一个从头到尾只在界面上配过东西的
+    用户毫无意义。能不能区分"没配"和"配了一半"只有读 env 的这个函数知道, 所以判定放这里,
+    调用方只需要决定"这个来源没有, 换下一个"。
 
     参数:
         prefix: 环境变量前缀，如 "CANVAS_IMAGE_PRIMARY" 或 "CANVAS_IMAGE_FALLBACK"
@@ -253,14 +258,17 @@ def channel_from_env(prefix: str) -> ImageChannel:
     model = env(f"{prefix}_MODEL")
 
     if not base_url or not api_key or not model:
-        missing = []
-        if not base_url:
-            missing.append(f"{prefix}_BASE_URL")
-        if not api_key:
-            missing.append(f"{prefix}_API_KEY")
-        if not model:
-            missing.append(f"{prefix}_MODEL")
-        raise RuntimeError(f"缺少环境变量: {', '.join(missing)}")
+        missing = [
+            name for name, value in (
+                (f"{prefix}_BASE_URL", base_url),
+                (f"{prefix}_API_KEY", api_key),
+                (f"{prefix}_MODEL", model),
+            ) if not value
+        ]
+        # 配了一半值得说一声 (多半是漏了一个变量); 一个都没配是新部署的常态, 不吵。
+        if len(missing) < 3:
+            logger.warning("env 通道 %s 配置不全, 已跳过: 缺 %s", prefix, ", ".join(missing))
+        return None
 
     # tri-state: env 未设 → None (不下发, 用 provider 默认); 设了 → 显式 true/false.
     watermark = env_bool(f"{prefix}_WATERMARK") if env(f"{prefix}_WATERMARK") else None
@@ -286,20 +294,28 @@ def channel_from_env(prefix: str) -> ImageChannel:
     )
 
 
+# ImageChannel 里 HTTP 层真正用得到的那些字段 —— 从两个 dataclass 的交集派生, 不手抄。
+# 手抄的那份会在有人给 ImageChannel 加旋钮时悄悄落后, 表现是"在界面上配了却不生效",
+# 而且没有任何报错。(session 是 ImageClient 自己 default_factory 出来的, 不从通道来。)
+_CLIENT_FIELDS = frozenset(f.name for f in fields(ImageClient)) & frozenset(
+    f.name for f in fields(ImageChannel)
+)
+
+
 # maxsize 而非无上限 cache: 通道现在可由用户在前端编辑, 每次改动产生一个新键, 无上限
 # 会一直堆积。32 远超任何人会配的通道数, 又保证旧 client (及其 TCP 池) 最终被回收。
 @functools.lru_cache(maxsize=32)
+def _build_client(client_key: tuple) -> ImageClient:
+    return ImageClient(**dict(client_key))
+
+
 def build_image_client(channel: ImageChannel) -> ImageClient:
-    """通道 → HTTP 客户端。同通道同进程一个实例 (TCP 池跨 task 复用)。"""
-    return ImageClient(
-        base_url=channel.base_url,
-        api_key=channel.api_key,
-        model=channel.model,
-        image_field=channel.image_field,
-        image_as_single=channel.image_as_single,
-        response_format=channel.response_format,
-        quality=channel.quality,
-        watermark=channel.watermark,
-        inline_image=channel.inline_image,
-        timeout=channel.timeout,
+    """通道 → HTTP 客户端。HTTP 参数相同的通道共用一个实例 (TCP 池跨 task 复用)。
+
+    缓存键**只取 HTTP 层用得到的字段**, 不是整个通道。否则同一供应商下两个只差
+    size_mode 的模型 (豆包要 pixel、Google 不要 —— 正是这个特性的典型场景) 会各自建一个
+    Session、对同一个 host 开两套连接池; 给供应商改个名字也会白白丢掉一个热的池子。
+    """
+    return _build_client(
+        tuple(sorted((k, v) for k, v in asdict(channel).items() if k in _CLIENT_FIELDS)),
     )

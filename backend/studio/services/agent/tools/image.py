@@ -23,7 +23,6 @@ Branches on `job.is_cutout`:
   租户面。
 """
 import logging
-import os
 import re
 import time
 import uuid
@@ -38,7 +37,11 @@ from langchain.tools import ToolRuntime, tool
 from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
-from studio.services.image_channels import channel_for_model_id
+from studio.services.image_channels import (
+    channel_for_model_id,
+    default_channel,
+    resolve_model_id,
+)
 from studio.services.image_client import ImageChannel, build_image_client, channel_from_env
 from studio.services.listings_utils import handle_poll_if_needed
 
@@ -278,13 +281,17 @@ def _generate_with_fallback(
     给了就只用它, **失败不回退** —— 换供应商会换出完全不同的画风, 而用户并不知道发生了
     什么; 明确告诉他"这个通道失败了"才是对的。
 
-    没给 (老路径 / 库里还没配) 才走 env: primary (with retries) 抛 → 切 fallback。同
-    task 内 try/except, credit_event 保 PENDING 不被 _load_or_skip rollback (Stage 4
-    commit/rollback 终态不可逆, 跨 task 重试会撞 InvalidUsageEventState; 同 task 内
-    fallback 安全)。
+    没给 (老路径 / split 这类还没接上选择的入口) 才走 env: primary (with retries) 抛
+    → 切 fallback。同 task 内 try/except, credit_event 保 PENDING 不被 _load_or_skip
+    rollback (Stage 4 commit/rollback 终态不可逆, 跨 task 重试会撞
+    InvalidUsageEventState; 同 task 内 fallback 安全)。
 
     Fallback 配置可选: CANVAS_IMAGE_FALLBACK_MODEL 未设时不切换, primary 错误冒泡
     → _load_or_skip rollback 退 credit. 这让 dev 环境无 fallback 配也行得通.
+
+    env 一个字都没配时退到库里第一条启用的模型 —— 这次改造的目标就是"生图 env 归零",
+    没有这一步的话, 全新部署即使把供应商配得好好的, 只要工具栏停在「后端默认」(默认就
+    停在这里) 就会收到一句讲 CANVAS_IMAGE_PRIMARY_* 的报错, 而界面上从没提过它。
     """
     if channel is not None:
         try:
@@ -304,20 +311,35 @@ def _generate_with_fallback(
                 f"[{channel.label}] 生成失败, 已选定该模型故未自动切换其他通道 —— "
                 f"可在工具栏换一个再试。供应商返回: {exc}"
             ) from exc
+    primary = channel_from_env(_PRIMARY_PREFIX)
+    if primary is None:
+        db_default = default_channel()
+        if db_default is None:
+            raise RuntimeError(
+                "没有可用的生图通道: 库里没有配置任何模型, env 里也没有 "
+                f"{_PRIMARY_PREFIX}_*。请在工具栏的模型选择器里点「配置供应商…」加一个。"
+            )
+        return _call_with_retries(
+            db_default, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+        )
     try:
         return _call_with_retries(
-            channel_from_env(_PRIMARY_PREFIX),
+            primary,
             prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
     except Exception:
-        if not os.getenv(f"{_FALLBACK_PREFIX}_MODEL"):
+        # 没配全 fallback → 不切换, primary 的错误原样冒泡 (dev 环境不配 fallback 也
+        # 行得通)。比原来单看 _MODEL 严一点: MODEL 配了但 BASE_URL/API_KEY 没配时, 与其
+        # 换来一句"缺少环境变量"盖掉真正的失败原因, 不如把 primary 的错误留给用户。
+        fallback = channel_from_env(_FALLBACK_PREFIX)
+        if fallback is None:
             raise
         logger.exception(
             "canvas image_gen: primary failed after retries, trying fallback: channel=%s",
             _FALLBACK_PREFIX,
         )
         return _call_with_retries(
-            channel_from_env(_FALLBACK_PREFIX),
+            fallback,
             prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
 
@@ -535,7 +557,9 @@ def enqueue_image_generation(
             source_images=clean_urls,  # absolute URLs from chat attachments
             status=ImageEditJob.Status.QUEUED,
             # 这条路是异步的 —— worker 之后才捞这行, 所以选择必须落在行上。
-            image_model_id=image_model_id or None,
+            # 先 resolve: 前端的选择是粘的, 一个已被删掉的 id 会一直跟着每次请求发来,
+            # 直接写进 FK 列会撞约束把整轮聊天变成 500。失效 → None → 回退默认通道。
+            image_model_id=resolve_model_id(image_model_id),
         )
         reserve_error = reserve_or_friendly_message(job, action_label="image generation")
         if reserve_error:

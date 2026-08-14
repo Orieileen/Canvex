@@ -340,7 +340,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   // 工具栏选中的生图模型 (ImageModel.id)。**粘的** —— 画布是连续多轮的, 每次生成都重选
   // 很烦; 这跟旁边 per-message 的 SkillSelector 刻意相反。空 = 用后端默认通道。
-  const [imageModels, setImageModels] = useState<CanvasImageModelChoice[]>([]);
+  // null = 还没成功拉到 (首次加载中 / 请求失败), [] = 确实一个模型都没配。这个区分是
+  // 必需的: 空列表说明"选中的那个真的没了"该清掉, 拉取失败只说明这次没问到, 拿它去清
+  // 用户的选择是错的。用一个可空列表表达比再加一个 loaded 布尔少一份要同步的状态。
+  const [imageModels, setImageModels] = useState<CanvasImageModelChoice[] | null>(null);
   const [selectedImageModelId, setSelectedImageModelId] = useState<string>(() => {
     try {
       return window.localStorage.getItem(IMAGE_MODEL_KEY) ?? "";
@@ -363,16 +366,16 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     canvasService
       .listImageModels()
       .then(({ data }) => setImageModels(data))
-      .catch(() => setImageModels([])); // 没配过 → 选择器直接引导去配置页
+      // 后端不可达 → 回到"未知", 选择器照常引导去配置页, 但不会据此清掉用户的选择
+      .catch(() => setImageModels(null));
   }, []);
   useEffect(() => reloadImageModels(), [reloadImageModels]);
-  // 配置被删掉后, 选中的那个可能已不存在 —— 退回默认, 否则会一直发一个死 id
+  // 配置被删掉后, 选中的那个可能已不存在 —— 退回默认, 否则会一直发一个死 id: 工具栏
+  // 那条走 PrimaryKeyRelatedField 会 400, 而这个选择是粘的, 会一直粘着直到用户自己
+  // 清 localStorage。判据是"拉到了列表且里面没有它" —— 把所有供应商都删光 (列表为 [])
+  // 恰恰是最需要清掉它的那种情况, 所以不能要求列表非空。
   useEffect(() => {
-    if (
-      selectedImageModelId &&
-      imageModels.length > 0 &&
-      !imageModels.some((m) => m.id === selectedImageModelId)
-    ) {
+    if (imageModels && selectedImageModelId && !imageModels.some((m) => m.id === selectedImageModelId)) {
       setSelectedImageModelId("");
     }
   }, [imageModels, selectedImageModelId]);
@@ -1191,7 +1194,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
-        imageModels={imageModels}
+        imageModels={imageModels ?? []}
         selectedImageModelId={selectedImageModelId}
         onSelectImageModel={setSelectedImageModelId}
         onOpenImageSettings={() => setImageSettingsOpen(true)}

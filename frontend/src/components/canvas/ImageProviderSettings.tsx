@@ -12,6 +12,16 @@ import {
 } from "lucide-react";
 
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -42,7 +52,9 @@ import type { CanvasImageModel, CanvasImageProvider } from "@/types/canvex";
 /** 一个可调参数的描述。`kind` 决定渲染成什么控件。 */
 interface Tunable {
   key: string;
-  kind: "text" | "bool" | "number" | "tristate";
+  kind: "text" | "bool" | "number";
+  /** bool 的空选项文案键; 省略即 "unset"。watermark 用 "dontSend"。 */
+  emptyKey?: "unset" | "dontSend";
   placeholder?: string;
 }
 
@@ -52,7 +64,7 @@ const TUNABLES: Tunable[] = [
   { key: "image_as_single", kind: "bool" },
   { key: "response_format", kind: "text", placeholder: "b64_json" },
   { key: "quality", kind: "text" },
-  { key: "watermark", kind: "tristate" },
+  { key: "watermark", kind: "bool", emptyKey: "dontSend" },
   { key: "inline_image", kind: "bool" },
   { key: "size_mode", kind: "text", placeholder: "pixel" },
   { key: "timeout", kind: "number", placeholder: "300" },
@@ -80,6 +92,29 @@ const emptyProvider = (): CanvasImageProvider => ({
   updated_at: "",
 });
 
+/** 只取会被 PUT 上去的部分。既是请求体, 也是"改过没有"的比较基准。
+ *
+ *  不能拿 updated_at 比: draft 是 saved 的深拷贝, 本地怎么改它都一模一样, 那样的
+ *  「有未保存的改动」提示永远不会亮。 */
+const providerPayload = (p: CanvasImageProvider) => ({
+  label: p.label,
+  base_url: p.base_url,
+  api_key: p.api_key,
+  defaults: p.defaults,
+  models: p.models.map((m) => ({
+    // 本地新建的模型行没有后端 id, 不要把假 id 发过去
+    ...(m.id.startsWith("new-") ? {} : { id: m.id }),
+    label: m.label,
+    model: m.model,
+    overrides: m.overrides,
+    enabled: m.enabled,
+    sort_order: m.sort_order,
+  })),
+});
+
+const isDirty = (draft: CanvasImageProvider, saved: CanvasImageProvider) =>
+  JSON.stringify(providerPayload(draft)) !== JSON.stringify(providerPayload(saved));
+
 interface ImageProviderSettingsProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -103,7 +138,20 @@ export function ImageProviderSettings({
     try {
       const { data } = await canvasService.listImageProviders();
       setProviders(data);
-      setDrafts(Object.fromEntries(data.map((p) => [p.id, structuredClone(p)])));
+      // 不能直接整个换掉 —— 保存 A 会 reload, 而 B 可能才填了一半 (甚至是一整张还没
+      // 保存的新卡片), 整个换掉等于把用户刚敲的东西悄悄扔了。所以: 本地新建的留着,
+      // 改过还没保存的留着, 其余用服务端版本(拿到真实 id / updated_at)。
+      setDrafts((prev) => {
+        const next: Record<string, CanvasImageProvider> = {};
+        for (const [id, draft] of Object.entries(prev)) {
+          if (id.startsWith("new-")) next[id] = draft;
+        }
+        for (const p of data) {
+          const local = prev[p.id];
+          next[p.id] = local && isDirty(local, p) ? local : structuredClone(p);
+        }
+        return next;
+      });
     } catch (err) {
       toast.error(extractApiError(err, "load providers failed"));
     } finally {
@@ -132,23 +180,18 @@ export function ImageProviderSettings({
       return;
     }
     try {
-      const body = {
-        label: draft.label,
-        base_url: draft.base_url,
-        api_key: draft.api_key,
-        defaults: draft.defaults,
-        models: draft.models.map((m) => ({
-          // 本地新建的模型行没有后端 id, 不要把假 id 发过去
-          ...(m.id.startsWith("new-") ? {} : { id: m.id }),
-          label: m.label,
-          model: m.model,
-          overrides: m.overrides,
-          enabled: m.enabled,
-          sort_order: m.sort_order,
-        })),
-      };
-      if (id.startsWith("new-")) await canvasService.createImageProvider(body);
-      else await canvasService.updateImageProvider(id, body);
+      const body = providerPayload(draft);
+      if (id.startsWith("new-")) {
+        await canvasService.createImageProvider(body);
+        // 这条草稿已经落库, reload 会带回它的真身 —— 临时行留着会变成两张一样的卡片
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      } else {
+        await canvasService.updateImageProvider(id, body);
+      }
       toast.success(t("imageProviders.saved"));
       await reload();
       onChanged();
@@ -166,15 +209,32 @@ export function ImageProviderSettings({
       });
       return;
     }
+    // 删供应商会连它下面所有模型一起删掉, 历史任务的关联也被 SET_NULL —— 不可撤销,
+    // 而这个按钮就在展开箭头旁边。用 AlertDialog 而不是 window.confirm: 后者不认主题、
+    // 显示不了处理中状态, 而且浏览器的"阻止此页面再创建对话框"会让它直接返回 false ——
+    // 那种情况下删除就**静默执行**了。侧栏删画布用的也是这个组件。
+    setDeleteTarget(id);
+  };
+
+  const confirmDelete = async () => {
+    const id = deleteTarget;
+    if (!id) return;
+    setDeleting(true);
     try {
       await canvasService.deleteImageProvider(id);
       toast.success(t("imageProviders.deleted"));
       await reload();
       onChanged();
+      setDeleteTarget(null);
     } catch (err) {
       toast.error(extractApiError(err, "delete provider failed"));
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const ids = Object.keys(drafts).sort((a, b) =>
     a.startsWith("new-") === b.startsWith("new-") ? 0 : a.startsWith("new-") ? 1 : -1,
@@ -228,6 +288,35 @@ export function ImageProviderSettings({
           </button>
         </div>
       </SheetContent>
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(next) => {
+          if (!next && !deleting) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("imageProviders.confirmDeleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("imageProviders.confirmDelete")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>{t("sidebar.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmDelete();
+              }}
+            >
+              {t("imageProviders.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }
@@ -338,7 +427,9 @@ function ProviderCard({
   const isNew = draft.id.startsWith("new-");
 
   const test = async (model: CanvasImageModel) => {
-    if (isNew) {
+    // 供应商没保存、或这一行模型还没保存, 后端都拿不到可查的记录 —— 模型行的本地临时
+    // id ("new-1723…") 不是 UUID, 发过去只会换来一个 500。
+    if (isNew || model.id.startsWith("new-")) {
       toast.info(t("imageProviders.saveBeforeTest"));
       return;
     }
@@ -454,7 +545,7 @@ function ProviderCard({
             >
               {t("imageProviders.save")}
             </button>
-            {saved && draft.updated_at !== saved.updated_at && (
+            {saved && isDirty(draft, saved) && (
               <span className="text-[11px] text-muted-foreground">
                 {t("imageProviders.unsaved")}
               </span>
@@ -560,7 +651,10 @@ function TunableEditor({
       {title && <div className="mb-1 text-[12px] font-medium">{title}</div>}
       {hint && <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
       <div className="flex flex-col gap-2">
-        {TUNABLES.map((f) => (
+        {TUNABLES.map((f) => {
+          // 三种控件都用同一份显示值: undefined (没配这项) → 空串, 其余原样转字符串。
+          const shown = values[f.key] === undefined ? "" : String(values[f.key]);
+          return (
           <div key={f.key} className="flex items-start gap-2">
             <div className="w-[124px] shrink-0 pt-1">
               <div className="font-mono text-[11px] text-foreground">{f.key}</div>
@@ -571,22 +665,13 @@ function TunableEditor({
             <div className="min-w-0 flex-1">
               {f.kind === "bool" && (
                 <select
-                  value={values[f.key] === undefined ? "" : String(values[f.key])}
+                  value={shown}
                   onChange={(e) => set(f.key, e.target.value === "" ? "" : e.target.value === "true")}
                   className={inputCls}
                 >
-                  <option value="">{t("imageProviders.unset")}</option>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                </select>
-              )}
-              {f.kind === "tristate" && (
-                <select
-                  value={values[f.key] === undefined ? "" : String(values[f.key])}
-                  onChange={(e) => set(f.key, e.target.value === "" ? "" : e.target.value === "true")}
-                  className={inputCls}
-                >
-                  <option value="">{t("imageProviders.dontSend")}</option>
+                  {/* 空选项的语义按字段而定: 多数旋钮"不填"=用我们的默认, 而 watermark
+                      不填是**不下发这个字段**、由供应商自己决定。 */}
+                  <option value="">{t(`imageProviders.${f.emptyKey ?? "unset"}`)}</option>
                   <option value="true">true</option>
                   <option value="false">false</option>
                 </select>
@@ -594,7 +679,7 @@ function TunableEditor({
               {f.kind === "number" && (
                 <input
                   type="number"
-                  value={values[f.key] === undefined ? "" : String(values[f.key])}
+                  value={shown}
                   placeholder={f.placeholder}
                   onChange={(e) => set(f.key, e.target.value === "" ? "" : Number(e.target.value))}
                   className={inputCls}
@@ -602,7 +687,7 @@ function TunableEditor({
               )}
               {f.kind === "text" && (
                 <input
-                  value={values[f.key] === undefined ? "" : String(values[f.key])}
+                  value={shown}
                   placeholder={f.placeholder}
                   onChange={(e) => set(f.key, e.target.value)}
                   className={inputCls}
@@ -610,7 +695,8 @@ function TunableEditor({
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

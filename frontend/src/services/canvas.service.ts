@@ -259,6 +259,7 @@ export async function* postChatStream(
 // CanvasScene[], 但后端 defer 掉 data, 前端按 CanvasSceneListItem 消费更安全。
 // 所以 list 手写, 其余复用工厂。
 const sceneResource = createResource<CanvasScene>(SCENES);
+const imageProviderResource = createResource<CanvasImageProvider>(IMAGE_PROVIDERS);
 
 export interface ImageEditCreatePayload {
   /** Single File → legacy `image` part (source_image ImageField).
@@ -363,12 +364,12 @@ export const canvasService = {
     );
   },
   // ── 生图供应商配置 ────────────────────────────────────────────────────────
-  listImageProviders: () => request.get<CanvasImageProvider[]>(IMAGE_PROVIDERS),
-  createImageProvider: (body: Partial<CanvasImageProvider>) =>
-    request.post<CanvasImageProvider>(IMAGE_PROVIDERS, body),
-  updateImageProvider: (id: string, body: Partial<CanvasImageProvider>) =>
-    request.put<CanvasImageProvider>(`${IMAGE_PROVIDERS}${id}/`, body),
-  deleteImageProvider: (id: string) => request.delete(`${IMAGE_PROVIDERS}${id}/`),
+  // 四个标准 CRUD 走跟 scene 同一个工厂 —— 手写一遍的话, URL 拼接和动词选择就有了
+  // 第二个住处, 将来改工厂 (末尾斜杠策略 / 响应解包 / 重试) 只会覆盖到 scene。
+  listImageProviders: imageProviderResource.list,
+  createImageProvider: imageProviderResource.create,
+  updateImageProvider: imageProviderResource.update,
+  deleteImageProvider: imageProviderResource.remove,
   /** 真发一次最小生成。ok=false 也是 200 —— 测试本身成功了, 失败的是被测对象。
    *  会产生一次真实的生成消耗。 */
   testImageProvider: (id: string, imageModelId?: string) =>
