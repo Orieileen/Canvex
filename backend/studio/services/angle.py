@@ -31,8 +31,10 @@ from rest_framework.exceptions import ValidationError
 
 from studio.services.http_retry import make_retry_session
 
-from ..models import AngleJob, AngleResult
+from ..models import AngleJob, AngleResult, ImageProvider
 from . import save_canvas_source_image
+from .image_channels import channel_for_model_id, default_channel
+from .image_client import ImageChannel
 from .agent.tools.common import (
     DOWNLOAD_TIMEOUT,
     absolute_media_url,
@@ -49,6 +51,40 @@ from .billing import reserve as reserve_canvas_credit
 _session = make_retry_session()
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_angle_channel(job: AngleJob) -> ImageChannel:
+    """这次 angle 调用用哪套配置。四级降级, 跟生图路径同一套顺序:
+
+    1. job 行上选的通道 (用户在 Angle tab 里挑的)
+    2. 库里第一条启用的 angle 通道 —— 「后端默认」的实际含义
+    3. `CANVAS_ANGLE_FAL_*` env —— 0010 迁移只在库里没有 angle 供应商时导一次,
+       导完用户可以把它删掉; 删干净了还想用 env 就得靠这条
+    4. 都没有 → 抛, 由 job_lifecycle 落成 FAILED
+
+    复用 ImageChannel 而不是给 angle 单开一个 dataclass: 这里只用得上它的 base_url /
+    api_key / model / timeout / label 五个字段, 为剩下的十几个用不上的字段再造一个平行
+    类型, 换来的只是"字段更少"。请求体的差异在 `_submit` 里, 不在配置形状里。
+    """
+    channel = channel_for_model_id(job.image_model_id, ImageProvider.Kind.ANGLE)
+    if channel is None:
+        channel = default_channel(ImageProvider.Kind.ANGLE)
+    if channel is not None:
+        return channel
+
+    api_key = (settings.CANVAS_ANGLE_FAL_API_KEY or "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "还没有配置 Angle 供应商 —— 在生图设置里加一个 Angle 通道, "
+            "或设置 CANVAS_ANGLE_FAL_API_KEY"
+        )
+    return ImageChannel(
+        base_url=(settings.CANVAS_ANGLE_FAL_BASE_URL or "https://fal.run").rstrip("/"),
+        api_key=api_key,
+        model=settings.CANVAS_ANGLE_FAL_MODEL,
+        label="Angle (env)",
+        timeout=settings.CANVAS_ANGLE_FAL_TIMEOUT,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +130,7 @@ def create_angle_job(*, scene, validated, image_file=None) -> AngleJob:
             zoom=validated["zoom"],
             additional_prompt=validated["additional_prompt"].strip(),
             num_images=validated["num_images"],
+            image_model=validated["image_model"],
             status=AngleJob.Status.QUEUED,
         )
         reserve_canvas_credit(job)
@@ -111,11 +148,7 @@ def run_angle_job(job: AngleJob) -> list[AngleResult]:
     Celery task can react. Canvex billing rollback 是 no-op。
     """
     with job_lifecycle(job):
-        api_key = (settings.CANVAS_ANGLE_FAL_API_KEY or "").strip()
-        if not api_key:
-            raise RuntimeError("missing env: CANVAS_ANGLE_FAL_API_KEY")
-
-        response = _submit(job, api_key)
+        response = _submit(job, resolve_angle_channel(job))
         # 立刻落 seed —— 和 video.py 存 task_id 同理: 若后续 download/persist 抛错,
         # job_lifecycle 走 FAILED 分支只会存 status/error/updated_at, seed 会丢.
         seed = response.get("seed")
@@ -131,10 +164,10 @@ def run_angle_job(job: AngleJob) -> list[AngleResult]:
 # Submit + response parsing
 # ---------------------------------------------------------------------------
 
-def _submit(job: AngleJob, api_key: str) -> dict:
-    base = (settings.CANVAS_ANGLE_FAL_BASE_URL or "https://fal.run").rstrip("/")
-    model = settings.CANVAS_ANGLE_FAL_MODEL
-    endpoint = f"{base}/{model}"
+def _submit(job: AngleJob, channel: ImageChannel) -> dict:
+    # fal 把模型名放在 URL 路径里 (而不是请求体的 model 字段) —— 这正是 angle 不能
+    # 套用生图那套 ImageClient 的原因之一。
+    endpoint = f"{channel.base_url.rstrip('/')}/{channel.model}"
 
     # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网 URL
     # 原样传 + 可达性预检(防 fal 拿不到源时静默 rerender 无关图)。fal 接受 data URI。
@@ -153,18 +186,19 @@ def _submit(job: AngleJob, api_key: str) -> dict:
         body["additional_prompt"] = job.additional_prompt
 
     logger.info(
-        "angle submit: job=%s endpoint=%s h=%.1f v=%.1f z=%.1f n=%d",
-        job.id, endpoint, job.horizontal_angle, job.vertical_angle, job.zoom,
-        job.num_images,
+        "angle submit: job=%s channel=%s endpoint=%s h=%.1f v=%.1f z=%.1f n=%d",
+        job.id, channel.label, endpoint, job.horizontal_angle, job.vertical_angle,
+        job.zoom, job.num_images,
     )
     resp = _session.post(
         endpoint,
         headers={
-            "Authorization": f"Key {api_key}",
+            # fal 用 `Key`, 不是生图那边的 `Bearer` —— 另一个不能共用 ImageClient 的点。
+            "Authorization": f"Key {channel.api_key}",
             "Content-Type": "application/json",
         },
         json=body,
-        timeout=settings.CANVAS_ANGLE_FAL_TIMEOUT,
+        timeout=channel.timeout,
     )
     try:
         data = resp.json()

@@ -31,7 +31,11 @@ import {
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
-import type { CanvasImageModel, CanvasImageProvider } from "@/types/canvex";
+import type {
+  CanvasImageModel,
+  CanvasImageProvider,
+  CanvasImageProviderKind,
+} from "@/types/canvex";
 
 /**
  * 生图供应商配置面板 —— 把「用哪个模型、怎么跟它说话」从后端 env 搬到这里。
@@ -75,6 +79,13 @@ const TUNABLES: Tunable[] = [
   { key: "poll_timeout", kind: "number", placeholder: "30" },
 ];
 
+// Angle 通道能调的只有超时 —— 它的"参数"是相机坐标, 由画布上那个立方体在控, 不是这里
+// 填的东西。把另外 12 项摆给用户看只会让人以为填了会生效。
+const ANGLE_TUNABLE_KEYS = new Set(["timeout"]);
+
+const tunablesFor = (kind: CanvasImageProviderKind): Tunable[] =>
+  kind === "angle" ? TUNABLES.filter((f) => ANGLE_TUNABLE_KEYS.has(f.key)) : TUNABLES;
+
 type Values = Record<string, unknown>;
 
 const inputCls =
@@ -84,6 +95,7 @@ const inputCls =
 const emptyProvider = (): CanvasImageProvider => ({
   id: "",
   label: "",
+  kind: "image",
   base_url: "",
   api_key: "",
   defaults: {},
@@ -98,6 +110,7 @@ const emptyProvider = (): CanvasImageProvider => ({
  *  「有未保存的改动」提示永远不会亮。 */
 const providerPayload = (p: CanvasImageProvider) => ({
   label: p.label,
+  kind: p.kind,
   base_url: p.base_url,
   api_key: p.api_key,
   defaults: p.defaults,
@@ -477,11 +490,25 @@ function ProviderCard({
 
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border p-3">
-          <Field label={t("imageProviders.baseUrl")} hint={t("imageProviders.baseUrlHint")}>
+          {/* kind 放在最前面: 它决定下面显示哪些字段, 以及这条通道会出现在哪个选择器里。 */}
+          <Field label={t("imageProviders.kind")} hint={t(`imageProviders.kindHint.${draft.kind}`)}>
+            <select
+              value={draft.kind}
+              onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
+              className={inputCls}
+            >
+              <option value="image">{t("imageProviders.kindImage")}</option>
+              <option value="angle">{t("imageProviders.kindAngle")}</option>
+            </select>
+          </Field>
+          <Field
+            label={t("imageProviders.baseUrl")}
+            hint={t(`imageProviders.baseUrlHint.${draft.kind}`)}
+          >
             <input
               value={draft.base_url}
               onChange={(e) => onPatch({ base_url: e.target.value })}
-              placeholder="https://api.example.com/v1"
+              placeholder={draft.kind === "angle" ? "https://fal.run" : "https://api.example.com/v1"}
               className={inputCls}
             />
           </Field>
@@ -502,6 +529,7 @@ function ProviderCard({
                 <ModelRow
                   key={m.id || i}
                   model={m}
+                  kind={draft.kind}
                   testing={testing === m.id}
                   onPatch={(patch) => patchModel(i, patch)}
                   onTest={() => void test(m)}
@@ -533,6 +561,7 @@ function ProviderCard({
           <TunableEditor
             title={t("imageProviders.defaults")}
             hint={t("imageProviders.defaultsHint")}
+            kind={draft.kind}
             values={draft.defaults}
             onChange={(defaults) => onPatch({ defaults })}
           />
@@ -559,12 +588,14 @@ function ProviderCard({
 
 function ModelRow({
   model,
+  kind,
   testing,
   onPatch,
   onTest,
   onDelete,
 }: {
   model: CanvasImageModel;
+  kind: CanvasImageProviderKind;
   testing: boolean;
   onPatch: (patch: Partial<CanvasImageModel>) => void;
   onTest: () => void;
@@ -617,6 +648,7 @@ function ModelRow({
       {showOverrides && (
         <TunableEditor
           hint={t("imageProviders.overridesHint")}
+          kind={kind}
           values={model.overrides}
           onChange={(overrides) => onPatch({ overrides })}
         />
@@ -625,16 +657,18 @@ function ModelRow({
   );
 }
 
-/** 那 13 个可调参数的编辑器。provider 默认值和 model 覆盖项共用。
+/** 可调参数的编辑器。provider 默认值和 model 覆盖项共用, 字段按 provider 的 kind 裁剪。
  *  只把**明确设过**的键写进 values —— 空 = 继承上一层 / 用后端默认。 */
 function TunableEditor({
   title,
   hint,
+  kind,
   values,
   onChange,
 }: {
   title?: string;
   hint?: string;
+  kind: CanvasImageProviderKind;
   values: Values;
   onChange: (v: Values) => void;
 }) {
@@ -651,7 +685,7 @@ function TunableEditor({
       {title && <div className="mb-1 text-[12px] font-medium">{title}</div>}
       {hint && <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
       <div className="flex flex-col gap-2">
-        {TUNABLES.map((f) => {
+        {tunablesFor(kind).map((f) => {
           // 三种控件都用同一份显示值: undefined (没配这项) → 空串, 其余原样转字符串。
           const shown = values[f.key] === undefined ? "" : String(values[f.key]);
           return (

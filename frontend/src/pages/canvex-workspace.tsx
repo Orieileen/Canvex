@@ -38,6 +38,7 @@ import { useImageAdjust } from "@/hooks/use-image-adjust";
 import { useSelectionPreview } from "@/hooks/use-selection-preview";
 import { useMergeLayer } from "@/hooks/use-merge-layer";
 import { useSplit } from "@/hooks/use-split";
+import { useStickyModelChoice } from "@/hooks/use-sticky-model-choice";
 import { useVideoEdit } from "@/hooks/use-video-edit";
 import { getMockupBinding, worldPointToBaseUv } from "@/lib/canvas-mockup";
 import { DEFAULT_ADJUST_BINDING, getAdjustBinding } from "@/lib/canvas-adjust";
@@ -71,8 +72,10 @@ import type {
 import { ChatOverlay, type ChatOverlayStatus } from "@/components/canvas/ChatOverlay";
 import { FloatingAdjustPanel, ImageEditBar } from "@/components/canvas/ImageEditBar";
 
-// 工具栏选中的生图模型存这里 —— 粘性选择, 跨刷新保留。
+// 选中的通道存这里 —— 粘性选择, 跨刷新保留。两种 kind 各一个键: 模型集合不相交,
+// 共用一个键会让切换 tab 时互相把对方清成默认。
 const IMAGE_MODEL_KEY = "canvex:image-model";
+const ANGLE_MODEL_KEY = "canvex:angle-model";
 
 const SAVE_DEBOUNCE_MS = 1500;
 const STATUS_FADE_MS = 2500;
@@ -338,30 +341,10 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the textarea; cleared after every successful send. Per-message ephemeral
   // (matches disabledSkills lifetime).
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  // 工具栏选中的生图模型 (ImageModel.id)。**粘的** —— 画布是连续多轮的, 每次生成都重选
-  // 很烦; 这跟旁边 per-message 的 SkillSelector 刻意相反。空 = 用后端默认通道。
-  // null = 还没成功拉到 (首次加载中 / 请求失败), [] = 确实一个模型都没配。这个区分是
-  // 必需的: 空列表说明"选中的那个真的没了"该清掉, 拉取失败只说明这次没问到, 拿它去清
-  // 用户的选择是错的。用一个可空列表表达比再加一个 loaded 布尔少一份要同步的状态。
+  // 配置页里的全部通道。null = 还没成功拉到 (首次加载中 / 请求失败), [] = 确实一个都
+  // 没配 —— 这个区分被 useStickyModelChoice 用来判断该不该清掉失效的选择。
   const [imageModels, setImageModels] = useState<CanvasImageModelChoice[] | null>(null);
-  const [selectedImageModelId, setSelectedImageModelId] = useState<string>(() => {
-    try {
-      return window.localStorage.getItem(IMAGE_MODEL_KEY) ?? "";
-    } catch {
-      return ""; // 隐私模式下 localStorage 会抛
-    }
-  });
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
-  // 提交那一刻读最新值, 免得把它塞进每个 callback 的依赖数组
-  const imageModelIdRef = useRef(selectedImageModelId);
-  useEffect(() => {
-    imageModelIdRef.current = selectedImageModelId;
-    try {
-      window.localStorage.setItem(IMAGE_MODEL_KEY, selectedImageModelId);
-    } catch {
-      // 持久化失败不影响本次会话
-    }
-  }, [selectedImageModelId]);
   const reloadImageModels = useCallback(() => {
     canvasService
       .listImageModels()
@@ -370,15 +353,20 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       .catch(() => setImageModels(null));
   }, []);
   useEffect(() => reloadImageModels(), [reloadImageModels]);
-  // 配置被删掉后, 选中的那个可能已不存在 —— 退回默认, 否则会一直发一个死 id: 工具栏
-  // 那条走 PrimaryKeyRelatedField 会 400, 而这个选择是粘的, 会一直粘着直到用户自己
-  // 清 localStorage。判据是"拉到了列表且里面没有它" —— 把所有供应商都删光 (列表为 [])
-  // 恰恰是最需要清掉它的那种情况, 所以不能要求列表非空。
-  useEffect(() => {
-    if (imageModels && selectedImageModelId && !imageModels.some((m) => m.id === selectedImageModelId)) {
-      setSelectedImageModelId("");
-    }
-  }, [imageModels, selectedImageModelId]);
+  // 一次请求拿回全部, 两个选择器各自按 kind 筛 —— 两边的接口形状不同 (angle 的模型名在
+  // URL 路径里、认证是 Key), 混着列会让人选到一个必然发不出去的组合。
+  const imageChoices = useMemo(
+    () => imageModels?.filter((m) => m.kind === "image") ?? null,
+    [imageModels],
+  );
+  const angleChoices = useMemo(
+    () => imageModels?.filter((m) => m.kind === "angle") ?? null,
+    [imageModels],
+  );
+  const imageModelChoice = useStickyModelChoice(imageChoices, IMAGE_MODEL_KEY);
+  const angleModelChoice = useStickyModelChoice(angleChoices, ANGLE_MODEL_KEY);
+  const { value: selectedImageModelId, setValue: setSelectedImageModelId } = imageModelChoice;
+  const imageModelIdRef = imageModelChoice.ref;
   const [showMinimap, setShowMinimap] = useState(false);
   // Bump 每次 Excalidraw 写入新 api —— 给 Minimap 一个 effect dep, 比靠 ref
   // 时序猜测可靠 (scene 切换 + StrictMode + HMR 多次重 mount, ref 反复换).
@@ -490,12 +478,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    angleModelIdRef: angleModelChoice.ref,
   });
   const splitEdit = useSplit({
     sceneId: activeSceneId,
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    imageModelIdRef,
   });
   const mergeLayer = useMergeLayer({
     excalidrawApiRef,
@@ -1148,7 +1138,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
-                pollAndPinJob,
+      imageModelIdRef,
+      pollAndPinJob,
       resetPackRow,
       resetStream,
       showTransientStatus,
@@ -1194,7 +1185,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
-        imageModels={imageModels ?? []}
+        imageModels={imageChoices ?? []}
         selectedImageModelId={selectedImageModelId}
         onSelectImageModel={setSelectedImageModelId}
         onOpenImageSettings={() => setImageSettingsOpen(true)}
@@ -1353,6 +1344,18 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             error: mergeLayer.error,
             onSubmit: () => void mergeLayer.merge(selection),
             onDismissError: mergeLayer.dismissError,
+          }}
+          imageModel={{
+            models: imageChoices ?? [],
+            value: imageModelChoice.value,
+            onChange: imageModelChoice.setValue,
+            onOpenSettings: () => setImageSettingsOpen(true),
+          }}
+          angleModel={{
+            models: angleChoices ?? [],
+            value: angleModelChoice.value,
+            onChange: angleModelChoice.setValue,
+            onOpenSettings: () => setImageSettingsOpen(true),
           }}
           mockup={{
             binding: selectedBinding,

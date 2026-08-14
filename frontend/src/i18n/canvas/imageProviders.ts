@@ -11,9 +11,21 @@ export const imageProviders = {
     labelPlaceholder: "Provider name, e.g. APIMart",
     modelLabelPlaceholder: "Display name",
     modelStringPlaceholder: "model string the provider wants",
+    kind: "Channel type",
+    kindImage: "Image generation (Image / Split)",
+    kindAngle: "Camera angle re-render (Angle)",
+    kindHint: {
+      image: "Shows up in the Image and Split pickers, and in the chat bar.",
+      angle:
+        "Shows up in the Angle picker only. The request body is the camera coordinates from the cube, so timeout is the only tunable here.",
+    },
     baseUrl: "Base URL",
-    baseUrlHint:
-      "Without the /images/generations suffix — Canvex appends it. Local model servers are fine, but the backend runs in a container: use host.docker.internal:11434, not localhost:11434.",
+    baseUrlHint: {
+      image:
+        "Without the /images/generations suffix — Canvex appends it. Local model servers are fine, but the backend runs in a container: use host.docker.internal:11434, not localhost:11434.",
+      angle:
+        "Host only, e.g. https://fal.run — the model string is appended as the path. Put the full model id (fal-ai/…) in the model field below.",
+    },
     apiKey: "API key",
     apiKeyHint: "Stored as-is (local single-machine tool). It is never written to logs.",
     defaults: "Request parameters",
@@ -71,9 +83,21 @@ export const imageProviders = {
     labelPlaceholder: "供应商名称,如 APIMart",
     modelLabelPlaceholder: "显示名称",
     modelStringPlaceholder: "该供应商要的模型字符串",
+    kind: "通道类型",
+    kindImage: "生图 (Image / Split)",
+    kindAngle: "视角重渲染 (Angle)",
+    kindHint: {
+      image: "会出现在 Image、Split 两个选择器和聊天栏里。",
+      angle:
+        "只出现在 Angle 的选择器里。它的请求体是画布上那个立方体给的相机坐标,所以这里能调的只有超时。",
+    },
     baseUrl: "Base URL",
-    baseUrlHint:
-      "不要带 /images/generations 后缀,Canvex 会自己拼。可以填本机推理服务,但后端跑在容器里 —— 要用 host.docker.internal:11434,不是 localhost:11434。",
+    baseUrlHint: {
+      image:
+        "不要带 /images/generations 后缀,Canvex 会自己拼。可以填本机推理服务,但后端跑在容器里 —— 要用 host.docker.internal:11434,不是 localhost:11434。",
+      angle:
+        "只填域名,比如 https://fal.run —— 模型名会被拼成路径。完整模型 id (fal-ai/…) 填在下面的模型栏。",
+    },
     apiKey: "API 密钥",
     apiKeyHint: "原样保存(本地单机工具)。不会写进日志。",
     defaults: "请求参数",
@@ -124,6 +148,7 @@ export const imageProviders = {
 export const imageModels = {
   en: {
     title: "Image model",
+    angleTitle: "Angle model",
     subtitle: "Applies to the next generation, and sticks until you change it.",
     pick: "Pick image model",
     default: "Backend default",
@@ -133,6 +158,7 @@ export const imageModels = {
   },
   zh: {
     title: "生图模型",
+    angleTitle: "视角模型",
     subtitle: "对下一次生成生效,并且会一直沿用到你改为止。",
     pick: "选择生图模型",
     default: "后端默认",

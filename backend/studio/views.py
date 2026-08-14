@@ -46,6 +46,7 @@ from .serializers import (
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
+    SplitJobCreateSerializer,
     VideoJobCreateSerializer,
     VideoJobSerializer,
     result_asset_url,
@@ -447,12 +448,17 @@ class SceneSplitView(APIView):
         if not image_file:
             raise ValidationError({"image": ["The image field is required."]})
 
+        serializer = SplitJobCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         scene, _ = get_scene_and_org(request.user, scene_id)
         # Plan B: subject region (box → coordinates) for the split prompts; "" → fallback.
-        region_clause = (request.data.get("region") or "").strip()
-        resolution = (request.data.get("resolution") or "").strip()
         background, cutout = create_split_jobs(
-            scene=scene, image_file=image_file, region_clause=region_clause, resolution=resolution,
+            scene=scene,
+            image_file=image_file,
+            region_clause=serializer.validated_data["region"].strip(),
+            resolution=serializer.validated_data["resolution"].strip(),
+            image_model=serializer.validated_data["image_model"],
         )
         # Lazy import: tasks.py → image_client 顶层可能有 settings 未就绪的副作用.
         # bg leg → canvas (gevent inpaint, 单 task). cutout leg → stage 1 (LLM 白底,

@@ -12,7 +12,7 @@ import dataclasses
 import logging
 import uuid as uuid_lib
 
-from studio.models import ImageModel
+from studio.models import ImageModel, ImageProvider
 from studio.services.image_client import ImageChannel
 
 logger = logging.getLogger(__name__)
@@ -53,12 +53,16 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
     )
 
 
-def _enabled_model(raw) -> ImageModel | None:
+def _enabled_model(raw, kind: str) -> ImageModel | None:
     """随请求/随任务行传进来的模型 id → 一条**存在且启用**的记录, 否则 None。
 
     「哪个模型算可用」的唯一判定处。刻意不抛: 用户随时可能删掉或停用一个配置, 而这个
     id 可能来自前端 localStorage 里的粘性选择, 也可能来自一条早就排好队的任务行。这两种
     情况下"退回默认通道生成"都比"整件事 500"合理。
+
+    `kind` 不是可选的过滤条件而是正确性的一部分: 两种接口形状同住一张表, 不筛的话一个
+    angle 通道 (模型名在 URL 路径里、认证是 `Key`) 会被交给生图路径当普通模型用, 请求
+    发出去必然失败, 而且失败得莫名其妙。
 
     UUID 先行解析是必需的而不是防御性的: 不合法的字符串直接进 `.filter(id=...)` 会抛
     django 的 ValidationError, 那就把"选择已失效"变成了一个 500。
@@ -71,37 +75,39 @@ def _enabled_model(raw) -> ImageModel | None:
         logger.warning("image channel: 模型 id %r 格式非法, 回退默认通道", raw)
         return None
     model = (
-        ImageModel.objects.filter(id=parsed, enabled=True)
+        ImageModel.objects.filter(id=parsed, enabled=True, provider__kind=kind)
         .select_related("provider")
         .first()
     )
     if model is None:
-        logger.warning("image channel: 模型配置 %s 不存在或已禁用, 回退默认通道", parsed)
+        logger.warning(
+            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 回退默认通道", parsed, kind,
+        )
     return model
 
 
-def resolve_model_id(raw) -> uuid_lib.UUID | None:
-    """写进 `ImageEditJob.image_model_id` 之前的那一道 —— 必须在**写库前**过。
+def resolve_model_id(raw, kind: str = ImageProvider.Kind.IMAGE) -> uuid_lib.UUID | None:
+    """写进 job 行的 `image_model_id` 之前的那一道 —— 必须在**写库前**过。
 
     前端的选择是粘的 (存 localStorage), 所以一个被删掉的模型 id 会一直跟着每一次请求
     发过来。直接塞进 FK 列的话: 合法 UUID 撞外键约束 → IntegrityError, 不合法字符串 →
     ValidationError, 两种都是把"选择已失效"变成整轮聊天 500。
     """
-    model = _enabled_model(raw)
+    model = _enabled_model(raw, kind)
     return model.id if model is not None else None
 
 
-def channel_for_model_id(model_id) -> ImageChannel | None:
+def channel_for_model_id(model_id, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
     """任务行上的选择 → 通道; 找不到 / 已禁用 → None, 由调用方回退到默认通道。
 
     与 resolve_model_id 的区别只是返回什么: 那个在入队前把 id 择干净, 这个在 worker
     里把它变成可调用的通道。中间隔着一段真实的时间 —— 配置可能在排队期间被删掉。
     """
-    model = _enabled_model(model_id)
+    model = _enabled_model(model_id, kind)
     return channel_for_model(model) if model is not None else None
 
 
-def default_channel() -> ImageChannel | None:
+def default_channel(kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
     """库里配好的第一条启用模型 —— 用户没选、env 也没配时的兜底; 都没有则 None。
 
     存在的理由: 这次改造的目标是"生图相关的 env 变量为 0"。没有这一步的话, 一个全新
@@ -109,5 +115,9 @@ def default_channel() -> ImageChannel | None:
     就会收到一句 `缺少环境变量: CANVAS_IMAGE_PRIMARY_BASE_URL…` —— 一个界面上从头到尾
     没提过的东西。排序跟工具栏选择器一致 (sort_order, label), 所以"默认"就是列表第一项。
     """
-    model = ImageModel.objects.filter(enabled=True).select_related("provider").first()
+    model = (
+        ImageModel.objects.filter(enabled=True, provider__kind=kind)
+        .select_related("provider")
+        .first()
+    )
     return channel_for_model(model) if model is not None else None

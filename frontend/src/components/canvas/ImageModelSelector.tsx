@@ -11,10 +11,15 @@ import { cn } from "@/lib/utils";
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
 /**
- * 工具栏的生图模型选择器。
+ * 生图模型选择器。
  *
  * 存在的理由: 模型以前只能写在后端 env 里, 一个部署固定一个。用户想这张图用 Google、
  * 下张用豆包就做不到。现在供应商配置进了库, 这里就是每次生成前选用哪个。
+ *
+ * 出现在两处 —— 聊天栏 (ChatOverlay) 和编辑栏的 Image / Split 面板 (ImageEditBar)。
+ * 两处**共用同一份画布级 state**, 改哪边都一样; 刻意不做两套独立选择, 否则用户搞不清
+ * 哪个生效。编辑栏里只挂在真正走生图通道的 tab 上 —— Angle 走 fal.run、Video 是另一套
+ * 配置、Merge/Mockup 根本不调 API, 摆上去就是骗人。
  *
  * UX 约定:
  * - **选择是粘的**(存 localStorage), 不是 per-message。画布是连续多轮的, 每次重选很烦;
@@ -33,6 +38,12 @@ interface ImageModelSelectorProps {
   /** 打开供应商配置面板。 */
   onOpenSettings: () => void;
   buttonDisabled?: boolean;
+  /** 触发按钮的额外 class —— 两个宿主工具栏的间距规则不同(聊天栏无外边距,
+   *  编辑栏的图标按钮统一 m-1 才凑够 h-10 行高)。 */
+  className?: string;
+  /** popover 抬头。Angle 面板要说"视角模型"—— 那里列的根本不是生图通道, 顶着
+   *  "Image model" 会让人以为选错了地方。省略即生图。 */
+  title?: string;
 }
 
 export function ImageModelSelector({
@@ -41,6 +52,8 @@ export function ImageModelSelector({
   onChange,
   onOpenSettings,
   buttonDisabled,
+  className,
+  title,
 }: ImageModelSelectorProps) {
   const { t } = useTranslation("canvasUi");
   const selected = models.find((m) => m.id === value);
@@ -55,7 +68,10 @@ export function ImageModelSelector({
           disabled={buttonDisabled}
           aria-label={t("imageModels.pick")}
           title={selected ? `${selected.provider_label} · ${selected.label}` : t("imageModels.pick")}
-          className="relative size-8 rounded-lg text-muted-foreground hover:text-foreground"
+          className={cn(
+            "relative size-8 rounded-lg text-muted-foreground hover:text-foreground",
+            className,
+          )}
         >
           <ImageIcon className="size-4" strokeWidth={2} />
           {/* 选了非默认模型才点亮 —— 没配过的人看不出这里有东西 */}
@@ -66,7 +82,7 @@ export function ImageModelSelector({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-0">
         <div className="border-b border-border px-3 py-2">
-          <div className="text-[13px] font-medium">{t("imageModels.title")}</div>
+          <div className="text-[13px] font-medium">{title ?? t("imageModels.title")}</div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
             {t("imageModels.subtitle")}
           </div>

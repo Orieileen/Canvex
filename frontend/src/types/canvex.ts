@@ -199,11 +199,17 @@ export interface CanvasImageModel {
   sort_order: number;
 }
 
+/** 供应商的接口形状。`image` = 通用生图接口 ({base_url}/images/generations, Bearer);
+ *  `angle` = fal.run 的视角重渲染 (模型名在 URL 路径里, 认证是 `Key`, 请求体是相机
+ *  坐标)。前端据此决定显不显示那 13 个生图参数, 以及每个选择器列哪些。 */
+export type CanvasImageProviderKind = "image" | "angle";
+
 /** 一个生图供应商端点 —— 一把 key + 一个 base_url + 一套请求参数默认值。
  *  api_key 明文返回:本地单机项目,配置页要能回显用户填过什么、直接改。 */
 export interface CanvasImageProvider {
   id: string;
   label: string;
+  kind: CanvasImageProviderKind;
   base_url: string;
   api_key: string;
   defaults: Record<string, unknown>;
@@ -212,11 +218,19 @@ export interface CanvasImageProvider {
   updated_at: string;
 }
 
+/** 写回后端时的供应商形状。跟读取形状只差嵌套模型行的 id —— 前端刚加的那行还没
+ *  落库, 省掉 id 让后端走 create;发个本地假 id 过去会被当成"更新一条不存在的行"。 */
+export type CanvasImageProviderWrite = Omit<CanvasImageProvider, "models"> & {
+  models: (Omit<CanvasImageModel, "id"> & { id?: string })[];
+};
+
 /** 工具栏模型选择器拉的列表项 —— 不含 base_url / api_key。 */
 export interface CanvasImageModelChoice {
   id: string;
   label: string;
   provider_label: string;
+  /** 来自所属 provider。一次请求拿回全部, 两个选择器各自按它筛。 */
+  kind: CanvasImageProviderKind;
   sort_order: number;
 }
 

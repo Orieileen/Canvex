@@ -27,11 +27,15 @@ export function useAngleEdit({
   excalidrawApiRef,
   pinning,
   sceneAbortRef,
+  angleModelIdRef,
 }: {
   sceneId: string | null;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   pinning: CanvasEditPinning;
   sceneAbortRef: RefObject<AbortController | null>;
+  /** Angle tab 选中的通道。跟生图的选择是两份独立 state —— 两边的模型集合不相交,
+   *  共用一个 id 只会让其中一边永远选不中。 */
+  angleModelIdRef: RefObject<string>;
 }): {
   isSubmitting: boolean;
   error: string | null;
@@ -66,7 +70,10 @@ export function useAngleEdit({
         resultSize: imageEditSizeSource(selection),
         createJob: async () => {
           const api = excalidrawApiRef.current!;
-          const angleParams = anglesToFalPayload(angles);
+          const angleParams = {
+            ...anglesToFalPayload(angles),
+            image_model: angleModelIdRef.current || undefined,
+          };
           if (sourceUrl) {
             return canvasService.createAngle(sceneId!, { image_url: sourceUrl, ...angleParams });
           }
@@ -75,7 +82,7 @@ export function useAngleEdit({
         },
       });
     },
-    [sceneId, excalidrawApiRef, sceneAbortRef, pinning],
+    [sceneId, excalidrawApiRef, sceneAbortRef, pinning, angleModelIdRef],
   );
 
   const dismissError = useCallback(() => setError(null), []);

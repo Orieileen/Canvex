@@ -42,11 +42,15 @@ export function useSplit({
   excalidrawApiRef,
   pinning,
   sceneAbortRef,
+  imageModelIdRef,
 }: {
   sceneId: string | null;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   pinning: CanvasEditPinning;
   sceneAbortRef: RefObject<AbortController | null>;
+  /** 工具栏选中的生图模型。用 ref 而不是值: 提交那一刻读最新的, 不用把它塞进
+   *  每个 callback 的依赖数组里。 */
+  imageModelIdRef: RefObject<string>;
 }): {
   isSubmitting: boolean;
   error: string | null;
@@ -110,7 +114,9 @@ export function useSplit({
           shapes: narrowed.kind === "image-with-shapes" ? narrowed.shapes : [],
         });
         // 一次 POST 起 atomic pair, backend 自动处理双 leg 的协调 + 任一失败时收口.
-        ({ data: enqueued } = await canvasService.createSplit(sceneId, file, region, resolution));
+        ({ data: enqueued } = await canvasService.createSplit(
+          sceneId, file, region, resolution, imageModelIdRef.current || undefined,
+        ));
         // 立刻 tag 两个 placeholder 带各自的 job_id —— 关页+重进时 resume hook
         // 按 job_id 配对 (cutout rembg 秒级完成, 不 tag 的话会被当 tagless leftover
         // 标 "submission lost").
@@ -157,7 +163,7 @@ export function useSplit({
         failBothLegs(extractApiError(err, "Split failed"));
       }
     },
-    [sceneId, excalidrawApiRef, sceneAbortRef, pinning],
+    [sceneId, excalidrawApiRef, sceneAbortRef, pinning, imageModelIdRef],
   );
 
   const dismissError = useCallback(() => setError(null), []);

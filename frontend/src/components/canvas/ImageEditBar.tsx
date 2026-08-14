@@ -61,6 +61,8 @@ import {
   type VideoAspectRatio,
   type VideoDuration,
 } from "@/hooks/use-video-edit";
+import { ImageModelSelector } from "@/components/canvas/ImageModelSelector";
+import type { CanvasImageModelChoice } from "@/types/canvex";
 
 /**
  * Floating "edit this selection" toolbar — canvex-style horizontal row with
@@ -130,6 +132,15 @@ function composePrompt(selection: CanvasSelection, userText: string): string {
   return [fromTexts, userText.trim()].filter(Boolean).join("\n");
 }
 
+/** 一个通道选择器需要的全部东西。生图和 angle 各传一份。 */
+interface ChannelChoiceProps {
+  /** 已按 kind 筛过的可选项。 */
+  models: CanvasImageModelChoice[];
+  value: string;
+  onChange: (modelId: string) => void;
+  onOpenSettings: () => void;
+}
+
 interface ImageEditBarProps {
   selection: CanvasSelection;
   /** Resolved display URL for single-image selections — `sourceUrl` (chat-
@@ -176,6 +187,13 @@ interface ImageEditBarProps {
     onSubmit: (params: { resolution: ImageEditResolution }) => void;
     onDismissError: () => void;
   };
+  /** 生图通道选择器 —— 同一份画布级 state, 聊天栏那个改的也是它。
+   *  只发给 Image / Split 两个面板: Video 还是另一套配置、Merge/Mockup 根本不调 API,
+   *  摆上选择器等于骗人。 */
+  imageModel: ChannelChoiceProps;
+  /** Angle 通道选择器。跟上面是两份独立选择 —— fal 的视角模型发不了生图请求, 反之
+   *  亦然, 所以它们的列表和粘性选择都各归各。 */
+  angleModel: ChannelChoiceProps;
   merge: {
     isProcessing: boolean;
     error: string | null;
@@ -216,7 +234,7 @@ const EDGE_MARGIN = 8;
 
 const forwardWheelToCanvas = forwardWheelToExcalidrawCanvas;
 
-export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, onSendToChat }: ImageEditBarProps) {
+export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, imageModel, angleModel, onSendToChat }: ImageEditBarProps) {
   const { t } = useTranslation("canvasUi");
   // 初始 placement 用 0,0 而不是 screenY+screenHeight+ANCHOR_GAP —— 后者在
   // 巨图 (screenHeight > 1000px) 下会把 absolute child 定位到 y=2000+, 撑大
@@ -388,6 +406,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
               promptFromTexts={promptFromTexts}
               isSubmitting={image.isSubmitting}
               onSubmit={image.onSubmit}
+              imageModel={imageModel}
             />
           </TabsContent>
         )}
@@ -407,12 +426,17 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
               sourceUrl={imageSourceUrl}
               isSubmitting={angle.isSubmitting}
               onSubmit={angle.onSubmit}
+              angleModel={angleModel}
             />
           </TabsContent>
         )}
         {support.split && (
           <TabsContent value="split">
-            <SplitPanel isSubmitting={split.isSubmitting} onSubmit={split.onSubmit} />
+            <SplitPanel
+              isSubmitting={split.isSubmitting}
+              onSubmit={split.onSubmit}
+              imageModel={imageModel}
+            />
           </TabsContent>
         )}
         {support.merge && (
@@ -546,6 +570,29 @@ function PreviewImage({ url, className }: { url: string; className?: string }) {
 
 // ─── Image panel ────────────────────────────────────────────────────────────
 
+/** 参数行里的通道选择器。编辑栏的图标按钮统一 `m-1` 才凑够 h-10 行高。 */
+function PanelModelSelector({
+  choice,
+  disabled,
+  title,
+}: {
+  choice: ChannelChoiceProps;
+  disabled: boolean;
+  title?: string;
+}) {
+  return (
+    <ImageModelSelector
+      models={choice.models}
+      value={choice.value}
+      onChange={choice.onChange}
+      onOpenSettings={choice.onOpenSettings}
+      buttonDisabled={disabled}
+      className="m-1"
+      title={title}
+    />
+  );
+}
+
 interface ImagePanelProps {
   /** Drives the final prompt: image-with-shapes routes arrows through
    *  `buildSpatialPrompt`, other kinds use the flat canvas-text join. */
@@ -565,9 +612,10 @@ interface ImagePanelProps {
     resolution: ImageEditResolution;
     n: ImageEditCount;
   }) => void;
+  imageModel: ChannelChoiceProps;
 }
 
-function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit }: ImagePanelProps) {
+function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit, imageModel }: ImagePanelProps) {
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
@@ -622,6 +670,8 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
         disabled={isSubmitting}
         className={inputClass}
       />
+      <Divider />
+      <PanelModelSelector choice={imageModel} disabled={isSubmitting} />
       <Divider />
       <select
         value={size}
@@ -789,9 +839,10 @@ interface AnglePanelProps {
   sourceUrl: string | null;
   isSubmitting: boolean;
   onSubmit: (params: { angles: CameraAngles }) => void;
+  angleModel: ChannelChoiceProps;
 }
 
-function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
+function AnglePanel({ sourceUrl, isSubmitting, onSubmit, angleModel }: AnglePanelProps) {
   const { t } = useTranslation("canvasUi");
   const [angles, setAngles] = useState<CameraAngles>(DEFAULT_CAMERA_ANGLES);
 
@@ -820,6 +871,12 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
           {t("edit.dragCube")}
         </div>
         <Divider />
+        <PanelModelSelector
+          choice={angleModel}
+          disabled={isSubmitting}
+          title={t("imageModels.angleTitle")}
+        />
+        <Divider />
         <IconButton
           type="submit"
           disabled={!canGenerate}
@@ -842,11 +899,13 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
 interface SplitPanelProps {
   isSubmitting: boolean;
   onSubmit: (params: { resolution: ImageEditResolution }) => void;
+  imageModel: ChannelChoiceProps;
 }
 
-/** Split = subject cutout + clean-bg inpaint (fixed pipeline); the only knob is
- *  the resolution tier (1K/2K/4K). For other tweaks, switch to the Image tab. */
-function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
+/** Split = subject cutout + clean-bg inpaint (fixed pipeline); the knobs are the
+ *  resolution tier (1K/2K/4K) and which model runs the inpaint leg. For other
+ *  tweaks, switch to the Image tab. */
+function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
   const { t } = useTranslation("canvasUi");
   const [resolution, setResolution] = useState<ImageEditResolution>("2K");
   function handleSubmit(e: FormEvent) {
@@ -857,6 +916,8 @@ function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
   return (
     <form onSubmit={handleSubmit} className={toolbarClass}>
       <div className="flex-1 px-3 text-xs text-muted-foreground">{t("edit.splitDesc")}</div>
+      <Divider />
+      <PanelModelSelector choice={imageModel} disabled={isSubmitting} />
       <Divider />
       <select
         value={resolution}

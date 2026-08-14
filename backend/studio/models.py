@@ -157,8 +157,21 @@ class ImageProvider(models.Model):
     和错误响应 —— 用户会把报错贴到 GitHub issue 求助。
     """
 
+    class Kind(models.TextChoices):
+        # 通用生图接口 ({base_url}/images/generations, Bearer 认证)。Image / Split 用。
+        IMAGE = "image", "Image generation"
+        # fal.run 的视角重渲染 —— 模型名在 URL 路径里、认证是 `Key`、请求体是相机
+        # 坐标而不是自由 prompt。Angle tab 用。
+        ANGLE = "angle", "Camera angle re-render"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     label = models.CharField(max_length=100)
+    # 供应商的接口形状。同一张表装两种形状而不是各开一张: 两边真正需要的字段
+    # (label / base_url / api_key + 挂在下面的模型行) 完全重合, 差别只在请求怎么拼,
+    # 那是 kind 一个字段能表达的事。前端据此决定显不显示那 13 个生图参数。
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.IMAGE, db_index=True,
+    )
     # 允许私有地址 (http://host.docker.internal:11434 这类本机推理服务) —— 不做 SSRF
     # 公网校验, 那会把"接本地模型"这个自部署项目最有价值的场景整个砍掉。
     base_url = models.URLField(max_length=500)
@@ -374,6 +387,12 @@ class AngleJob(models.Model):
     # 可选提示词附加到 LoRA 默认 prompt 之后
     additional_prompt = models.TextField(blank=True)
     num_images = models.PositiveSmallIntegerField(default=1)
+
+    # 用户在 Angle tab 选的通道 (kind=angle 的那些)。同 ImageEditJob.image_model:
+    # 这条路径是异步的, 选择必须落在行上, worker 之后才捞。空 = 回退 env。
+    image_model = models.ForeignKey(
+        "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
 
     # provider 返的 seed,存下来用户要复现同一角度时可传回
     seed = models.BigIntegerField(null=True, blank=True)

@@ -9,6 +9,7 @@ import type {
   CanvasImageEditJob,
   CanvasImageModelChoice,
   CanvasImageProvider,
+  CanvasImageProviderWrite,
   CanvasImageProviderTestResult,
   CanvasJobStatus,
   CanvasMediaFolderList,
@@ -259,7 +260,9 @@ export async function* postChatStream(
 // CanvasScene[], 但后端 defer 掉 data, 前端按 CanvasSceneListItem 消费更安全。
 // 所以 list 手写, 其余复用工厂。
 const sceneResource = createResource<CanvasScene>(SCENES);
-const imageProviderResource = createResource<CanvasImageProvider>(IMAGE_PROVIDERS);
+const imageProviderResource = createResource<CanvasImageProvider, CanvasImageProviderWrite>(
+  IMAGE_PROVIDERS,
+);
 
 export interface ImageEditCreatePayload {
   /** Single File → legacy `image` part (source_image ImageField).
@@ -290,6 +293,8 @@ export interface AngleCreatePayload {
   horizontal_angle: number;
   vertical_angle: number;
   zoom: number;
+  /** Angle tab 选的通道 (kind=angle 的 ImageModel.id)。空 = 后端默认。 */
+  image_model?: string;
 }
 
 export const canvasService = {
@@ -393,13 +398,15 @@ export const canvasService = {
   // 后端原子 split: 一次 POST 创两条 leg (bg inpaint + cutout subject), 互填
   // split_partner. Canvex 免费无钱包, 两条 leg 都 0 计费; 任一失败时 backend
   // task 收口逻辑保持. 不再走 createImageEdit 两次 (那样没 partner FK)。
-  createSplit: (sceneId: string, image: File, region = "", resolution = "") => {
+  createSplit: (sceneId: string, image: File, region = "", resolution = "", imageModelId = "") => {
     const form = new FormData();
     form.append("image", image);
     // Plan B: subject region (box → coordinates) folded into the split prompts;
     // empty when nothing was drawn → backend falls back to "most prominent subject".
     if (region) form.append("region", region);
     if (resolution) form.append("resolution", resolution);
+    // 两条 leg 共用这一个选择 —— 跟 createImageEdit 一样落到 job 行上, worker 再解析。
+    if (imageModelId) form.append("image_model", imageModelId);
     return request.post<{
       background: { job_id: string; status: string };
       cutout: { job_id: string; status: string };
@@ -439,6 +446,7 @@ export const canvasService = {
       form.append("horizontal_angle", String(payload.horizontal_angle));
       form.append("vertical_angle", String(payload.vertical_angle));
       form.append("zoom", String(payload.zoom));
+      if (payload.image_model) form.append("image_model", payload.image_model);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/angle/`,
         form,

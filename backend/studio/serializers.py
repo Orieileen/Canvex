@@ -116,6 +116,23 @@ class ImageEditJobSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+def _channel_choice_field(kind: str):
+    """工具栏模型选择器写回来的那一项。
+
+    两件事都不是可选的:
+    - **queryset 按 kind 限死** —— 两种接口形状同住一张表, 把 angle 通道送进生图路径
+      (或反过来) 发出去必然失败, 且失败得莫名其妙。在这里筛掉。
+    - **用 PrimaryKeyRelatedField 而不是 CharField** —— 要它当场报"配置不存在", 而不是
+      等到 worker 里静默回退成别的模型。显式选择失败该显式说。
+
+    可空 = 用户没选 → 后端默认通道。
+    """
+    return serializers.PrimaryKeyRelatedField(
+        queryset=ImageModel.objects.filter(enabled=True, provider__kind=kind),
+        required=False, allow_null=True, default=None,
+    )
+
+
 class ImageEditJobCreateSerializer(serializers.Serializer):
     """POST /scenes/<id>/image-edit/ — the `image` file is pulled from request.FILES."""
 
@@ -127,12 +144,7 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
         default=ImageEditJob.Resolution.TWO_K,
     )
     n = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
-    # 工具栏模型选择器。可空 = 用 env 默认通道。用 PrimaryKeyRelatedField 是要它在
-    # 这里就报"配置不存在", 而不是等到 worker 里静默回退 —— 显式选择失败该显式说。
-    image_model = serializers.PrimaryKeyRelatedField(
-        queryset=ImageModel.objects.filter(enabled=True),
-        required=False, allow_null=True, default=None,
-    )
+    image_model = _channel_choice_field(ImageProvider.Kind.IMAGE)
 
     def validate(self, data):
         # cutout 算法 (rembg / LLM 同) 都是单图操作, n>1 没有"多个抠图变体"语义.
@@ -142,6 +154,22 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
                 "n": ["Cutout mode produces exactly 1 image; n must be 1."],
             })
         return data
+
+
+class SplitJobCreateSerializer(serializers.Serializer):
+    """POST /scenes/<id>/split/ — the `image` file is pulled from request.FILES.
+
+    只校验 image_model —— split 的两条 leg 跟 image-edit 走同一个 runner, 所以工具栏
+    选的模型必须同样送达, 也必须同样在这里就报"配置不存在"。
+
+    region / resolution 保持宽松 (CharField + create_split_jobs 里的档位兜底) 而不是
+    收成 ChoiceField: 它们本来就接受任意字符串并各自有兜底, 收紧会把原先能生成的请求
+    变成 400, 那是这次改动之外的行为变化。
+    """
+
+    region = serializers.CharField(required=False, allow_blank=True, default="")
+    resolution = serializers.CharField(required=False, allow_blank=True, default="")
+    image_model = _channel_choice_field(ImageProvider.Kind.IMAGE)
 
 
 def result_asset_url(obj) -> str:
@@ -241,6 +269,7 @@ class AngleJobCreateSerializer(serializers.Serializer):
         required=False, allow_blank=True, default="", max_length=2000,
     )
     num_images = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
+    image_model = _channel_choice_field(ImageProvider.Kind.ANGLE)
 
 
 class AngleResultSerializer(_AssetResultSerializerBase):
@@ -363,7 +392,7 @@ class ImageProviderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ImageProvider
-        fields = ("id", "label", "base_url", "api_key", "defaults", "models",
+        fields = ("id", "label", "kind", "base_url", "api_key", "defaults", "models",
                   "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
@@ -409,7 +438,10 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     """工具栏模型选择器拉的列表 —— 只有展示需要的字段, 不含 key/base_url。"""
 
     provider_label = serializers.CharField(source="provider.label", read_only=True)
+    # 前端按它分流: Image / Split 面板只列 image, Angle 面板只列 angle。带在每一项上
+    # (而不是让前端按 kind 各拉一次) —— 一次请求、一份 state, 两个选择器各自 filter。
+    kind = serializers.CharField(source="provider.kind", read_only=True)
 
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "sort_order")
+        fields = ("id", "label", "provider_label", "kind", "sort_order")
