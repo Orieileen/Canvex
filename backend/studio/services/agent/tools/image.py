@@ -287,9 +287,23 @@ def _generate_with_fallback(
     → _load_or_skip rollback 退 credit. 这让 dev 环境无 fallback 配也行得通.
     """
     if channel is not None:
-        return _call_with_retries(
-            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-        )
+        try:
+            return _call_with_retries(
+                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            )
+        except Exception as exc:
+            # 显式选择不回退, 所以这里就是终点 —— 这条消息会原样变成 job.error, 再原样
+            # 变成画布上那行红字。所以它必须自己说清楚两件事: 挂的是**哪个**通道, 以及
+            # 我们**没有**替他换一个。否则用户看到的只是一句通用失败, 会以为产品坏了,
+            # 而不是"这个供应商不行, 换一个模型再试"。
+            #
+            # 顺序是刻意的: job.error 会被截到 5000 字, 而供应商可能吐一整页 HTML。
+            # 把"哪个通道 + 该怎么办"放在原始报文**之前**, 截断就只可能吃掉报文尾巴,
+            # 永远吃不掉那句能让用户行动的话。
+            raise RuntimeError(
+                f"[{channel.label}] 生成失败, 已选定该模型故未自动切换其他通道 —— "
+                f"可在工具栏换一个再试。供应商返回: {exc}"
+            ) from exc
     try:
         return _call_with_retries(
             channel_from_env(_PRIMARY_PREFIX),
