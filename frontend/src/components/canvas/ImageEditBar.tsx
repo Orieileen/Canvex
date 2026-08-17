@@ -180,12 +180,14 @@ interface ImageEditBarProps {
     onDismissError: () => void;
   };
   /** 生图通道选择器 —— 同一份画布级 state, 聊天栏那个改的也是它。
-   *  只发给 Image / Split 两个面板: Video 还是另一套配置、Merge/Mockup 根本不调 API,
-   *  摆上选择器等于骗人。 */
+   *  只发给 Image / Split 两个面板。Video / Angle 各有自己的一份 (接口形状不同, 模型集合
+   *  不相交); Merge / Mockup 根本不调 API, 摆上选择器等于骗人。 */
   imageModel: ChannelPicker;
   /** Angle 通道选择器。跟上面是两份独立选择 —— fal 的视角模型发不了生图请求, 反之
    *  亦然, 所以它们的列表和粘性选择都各归各。 */
   angleModel: ChannelPicker;
+  /** Video 通道选择器 —— 只发给 VideoPanel。 */
+  videoModel: ChannelPicker;
   merge: {
     isProcessing: boolean;
     error: string | null;
@@ -226,7 +228,7 @@ const EDGE_MARGIN = 8;
 
 const forwardWheelToCanvas = forwardWheelToExcalidrawCanvas;
 
-export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, imageModel, angleModel, onSendToChat }: ImageEditBarProps) {
+export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, imageModel, angleModel, videoModel, onSendToChat }: ImageEditBarProps) {
   const { t } = useTranslation("canvasUi");
   // 初始 placement 用 0,0 而不是 screenY+screenHeight+ANCHOR_GAP —— 后者在
   // 巨图 (screenHeight > 1000px) 下会把 absolute child 定位到 y=2000+, 撑大
@@ -405,6 +407,7 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
         {support.video && (
           <TabsContent value="video">
             <VideoPanel
+              videoModel={videoModel}
               canPin={!!imageSourceUrl}
               promptFromTexts={promptFromTexts}
               isSubmitting={video.isSubmitting}
@@ -704,6 +707,7 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
 // ─── Video panel ────────────────────────────────────────────────────────────
 
 interface VideoPanelProps {
+  videoModel: ChannelPicker;
   /** False if the selected image has no public URL (only a local dataURL).
    *  External video provider can't fetch a local blob, so Generate is locked. */
   canPin: boolean;
@@ -716,7 +720,7 @@ interface VideoPanelProps {
   }) => void;
 }
 
-function VideoPanel({ canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPanelProps) {
+function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPanelProps) {
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
@@ -759,6 +763,13 @@ function VideoPanel({ canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPa
         }
         disabled={!canPin || isSubmitting}
         className={inputClass}
+      />
+      <Divider />
+      <ImageModelSelector
+        {...videoModel}
+        variant="text"
+        buttonDisabled={isSubmitting}
+        title={t("imageModels.videoTitle")}
       />
       <Divider />
       <select

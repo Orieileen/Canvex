@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -147,7 +147,7 @@ export function ImageProviderSettings({
   // 表单的字段表由后端下发。跟 providers 分开拉: 它跟用户配了什么无关, 只随后端版本变,
   // 保存/删除后不需要重拉。拉不到就给空数组 —— 那样参数区是空的, 但名称 / Base URL /
   // key / 模型这些正经字段照常能填能存。
-  const [tunables, setTunables] = useState<CanvasTunableSpec[]>([]);
+  const [tunables, setTunables] = useState<Record<string, CanvasTunableSpec[]>>({});
 
   /** `discardDraft` = 刚保存成功的那张卡片的草稿 id, 用服务端版本无条件顶掉它。
    *
@@ -192,11 +192,11 @@ export function ImageProviderSettings({
   useEffect(() => {
     if (!open) return;
     void reload();
-    if (tunables.length === 0) {
+    if (Object.keys(tunables).length === 0) {
       canvasService
         .getImageProviderSchema()
         .then(({ data }) => setTunables(data.tunables))
-        .catch(() => setTunables([]));
+        .catch(() => setTunables({}));
     }
     // tunables 刻意不进依赖: 它只在还没拿到时拉一次, 进依赖会在 setTunables 后再触发一轮。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -460,18 +460,16 @@ function ProviderCard({
   onPatch: (patch: Partial<CanvasImageProvider>) => void;
   onSave: () => void;
   onDelete: () => void;
-  /** 后端下发的全部旋钮, 未按 kind 过滤。 */
-  tunables: CanvasTunableSpec[];
+  /** 后端下发的旋钮表, 已按 kind 分组。 */
+  tunables: Record<string, CanvasTunableSpec[]>;
 }) {
   const { t } = useTranslation("canvasUi");
   const [testing, setTesting] = useState("");
   const isNew = draft.id.startsWith("new-");
-  // 这种通道真的会读的那些 —— 摆上它读不到的项等于骗用户。切换 kind 时自动跟着变,
-  // 而后端保存时也会按同一份规则把不适用的键丢掉 (见 ImageProviderSerializer.validate)。
-  const specs = useMemo(
-    () => tunables.filter((f) => f.kinds.includes(draft.kind)),
-    [tunables, draft.kind],
-  );
+  // 这种通道真的会读的那些 —— 摆上它读不到的项等于骗用户。切换 kind 时自动跟着变, 连
+  // 占位符都跟着换 (video 的 poll_interval 默认 20 秒, 生图是 5 秒); 后端保存时也会按
+  // 同一份规则把不适用的键丢掉 (见 ImageProviderSerializer.validate)。
+  const specs = tunables[draft.kind] ?? [];
 
   const test = async (model: CanvasImageModel) => {
     // 供应商没保存、或这一行模型还没保存, 后端都拿不到可查的记录 —— 模型行的本地临时
@@ -533,6 +531,7 @@ function ProviderCard({
             >
               <option value="image">{t("imageProviders.kindImage")}</option>
               <option value="angle">{t("imageProviders.kindAngle")}</option>
+              <option value="video">{t("imageProviders.kindVideo")}</option>
             </select>
           </Field>
           <Field
@@ -564,6 +563,7 @@ function ProviderCard({
                   key={m.id || i}
                   model={m}
                   specs={specs}
+                  canTest={draft.kind !== "video"}
                   testing={testing === m.id}
                   onPatch={(patch) => patchModel(i, patch)}
                   onTest={() => void test(m)}
@@ -623,6 +623,7 @@ function ProviderCard({
 function ModelRow({
   model,
   specs,
+  canTest,
   testing,
   onPatch,
   onTest,
@@ -631,6 +632,8 @@ function ModelRow({
   model: CanvasImageModel;
   /** 已按 provider 的 kind 过滤好的旋钮表。 */
   specs: CanvasTunableSpec[];
+  /** 能不能一键测。video 不行 —— 一次生成是分钟级的, 撑不过一个同步请求。 */
+  canTest: boolean;
   testing: boolean;
   onPatch: (patch: Partial<CanvasImageModel>) => void;
   onTest: () => void;
@@ -654,15 +657,17 @@ function ModelRow({
           placeholder={t("imageProviders.modelStringPlaceholder")}
           className={cn(inputCls, "flex-1 font-mono")}
         />
-        <button
-          type="button"
-          onClick={onTest}
-          disabled={testing}
-          title={t("imageProviders.testHint")}
-          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-40"
-        >
-          {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" strokeWidth={2} />}
-        </button>
+        {canTest && (
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={testing}
+            title={t("imageProviders.testHint")}
+            className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-40"
+          >
+            {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" strokeWidth={2} />}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDelete}

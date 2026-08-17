@@ -199,10 +199,12 @@ export interface CanvasImageModel {
   sort_order: number;
 }
 
-/** 供应商的接口形状。`image` = 通用生图接口 ({base_url}/images/generations, Bearer);
- *  `angle` = fal.run 的视角重渲染 (模型名在 URL 路径里, 认证是 `Key`, 请求体是相机
- *  坐标)。前端据此决定显不显示那 13 个生图参数, 以及每个选择器列哪些。 */
-export type CanvasImageProviderKind = "image" | "angle";
+/** 供应商的接口形状:
+ *  - `image` 通用生图接口 ({base_url}/images/generations, Bearer)。Image / Split 用。
+ *  - `angle` fal.run 的视角重渲染 (模型名在 URL 路径里, 认证是 `Key`, 请求体是相机坐标)。
+ *  - `video` 文/图生视频 (提交拿 task_id 再长轮询)。
+ *  决定每个选择器列哪些模型, 以及配置表单显示哪些参数(后者由后端下发的 schema 说)。 */
+export type CanvasImageProviderKind = "image" | "angle" | "video";
 
 /** 一个生图供应商端点 —— 一把 key + 一个 base_url + 一套请求参数默认值。
  *  api_key 明文返回:本地单机项目,配置页要能回显用户填过什么、直接改。 */
@@ -233,8 +235,6 @@ export interface CanvasTunableSpec {
   placeholder: string;
   /** 下拉里"不填"那一项的语义: 用我们的默认, 还是根本不下发这个字段。 */
   empty_label: "unset" | "dont_send";
-  /** 哪些 kind 的通道真的会读这一项。 */
-  kinds: CanvasImageProviderKind[];
 }
 
 /** 写回后端时的供应商形状。跟读取形状只差嵌套模型行的 id —— 前端刚加的那行还没

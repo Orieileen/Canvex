@@ -243,6 +243,9 @@ class ImageChannel:
     poll_url: str = ""          # 空则用 base_url
     poll_max_attempts: int = 60
     poll_interval: int = 5
+    # 退避上限: 每轮等待 ×1.5 直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
+    # 视频是分钟级的, 固定 5 秒去敲一个要跑 3 分钟的任务只是白敲。
+    poll_max_interval: int = 0
     poll_timeout: int = 30
     # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
     label: str = ""

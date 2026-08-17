@@ -1010,6 +1010,17 @@ class ImageProviderTestView(APIView):
 
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)
+        # video 不测: 一次真实的视频生成是"提交 → 长轮询"的分钟级流程, 压不进这里的 60 秒
+        # 同步预算。而拿生图那条去探它 (POST {base}/images/generations) 会让一条**配得完全
+        # 正确**的视频通道稳定报 404 —— 正是这个按钮存在的意义要消灭的假信号, 所以宁可
+        # 明说"测不了", 也不给一个假的失败。
+        if provider.kind == ImageProvider.Kind.VIDEO:
+            raise ValidationError(
+                {"image_model": [
+                    "视频通道不支持一键测试 —— 一次生成要几分钟, 撑不过一个同步请求。"
+                    "直接在 Video tab 生成一次即可, 失败信息会原样显示在画布上。"
+                ]}
+            )
         model_id = request.data.get("image_model")
         if model_id:
             try:

@@ -8,6 +8,7 @@ import type { CanvasImageModelChoice } from "@/types/canvex";
 // 共用一个键会让切换 tab 时互相把对方清成默认。
 const IMAGE_MODEL_KEY = "canvex:image-model";
 const ANGLE_MODEL_KEY = "canvex:angle-model";
+const VIDEO_MODEL_KEY = "canvex:video-model";
 
 /** 一个选择器要的全部东西。前四项刻意跟 ImageModelSelector 的 props 同名, 直接摊开传。 */
 export interface ChannelPicker {
@@ -22,6 +23,7 @@ export interface ChannelPicker {
 export interface ChannelPickers {
   image: ChannelPicker;
   angle: ChannelPicker;
+  video: ChannelPicker;
   /** 配置面板增删改完调它 —— 否则工具栏还列着已经删掉的通道。 */
   reload: () => void;
 }
@@ -50,8 +52,9 @@ export function useChannelPickers(onOpenSettings: () => void): ChannelPickers {
   }, []);
   useEffect(() => reload(), [reload]);
 
-  // 一次请求拿回全部, 两个选择器各自按 kind 筛 —— 两边的接口形状不同 (angle 的模型名在
-  // URL 路径里、认证是 Key), 混着列会让人选到一个必然发不出去的组合。
+  // 一次请求拿回全部, 三个选择器各自按 kind 筛 —— 三边的接口形状都不同 (angle 的模型名在
+  // URL 路径里、认证是 Key; video 是提交完再长轮询), 混着列会让人选到一个必然发不出去的
+  // 组合。
   const imageChoices = useMemo(
     () => models?.filter((m) => m.kind === "image") ?? null,
     [models],
@@ -60,9 +63,14 @@ export function useChannelPickers(onOpenSettings: () => void): ChannelPickers {
     () => models?.filter((m) => m.kind === "angle") ?? null,
     [models],
   );
+  const videoChoices = useMemo(
+    () => models?.filter((m) => m.kind === "video") ?? null,
+    [models],
+  );
 
   const image = useStickyModelChoice(imageChoices, IMAGE_MODEL_KEY);
   const angle = useStickyModelChoice(angleChoices, ANGLE_MODEL_KEY);
+  const video = useStickyModelChoice(videoChoices, VIDEO_MODEL_KEY);
 
   return useMemo(
     () => ({
@@ -81,7 +89,14 @@ export function useChannelPickers(onOpenSettings: () => void): ChannelPickers {
         onOpenSettings,
         ref: angle.ref,
       },
+      video: {
+        models: videoChoices ?? [],
+        value: video.value,
+        onChange: video.setValue,
+        onOpenSettings,
+        ref: video.ref,
+      },
     }),
-    [reload, imageChoices, angleChoices, image, angle, onOpenSettings],
+    [reload, imageChoices, angleChoices, videoChoices, image, angle, video, onOpenSettings],
   );
 }

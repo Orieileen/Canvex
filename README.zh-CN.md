@@ -96,7 +96,6 @@ docker compose up -d --build
 | `CANVAS_CHAT_API_KEY` | ✅ 聊天 | agent 用的 LLM key，需支持 OpenAI 风格的 tool calling。**不会**回退到 `OPENAI_*`。 |
 | `CANVAS_CHAT_BASE_URL` | – | 聊天端点；留空 = OpenAI 默认。 |
 | `CANVAS_CHAT_MODEL` | – | 默认 `gpt-4o-mini`。 |
-| `CANVAS_VIDEO_API_KEY` / `_BASE_URL` / `_MODEL` | ✅ 视频 | 用视频功能必填（OpenAI 兼容 `POST {base}/videos/generations` + 轮询）。 |
 | `PUBLIC_MEDIA_BASE` | ⚠️ | 本后端的公网地址（默认 `http://localhost:28000`）。图生图/视频/换视角时供应商要来拉源图，必须可公网访问 —— 生产用隧道/CDN。纯文生图不需要。 |
 | `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆）。 |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
@@ -174,6 +173,6 @@ backend/
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **图像结果不对或报错** —— 在侧栏「配置供应商」里核对 base URL、key 和模型名，那个面板带测试按钮。视频则核对 `CANVAS_VIDEO_*` 的 env。
+- **图像结果不对或报错** —— 在侧栏「配置供应商」里核对 base URL、key 和模型名，那个面板带测试按钮。视频也在同一个地方配。
 - **图生图/视频/换视角一直不返回** —— 供应商要能拉到你的源图；把 `PUBLIC_MEDIA_BASE` 设成可公网访问的地址。
 - **前端请求被 CORS 拦** —— 保持 `CORS_ALLOW_ALL_ORIGINS=true`（默认），或把你的来源加进 `CORS_ALLOWED_ORIGINS`。

@@ -167,19 +167,8 @@ CANVAS_CHAT_MODEL = os.getenv("CANVAS_CHAT_MODEL", "gpt-4o-mini")
 CANVAS_AGENT_STORE_BACKEND = os.getenv("CANVAS_AGENT_STORE_BACKEND", "memory")
 CANVAS_AGENT_STORE_DSN = os.getenv("CANVAS_AGENT_STORE_DSN", "")
 
-# 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
-# 跑到就 raise 把 job 标 FAILED。
-CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")
-CANVAS_VIDEO_API_KEY = os.getenv("CANVAS_VIDEO_API_KEY", "")
-CANVAS_VIDEO_MODEL = os.getenv("CANVAS_VIDEO_MODEL", "")
-
-# 视频长轮询: 20s 起指数退避, 单次封顶 180s, 上限 9 轮 (累计 ~24 分钟)。
-CANVAS_VIDEO_POLL_MAX_ATTEMPTS = int(os.getenv("CANVAS_VIDEO_POLL_MAX_ATTEMPTS", "9") or 9)
-CANVAS_VIDEO_POLL_INITIAL_SECONDS = int(os.getenv("CANVAS_VIDEO_POLL_INITIAL_SECONDS", "20") or 20)
-CANVAS_VIDEO_POLL_MAX_SECONDS = int(os.getenv("CANVAS_VIDEO_POLL_MAX_SECONDS", "180") or 180)
-# 视频 HTTP 调用本身的 timeout (和 poll 间隔无关)。
-CANVAS_VIDEO_SUBMIT_TIMEOUT = int(os.getenv("CANVAS_VIDEO_SUBMIT_TIMEOUT", "60") or 60)
-CANVAS_VIDEO_POLL_HTTP_TIMEOUT = int(os.getenv("CANVAS_VIDEO_POLL_HTTP_TIMEOUT", "30") or 30)
+# 视频通道的配置(端点 / key / 模型 / 轮询参数)现在住在库里, 由用户在侧栏「配置供应商」
+# 里配一条 kind=video 的记录。原来的 CANVAS_VIDEO_* 由迁移 0013 一次性导入。
 
 # Credit cost (Canvex 独立版 billing 为 no-op stub, 实际成本见 studio.constants;
 # 这几项保留对齐 meired 契约)。

@@ -285,6 +285,8 @@ export interface VideoCreatePayload {
   image_urls?: string[];
   duration?: number;
   aspect_ratio?: string;
+  /** Video tab 选的通道 (kind=video 的 ImageModel.id)。空 = 后端退到库里第一条。 */
+  imageModelId?: string;
 }
 
 export interface AngleCreatePayload {
@@ -384,7 +386,7 @@ export const canvasService = {
     }),
   /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
   getImageProviderSchema: () =>
-    request.get<{ tunables: CanvasTunableSpec[] }>(`${IMAGE_PROVIDERS}schema/`),
+    request.get<{ tunables: Record<string, CanvasTunableSpec[]> }>(`${IMAGE_PROVIDERS}schema/`),
   /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
   importImageProviderCurl: (curl: string) =>
     request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),
@@ -425,14 +427,16 @@ export const canvasService = {
       if (payload.prompt) form.append("prompt", payload.prompt);
       if (payload.duration) form.append("duration", String(payload.duration));
       if (payload.aspect_ratio) form.append("aspect_ratio", payload.aspect_ratio);
+      if (payload.imageModelId) form.append("image_model", payload.imageModelId);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/video/`,
         form,
       );
     }
+    const { imageModelId, ...rest } = payload;
     return request.post<{ job_id: string; status: string }>(
       `${SCENES}${sceneId}/video/`,
-      payload,
+      imageModelId ? { ...rest, image_model: imageModelId } : rest,
     );
   },
   listVideoJobs: (sceneId: string, limit = 20) =>

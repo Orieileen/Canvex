@@ -14,10 +14,13 @@ export const imageProviders = {
     kind: "Channel type",
     kindImage: "Image generation (Image / Split)",
     kindAngle: "Camera angle re-render (Angle)",
+    kindVideo: "Video generation (Video)",
     kindHint: {
       image: "Shows up in the Image and Split pickers, and in the chat bar.",
       angle:
         "Shows up in the Angle picker only. The request body is the camera coordinates from the cube, so timeout is the only tunable here.",
+      video:
+        "Shows up in the Video picker only. Submit returns a task id which we then long-poll, so the tunables here are the timeouts and the poll schedule.",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
@@ -25,6 +28,8 @@ export const imageProviders = {
         "Without the /images/generations suffix — Canvex appends it. Local model servers are fine, but the backend runs in a container: use host.docker.internal:11434, not localhost:11434.",
       angle:
         "Host only, e.g. https://fal.run — the model string is appended as the path. Put the full model id (fal-ai/…) in the model field below.",
+      video:
+        "Without the /videos/generations suffix — Canvex appends it, and polls {base}/videos/<task id>.",
     },
     apiKey: "API key",
     apiKeyHint: "Stored as-is (local single-machine tool). It is never written to logs.",
@@ -68,7 +73,8 @@ export const imageProviders = {
       poll_enabled: "provider returns a task id to poll",
       poll_url: "poll endpoint, blank = Base URL",
       poll_max_attempts: "max polls",
-      poll_interval: "seconds between polls",
+      poll_interval: "seconds between polls (first wait)",
+      poll_max_interval: "backoff ceiling; blank/0 = fixed interval",
       poll_timeout: "per-poll timeout (s)",
     },
   },
@@ -86,10 +92,13 @@ export const imageProviders = {
     kind: "通道类型",
     kindImage: "生图 (Image / Split)",
     kindAngle: "视角重渲染 (Angle)",
+    kindVideo: "视频生成 (Video)",
     kindHint: {
       image: "会出现在 Image、Split 两个选择器和聊天栏里。",
       angle:
         "只出现在 Angle 的选择器里。它的请求体是画布上那个立方体给的相机坐标,所以这里能调的只有超时。",
+      video:
+        "只出现在 Video 的选择器里。提交后拿到 task id 再长轮询,所以这里能调的是各种超时和轮询节奏。",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
@@ -97,6 +106,8 @@ export const imageProviders = {
         "不要带 /images/generations 后缀,Canvex 会自己拼。可以填本机推理服务,但后端跑在容器里 —— 要用 host.docker.internal:11434,不是 localhost:11434。",
       angle:
         "只填域名,比如 https://fal.run —— 模型名会被拼成路径。完整模型 id (fal-ai/…) 填在下面的模型栏。",
+      video:
+        "不要带 /videos/generations 后缀,Canvex 会自己拼;轮询打的是 {base}/videos/<task id>。",
     },
     apiKey: "API 密钥",
     apiKeyHint: "原样保存(本地单机工具)。不会写进日志。",
@@ -139,7 +150,8 @@ export const imageProviders = {
       poll_enabled: "供应商先返 task id 再轮询",
       poll_url: "轮询端点,留空 = Base URL",
       poll_max_attempts: "最多轮询几次",
-      poll_interval: "轮询间隔(秒)",
+      poll_interval: "轮询间隔(秒,首轮等待)",
+      poll_max_interval: "退避上限;留空/0 = 固定间隔",
       poll_timeout: "单次轮询超时(秒)",
     },
   },
@@ -149,6 +161,7 @@ export const imageModels = {
   en: {
     title: "Image model",
     angleTitle: "Angle model",
+    videoTitle: "Video model",
     pick: "Pick image model",
     /** 触发按钮上显示 —— 只有一个通道都没配时才会出现。 */
     none: "None",
@@ -158,6 +171,7 @@ export const imageModels = {
   zh: {
     title: "生图模型",
     angleTitle: "视角模型",
+    videoTitle: "视频模型",
     pick: "选择生图模型",
     none: "未配置",
     empty: "还没有配置任何模型。",

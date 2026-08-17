@@ -187,6 +187,9 @@ class ImageProvider(models.Model):
         # fal.run 的视角重渲染 —— 模型名在 URL 路径里、认证是 `Key`、请求体是相机
         # 坐标而不是自由 prompt。Angle tab 用。
         ANGLE = "angle", "Camera angle re-render"
+        # 文/图生视频 ({base_url}/videos/generations 提交 → 拿 task_id → 长轮询)。
+        # 请求体由 video.py 自己拼, 所以它只读连接超时 + 那套轮询参数。Video tab 用。
+        VIDEO = "video", "Video generation"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     label = models.CharField(max_length=100)
@@ -363,6 +366,14 @@ class VideoJob(models.Model):
     image_urls = models.JSONField(default=list, blank=True)
     duration = models.PositiveSmallIntegerField(default=10)  # seconds
     aspect_ratio = models.CharField(max_length=16, default="16:9")
+
+    # 用户在 Video tab 选的通道。这条路径是异步的 (提交完就返回, worker 之后才捞这行去
+    # 长轮询), 所以选择必须落在行上而不是留在请求里。空 = 退到库里第一条 video 通道。
+    # SET_NULL: 删一个模型配置不该把历史任务一起删掉。
+    image_model = models.ForeignKey(
+        "ImageModel", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="video_jobs",
+    )
 
     # 外部 provider 的 task id,用于 long-poll
     task_id = models.CharField(max_length=128, blank=True)

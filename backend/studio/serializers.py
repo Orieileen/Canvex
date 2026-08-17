@@ -242,6 +242,7 @@ class VideoJobCreateSerializer(serializers.Serializer):
     )
     duration = serializers.IntegerField(required=False, min_value=1, max_value=60, default=10)
     aspect_ratio = serializers.CharField(required=False, default="16:9")
+    image_model = _channel_choice_field(ImageProvider.Kind.VIDEO)
 
 
 # ---------------------------------------------------------------------------

@@ -456,6 +456,7 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    videoModelIdRef: channels.video.ref,
   });
   const angleEdit = useAngleEdit({
     sceneId: activeSceneId,
@@ -1328,6 +1329,7 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
           }}
           imageModel={channels.image}
           angleModel={channels.angle}
+          videoModel={channels.video}
           mockup={{
             binding: selectedBinding,
             isReceiving: isReceivingSelected,
