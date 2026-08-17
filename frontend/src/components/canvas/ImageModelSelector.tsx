@@ -121,10 +121,20 @@ export function ImageModelSelector({
         </div>
 
         {models.length === 0 ? (
-          <div className="px-3 py-6 text-center">
+          // 一个都没配时保留入口: 常驻的那行已经移到侧栏了, 但这正是用户第一次点开
+          // 这里的时刻 —— 只写一句"去配置"而不给按钮就是死路。
+          <div className="px-3 py-5 text-center">
             <p className="text-[12px] leading-relaxed text-muted-foreground">
               {t("imageModels.empty")}
             </p>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-foreground transition-colors hover:bg-foreground/5"
+            >
+              <Settings2 className="size-3.5" strokeWidth={2} />
+              {t("imageModels.configure")}
+            </button>
           </div>
         ) : (
           <div className="max-h-72 overflow-y-auto py-1">
@@ -147,15 +157,6 @@ export function ImageModelSelector({
             ))}
           </div>
         )}
-
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-        >
-          <Settings2 className="size-3.5" strokeWidth={2} />
-          {t("imageModels.configure")}
-        </button>
       </PopoverContent>
     </Popover>
   );

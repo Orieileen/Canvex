@@ -15,6 +15,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  SlidersHorizontal,
   Trash2,
   Twitter,
 } from "lucide-react";
@@ -64,6 +65,11 @@ export interface CanvasSceneRenamedDetail {
  *  pinImage + 当前 sceneId)。侧栏在外层组件、面板在内层, 用 window 事件跨过去
  *  (跟 CANVAS_SCENE_RENAMED_EVENT 同款桥接, 只是方向反过来)。 */
 export const CANVAS_OPEN_MEDIA_LIBRARY_EVENT = "canvas:open-media-library";
+
+/** 全局事件: 侧栏「生图设置」按钮 dispatch, 由 CanvexWorkspacePage 监听打开配置面板。
+ *  跟素材库那条的区别: 面板挂在**顶层**而不是 CanvasArea —— 供应商配置跟画布无关,
+ *  一张画布都没有时也得能配 (不然新用户开箱就是死路)。 */
+export const CANVAS_OPEN_IMAGE_SETTINGS_EVENT = "canvas:open-image-settings";
 
 // 作者社交链接 (用户提供)。展开=底部一排图标, 折叠=纵向堆叠。
 // `id` 是稳定的逻辑键 (React key + 翻译键), `label` 是可翻译的展示文案。
@@ -567,12 +573,35 @@ export function CanvasSidebar({
         )}
       </nav>
 
+      {/* 生图设置: 供应商 / Base URL / API key / 请求参数。不依赖当前画布, 所以不像
+          素材库那样在无激活画布时禁用。 */}
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT))}
+          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+          aria-label={t("sidebar.imageSettings")}
+          title={t("sidebar.imageSettings")}
+        >
+          <SlidersHorizontal className="size-4" strokeWidth={2} />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT))}
+          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+        >
+          <SlidersHorizontal className="size-4 shrink-0" strokeWidth={2} />
+          {t("sidebar.imageSettings")}
+        </button>
+      )}
+
       {/* 中英文切换: 展开 = 行(显示目标语言); 折叠 = 图标。切换并持久化到 localStorage。 */}
       {collapsed ? (
         <button
           type="button"
           onClick={toggleLanguage}
-          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+          className="mx-auto mt-1 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
           aria-label={t("sidebar.toggleLanguage")}
           title={t("sidebar.toggleLanguage")}
         >
@@ -582,7 +611,7 @@ export function CanvasSidebar({
         <button
           type="button"
           onClick={toggleLanguage}
-          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+          className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
           title={t("sidebar.toggleLanguage")}
         >
           <Languages className="size-4 shrink-0" strokeWidth={2} />

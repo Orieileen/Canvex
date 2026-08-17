@@ -13,7 +13,11 @@ import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOve
 import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
-import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
+import {
+  CanvasSidebar,
+  CANVAS_OPEN_IMAGE_SETTINGS_EVENT,
+  CANVAS_OPEN_MEDIA_LIBRARY_EVENT,
+} from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { ImageProviderSettings } from "@/components/canvas/ImageProviderSettings";
 import { Button } from "@/components/ui/button";
@@ -223,6 +227,11 @@ function buildInitialData(data: unknown): InitialData {
   } as InitialData;
 }
 
+/** 配置面板改动了供应商 / 模型 → 广播给 CanvasArea 重拉工具栏列表。反方向的桥:
+ *  面板在顶层, 消费列表的选择器在 CanvasArea 里, 而 CanvasArea 会随 scene 切换
+ *  整棵重挂载, 所以用事件而不是把 state 提上来穿一路 props。 */
+const CANVAS_IMAGE_MODELS_CHANGED_EVENT = "canvas:image-models-changed";
+
 /**
  * Top-level Canvex workspace. Single-route (`/`): the active scene is held in
  * local state (no router param) and driven by the in-page CanvasSidebar's
@@ -231,6 +240,14 @@ function buildInitialData(data: unknown): InitialData {
 export default function CanvexWorkspacePage() {
   // 当前 scene 由 sidebar 选择驱动 —— 不走路由参数 (Canvex 单页)。
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  // 生图配置面板挂在这一层, 不在 CanvasArea —— 供应商配置跟画布无关, 一张画布都没有
+  // 时(EmptyState)也得能打开, 否则新用户开箱就配不了 key。
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setImageSettingsOpen(true);
+    window.addEventListener(CANVAS_OPEN_IMAGE_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(CANVAS_OPEN_IMAGE_SETTINGS_EVENT, open);
+  }, []);
   return (
     <div className="flex h-screen min-h-0">
       <CanvasSidebar
@@ -248,6 +265,13 @@ export default function CanvexWorkspacePage() {
           <EmptyState />
         )}
       </main>
+      <ImageProviderSettings
+        open={imageSettingsOpen}
+        onOpenChange={setImageSettingsOpen}
+        onChanged={() =>
+          window.dispatchEvent(new CustomEvent(CANVAS_IMAGE_MODELS_CHANGED_EVENT))
+        }
+      />
     </div>
   );
 }
@@ -344,7 +368,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // 配置页里的全部通道。null = 还没成功拉到 (首次加载中 / 请求失败), [] = 确实一个都
   // 没配 —— 这个区分被 useStickyModelChoice 用来判断该不该清掉失效的选择。
   const [imageModels, setImageModels] = useState<CanvasImageModelChoice[] | null>(null);
-  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
   const reloadImageModels = useCallback(() => {
     canvasService
       .listImageModels()
@@ -353,6 +376,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       .catch(() => setImageModels(null));
   }, []);
   useEffect(() => reloadImageModels(), [reloadImageModels]);
+  // 配置面板挂在顶层 (见 CANVAS_OPEN_IMAGE_SETTINGS_EVENT), 用户在那里增删改完,
+  // 这里得重拉一次列表, 否则工具栏还列着已经删掉的通道。
+  useEffect(() => {
+    window.addEventListener(CANVAS_IMAGE_MODELS_CHANGED_EVENT, reloadImageModels);
+    return () =>
+      window.removeEventListener(CANVAS_IMAGE_MODELS_CHANGED_EVENT, reloadImageModels);
+  }, [reloadImageModels]);
   // 一次请求拿回全部, 两个选择器各自按 kind 筛 —— 两边的接口形状不同 (angle 的模型名在
   // URL 路径里、认证是 Key), 混着列会让人选到一个必然发不出去的组合。
   const imageChoices = useMemo(
@@ -1188,7 +1218,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         imageModels={imageChoices ?? []}
         selectedImageModelId={selectedImageModelId}
         onSelectImageModel={setSelectedImageModelId}
-        onOpenImageSettings={() => setImageSettingsOpen(true)}
+        onOpenImageSettings={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT))}
         onStop={handleStopStream}
         isStreaming={isStreaming}
         status={chatStatus}
@@ -1349,13 +1379,13 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             models: imageChoices ?? [],
             value: imageModelChoice.value,
             onChange: imageModelChoice.setValue,
-            onOpenSettings: () => setImageSettingsOpen(true),
+            onOpenSettings: () => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT)),
           }}
           angleModel={{
             models: angleChoices ?? [],
             value: angleModelChoice.value,
             onChange: angleModelChoice.setValue,
-            onOpenSettings: () => setImageSettingsOpen(true),
+            onOpenSettings: () => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT)),
           }}
           mockup={{
             binding: selectedBinding,
@@ -1411,11 +1441,6 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
           onClose={() => setAdjustOpen(false)}
         />
       )}
-      <ImageProviderSettings
-        open={imageSettingsOpen}
-        onOpenChange={setImageSettingsOpen}
-        onChanged={reloadImageModels}
-      />
       <MediaLibrary
         open={mediaLibraryOpen}
         onOpenChange={setMediaLibraryOpen}
