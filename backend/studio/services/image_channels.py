@@ -1,12 +1,12 @@
 """库里的供应商配置 → ImageChannel。
 
-`image_client.ImageChannel` 是「一次生图调用需要的全部参数」。它有两个来源:
+`image_client.ImageChannel` 是「一次生图调用需要的全部参数」, 而**唯一来源**是用户在
+前端配的 ImageProvider / ImageModel 两层记录 —— 本模块负责把它们压成一个通道。
+(早先还有一路 env 前缀 `CANVAS_IMAGE_PRIMARY_*`, 连同工具栏的「后端默认」一起去掉了;
+老部署的值由迁移 0008 / 0010 一次性导进库。)
 
-- `image_client.channel_from_env(prefix)` —— 老路径, env 里的 PRIMARY / FALLBACK
-- 本模块 `channel_for_model(model)` —— 用户在前端配的 ImageProvider / ImageModel
-
-下游 (`_single_generation` / `build_image_client`) 只认那个 dataclass, 不知道也不关心
-配置从哪来。所以这一层是唯一需要理解「两层记录如何合并」的地方。
+下游 (`_single_generation` / `build_image_client`) 只认那个 dataclass, 不关心配置从哪
+来。所以这一层是唯一需要理解「两层记录如何合并」的地方。
 """
 import dataclasses
 import logging
@@ -108,12 +108,11 @@ def channel_for_model_id(model_id, kind: str = ImageProvider.Kind.IMAGE) -> Imag
 
 
 def default_channel(kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
-    """库里配好的第一条启用模型 —— 用户没选、env 也没配时的兜底; 都没有则 None。
+    """库里配好的第一条启用模型 —— 调用方没带选择时的兜底; 一条都没有则 None。
 
-    存在的理由: 这次改造的目标是"生图相关的 env 变量为 0"。没有这一步的话, 一个全新
-    部署即使在界面上把供应商配得好好的, 只要工具栏停在「后端默认」(默认就是停在这里),
-    就会收到一句 `缺少环境变量: CANVAS_IMAGE_PRIMARY_BASE_URL…` —— 一个界面上从头到尾
-    没提过的东西。排序跟工具栏选择器一致 (sort_order, label), 所以"默认"就是列表第一项。
+    现在只有两种情况会走到这: 任务排队期间选中的那条被删了, 或者调用方(老的入队路径 /
+    agent 没传 model 参数)本来就没带选择。前端的选择器会自动落位到列表第一项, 所以正常
+    使用不会依赖这里。排序跟选择器一致 (sort_order, label), 两边"第一条"是同一条。
     """
     model = (
         ImageModel.objects.filter(enabled=True, provider__kind=kind)

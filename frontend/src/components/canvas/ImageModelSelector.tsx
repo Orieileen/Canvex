@@ -87,7 +87,7 @@ export function ImageModelSelector({
             )}
           >
             <span className="max-w-[120px] truncate">
-              {selected ? selected.label : t("imageModels.defaultShort")}
+              {selected ? selected.label : t("imageModels.none")}
             </span>
             <ChevronDown className="size-3 shrink-0 opacity-60" strokeWidth={2} />
           </Button>
@@ -138,14 +138,6 @@ export function ImageModelSelector({
           </div>
         ) : (
           <div className="max-h-72 overflow-y-auto py-1">
-            {/* 「默认」这一项不是装饰: 它是"回到 env 通道"的唯一入口, 用户选了别的之后
-                得能退回来。 */}
-            <ModelRow
-              label={t("imageModels.default")}
-              hint={t("imageModels.defaultHint")}
-              active={!value}
-              onClick={() => onChange("")}
-            />
             {models.map((m) => (
               <ModelRow
                 key={m.id}

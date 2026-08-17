@@ -151,10 +151,8 @@ export const imageModels = {
     angleTitle: "Angle model",
     subtitle: "Applies to the next generation, and sticks until you change it.",
     pick: "Pick image model",
-    default: "Backend default",
-    /** 折叠态的触发按钮上显示 —— 跟旁边的 Auto / 2K / ×1 一样得短。 */
-    defaultShort: "Default",
-    defaultHint: "Whatever the server is configured with",
+    /** 触发按钮上显示 —— 只有一个通道都没配时才会出现。 */
+    none: "None",
     empty: "No models configured yet.",
     configure: "Configure providers…",
   },
@@ -163,9 +161,7 @@ export const imageModels = {
     angleTitle: "视角模型",
     subtitle: "对下一次生成生效,并且会一直沿用到你改为止。",
     pick: "选择生图模型",
-    default: "后端默认",
-    defaultShort: "默认",
-    defaultHint: "服务器上配好的那个",
+    none: "未配置",
     empty: "还没有配置任何模型。",
     configure: "配置供应商…",
   },

@@ -2,16 +2,16 @@
 通用图片生成 HTTP 客户端。
 
 适配任何 OpenAI 兼容的 /images/generations 接口，
-不同服务商的差异通过字段映射 + 环境变量解决。
+不同服务商的差异通过字段映射解决。
 
 用法:
-    channel = channel_from_env("CANVAS_IMAGE_PRIMARY")   # 或 channel_from_model(...)
+    channel = channel_for_model(model)     # services/image_channels.py
     client = build_image_client(channel)
     result = client.generate(prompt=..., image_urls=[...], size=...)
 
-「通道」(ImageChannel) 是一次调用需要的全部供应商参数。它有两个来源 —— env 前缀
-(channel_from_env) 和数据库里用户在前端配的 ImageProvider/ImageModel
-(services/image_channels.py) —— 但下游只认这个 dataclass, 不知道也不关心它从哪来。
+「通道」(ImageChannel) 是一次调用需要的全部供应商参数, 唯一来源是用户在前端配的
+ImageProvider/ImageModel (services/image_channels.py)。本模块只负责把它变成 HTTP,
+不关心它是怎么来的。
 """
 
 import base64
@@ -23,7 +23,7 @@ from typing import Any
 import requests
 
 from studio.services.http_retry import make_retry_session
-from studio.services.listings_utils import SourceImageDownloadError, env, env_bool, env_int
+from studio.services.listings_utils import SourceImageDownloadError
 
 logger = logging.getLogger(__name__)
 
@@ -226,72 +226,6 @@ class ImageChannel:
     poll_timeout: int = 30
     # 只用于日志和报错文案, 不参与请求 (env 通道是前缀名, 库通道是"供应商 · 模型")
     label: str = ""
-
-
-def channel_from_env(prefix: str) -> ImageChannel | None:
-    """从环境变量前缀构建通道 —— 老路径; **这个前缀没配全就返回 None**。
-
-    返回 None 而不是抛: 这次改造之后"env 里没有生图配置"是全新部署的**正常状态**, 不是
-    错误。抛一个点名 CANVAS_IMAGE_PRIMARY_* 的异常, 对一个从头到尾只在界面上配过东西的
-    用户毫无意义。能不能区分"没配"和"配了一半"只有读 env 的这个函数知道, 所以判定放这里,
-    调用方只需要决定"这个来源没有, 换下一个"。
-
-    参数:
-        prefix: 环境变量前缀，如 "CANVAS_IMAGE_PRIMARY" 或 "CANVAS_IMAGE_FALLBACK"
-
-    读取的环境变量:
-        {prefix}_BASE_URL           服务商端点      (可回退 OPENAI_BASE_URL)
-        {prefix}_API_KEY            Bearer 密钥     (可回退 OPENAI_API_KEY)
-        {prefix}_MODEL              模型名称         (必须)
-        {prefix}_IMAGE_FIELD        图片字段名       (默认 "image")
-        {prefix}_IMAGE_AS_SINGLE    n=1 时发 string  (默认 false; tu-zi 设 true)
-        {prefix}_RESPONSE_FORMAT    响应格式         (默认 "b64_json")
-        {prefix}_QUALITY            质量参数         (可选)
-        {prefix}_WATERMARK          是否打水印       (未设=不传; 火山默认 true 需显式 false)
-        {prefix}_INLINE_IMAGE       外部源 URL 下载转 base64 (默认 false; 火山拉不到远程源时设 true)
-        {prefix}_TIMEOUT            请求超时秒数     (默认 300)
-        {prefix}_SIZE_MODE          "pixel" → 火山合法像素
-        {prefix}_POLL_*             异步轮询 (ENABLED / URL / MAX_ATTEMPTS / INTERVAL / TIMEOUT)
-    """
-    base_url = env(f"{prefix}_BASE_URL") or env("OPENAI_BASE_URL")
-    api_key = env(f"{prefix}_API_KEY") or env("OPENAI_API_KEY")
-    model = env(f"{prefix}_MODEL")
-
-    if not base_url or not api_key or not model:
-        missing = [
-            name for name, value in (
-                (f"{prefix}_BASE_URL", base_url),
-                (f"{prefix}_API_KEY", api_key),
-                (f"{prefix}_MODEL", model),
-            ) if not value
-        ]
-        # 配了一半值得说一声 (多半是漏了一个变量); 一个都没配是新部署的常态, 不吵。
-        if len(missing) < 3:
-            logger.warning("env 通道 %s 配置不全, 已跳过: 缺 %s", prefix, ", ".join(missing))
-        return None
-
-    # tri-state: env 未设 → None (不下发, 用 provider 默认); 设了 → 显式 true/false.
-    watermark = env_bool(f"{prefix}_WATERMARK") if env(f"{prefix}_WATERMARK") else None
-
-    return ImageChannel(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        image_field=env(f"{prefix}_IMAGE_FIELD") or "image",
-        image_as_single=env_bool(f"{prefix}_IMAGE_AS_SINGLE", default=False),
-        response_format=env(f"{prefix}_RESPONSE_FORMAT") or "b64_json",
-        quality=env(f"{prefix}_QUALITY"),
-        watermark=watermark,
-        inline_image=env_bool(f"{prefix}_INLINE_IMAGE", default=False),
-        timeout=env_int(f"{prefix}_TIMEOUT", 300),
-        size_mode=env(f"{prefix}_SIZE_MODE"),
-        poll_enabled=env_bool(f"{prefix}_POLL_ENABLED"),
-        poll_url=env(f"{prefix}_POLL_URL"),
-        poll_max_attempts=env_int(f"{prefix}_POLL_MAX_ATTEMPTS", 60),
-        poll_interval=env_int(f"{prefix}_POLL_INTERVAL", 5),
-        poll_timeout=env_int(f"{prefix}_POLL_TIMEOUT", 30),
-        label=prefix,
-    )
 
 
 # ImageChannel 里 HTTP 层真正用得到的那些字段 —— 从两个 dataclass 的交集派生, 不手抄。

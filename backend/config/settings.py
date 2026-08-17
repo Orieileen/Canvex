@@ -187,15 +187,7 @@ CANVAS_CREDIT_COST_IMAGE = int(os.getenv("CANVAS_CREDIT_COST_IMAGE", "1") or 1)
 CANVAS_CREDIT_COST_VIDEO = int(os.getenv("CANVAS_CREDIT_COST_VIDEO", "10") or 10)
 CANVAS_CREDIT_COST_ANGLE = int(os.getenv("CANVAS_CREDIT_COST_ANGLE", "1") or 1)
 
-# fal.ai angle provider (Qwen-Image-Edit Multiple-Angles LoRA). sync endpoint
-# `fal.run/{model}` 单次 POST 阻塞返图。BASE_URL / MODEL 出厂默认即可; API_KEY 必填。
-CANVAS_ANGLE_FAL_BASE_URL = os.getenv("CANVAS_ANGLE_FAL_BASE_URL", "https://fal.run")
-CANVAS_ANGLE_FAL_API_KEY = os.getenv("CANVAS_ANGLE_FAL_API_KEY", "")
-CANVAS_ANGLE_FAL_MODEL = os.getenv(
-    "CANVAS_ANGLE_FAL_MODEL", "fal-ai/qwen-image-edit-2511-multiple-angles"
-)
-CANVAS_ANGLE_FAL_TIMEOUT = int(os.getenv("CANVAS_ANGLE_FAL_TIMEOUT", "180") or 180)
-
-# 图片生成通道复用 studio.services.image_client.ImageClient。环境变量走
-# CANVAS_IMAGE_PRIMARY_* / CANVAS_IMAGE_FALLBACK_* 前缀, 由 build_image_client(prefix)
-# 直接从 os.environ 读取 (回落 OPENAI_API_KEY / OPENAI_BASE_URL), settings 不映射。
+# 生图 / angle 的供应商配置**不在这里** —— 端点、密钥、模型名、请求参数全部存库
+# (ImageProvider / ImageModel), 由前端「配置供应商」面板增删改。老部署 env 里的
+# CANVAS_IMAGE_PRIMARY_* / CANVAS_IMAGE_FALLBACK_* / CANVAS_ANGLE_FAL_* 由迁移
+# 0008 / 0010 一次性导进库, 之后这些变量不再被读取。

@@ -3,7 +3,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
 export interface StickyModelChoice {
-  /** 当前选中的 ImageModel.id;空 = 用后端默认通道。 */
+  /** 当前选中的 ImageModel.id。只有在**一个通道都没配**时才是空 —— 列表非空时这里
+   *  一定是一条真实存在的记录 (见下面的自动落位)。 */
   value: string;
   setValue: (id: string) => void;
   /** 提交那一刻读最新值, 免得把它塞进每个 callback 的依赖数组。 */
@@ -46,12 +47,21 @@ export function useStickyModelChoice(
     }
   }, [value, storageKey]);
 
-  // 配置被删掉后, 选中的那个可能已不存在 —— 退回默认, 否则会一直发一个死 id: 提交那条
-  // 走 PrimaryKeyRelatedField 会 400, 而这个选择是粘的, 会一直粘着直到用户自己清
-  // localStorage。判据是"拉到了列表且里面没有它" —— 把所有供应商都删光 (列表为 [])
-  // 恰恰是最需要清掉它的那种情况, 所以不能要求列表非空。
+  // 选择自动落位到列表第一条, 两种情况都靠它:
+  //   - 选中的配置被删/停用了 —— 不清掉的话会一直发一个死 id (提交那条走
+  //     PrimaryKeyRelatedField 会 400), 而这个选择是粘的, 会一直粘到用户自己清
+  //     localStorage。
+  //   - 从来没选过 (首次打开) —— 以前这里停在空值 = 「后端默认」, 那一项已经去掉了,
+  //     所以空值必须落到一个真实通道上, 否则用户看到的是个没有含义的空按钮。
+  // 判据是"拉到了列表且里面没有当前值"。列表为 [] (供应商删光了) 时留空, 那时候没有
+  // 任何可落的位置, 选择器会显示引导去配置的空态。
   useEffect(() => {
-    if (models && value && !models.some((m) => m.id === value)) setValue("");
+    if (!models) return; // null = 这次没问到, 不能据此动用户的选择
+    if (models.length === 0) {
+      if (value) setValue("");
+      return;
+    }
+    if (!models.some((m) => m.id === value)) setValue(models[0].id);
   }, [models, value]);
 
   return { value, setValue, ref };

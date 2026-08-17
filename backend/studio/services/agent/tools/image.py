@@ -42,7 +42,7 @@ from studio.services.image_channels import (
     default_channel,
     resolve_model_id,
 )
-from studio.services.image_client import ImageChannel, build_image_client, channel_from_env
+from studio.services.image_client import ImageChannel, build_image_client
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -58,9 +58,6 @@ from .common import (
 )
 
 logger = logging.getLogger(__name__)
-
-_PRIMARY_PREFIX = "CANVAS_IMAGE_PRIMARY"
-_FALLBACK_PREFIX = "CANVAS_IMAGE_FALLBACK"
 
 # Tool refusal protocol: tool returns a string starting with REFUSED_PREFIX
 # when it actively blocks a call (no source / wrong shape / SKILL bypass).
@@ -271,77 +268,44 @@ def _call_with_retries(
     raise last_exc
 
 
-def _generate_with_fallback(
+def _generate_on_channel(
     *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
     channel: ImageChannel | None = None,
 ) -> list[bytes]:
-    """生成 n 张图, 带重试, 必要时切备用通道.
+    """生成 n 张图, 带重试。**不会替用户换通道**。
 
-    `channel` 是用户在前端**显式选中**的通道 (工具栏的模型选择器 / agent 的 model 参数)。
-    给了就只用它, **失败不回退** —— 换供应商会换出完全不同的画风, 而用户并不知道发生了
-    什么; 明确告诉他"这个通道失败了"才是对的。
+    `channel` 是显式选中的那条 (工具栏的模型选择器 / agent 的 model 参数)。为 None 只
+    剩两种情况: 排队期间配置被删了, 或者调用方本来就没带选择 —— 这时退到库里第一条启用
+    的模型。
 
-    没给 (老路径 / split 这类还没接上选择的入口) 才走 env: primary (with retries) 抛
-    → 切 fallback。同 task 内 try/except, credit_event 保 PENDING 不被 _load_or_skip
-    rollback (Stage 4 commit/rollback 终态不可逆, 跨 task 重试会撞
-    InvalidUsageEventState; 同 task 内 fallback 安全)。
-
-    Fallback 配置可选: CANVAS_IMAGE_FALLBACK_MODEL 未设时不切换, primary 错误冒泡
-    → _load_or_skip rollback 退 credit. 这让 dev 环境无 fallback 配也行得通.
-
-    env 一个字都没配时退到库里第一条启用的模型 —— 这次改造的目标就是"生图 env 归零",
-    没有这一步的话, 全新部署即使把供应商配得好好的, 只要工具栏停在「后端默认」(默认就
-    停在这里) 就会收到一句讲 CANVAS_IMAGE_PRIMARY_* 的报错, 而界面上从没提过它。
+    一个通道失败**不切另一个**: 换供应商会换出完全不同的画风, 而用户并不知道发生了什么。
+    明确告诉他"这个通道失败了、换一个再试"才是对的。(早先这里有一条 env 的
+    primary → fallback 自动切换链, 连同「后端默认」一起去掉了 —— 生图配置现在只有库
+    一个来源。)
     """
-    if channel is not None:
-        try:
-            return _call_with_retries(
-                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-            )
-        except Exception as exc:
-            # 显式选择不回退, 所以这里就是终点 —— 这条消息会原样变成 job.error, 再原样
-            # 变成画布上那行红字。所以它必须自己说清楚两件事: 挂的是**哪个**通道, 以及
-            # 我们**没有**替他换一个。否则用户看到的只是一句通用失败, 会以为产品坏了,
-            # 而不是"这个供应商不行, 换一个模型再试"。
-            #
-            # 顺序是刻意的: job.error 会被截到 5000 字, 而供应商可能吐一整页 HTML。
-            # 把"哪个通道 + 该怎么办"放在原始报文**之前**, 截断就只可能吃掉报文尾巴,
-            # 永远吃不掉那句能让用户行动的话。
-            raise RuntimeError(
-                f"[{channel.label}] 生成失败, 已选定该模型故未自动切换其他通道 —— "
-                f"可在工具栏换一个再试。供应商返回: {exc}"
-            ) from exc
-    primary = channel_from_env(_PRIMARY_PREFIX)
-    if primary is None:
-        db_default = default_channel()
-        if db_default is None:
-            raise RuntimeError(
-                "没有可用的生图通道: 库里没有配置任何模型, env 里也没有 "
-                f"{_PRIMARY_PREFIX}_*。请在工具栏的模型选择器里点「配置供应商…」加一个。"
-            )
-        return _call_with_retries(
-            db_default, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+    if channel is None:
+        channel = default_channel()
+    if channel is None:
+        raise RuntimeError(
+            "没有可用的生图通道 —— 还没有配置任何供应商。"
+            "请在左侧栏点「配置供应商」加一个。"
         )
     try:
         return _call_with_retries(
-            primary,
-            prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
-    except Exception:
-        # 没配全 fallback → 不切换, primary 的错误原样冒泡 (dev 环境不配 fallback 也
-        # 行得通)。比原来单看 _MODEL 严一点: MODEL 配了但 BASE_URL/API_KEY 没配时, 与其
-        # 换来一句"缺少环境变量"盖掉真正的失败原因, 不如把 primary 的错误留给用户。
-        fallback = channel_from_env(_FALLBACK_PREFIX)
-        if fallback is None:
-            raise
-        logger.exception(
-            "canvas image_gen: primary failed after retries, trying fallback: channel=%s",
-            _FALLBACK_PREFIX,
-        )
-        return _call_with_retries(
-            fallback,
-            prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-        )
+    except Exception as exc:
+        # 这里就是终点 —— 这条消息会原样变成 job.error, 再原样变成画布上那行红字。所以
+        # 它必须自己说清楚两件事: 挂的是**哪个**通道, 以及我们**没有**替他换一个。否则
+        # 用户看到的只是一句通用失败, 会以为产品坏了, 而不是"这个供应商不行, 换一个"。
+        #
+        # 顺序是刻意的: job.error 会被截到 5000 字, 而供应商可能吐一整页 HTML。把"哪个
+        # 通道 + 该怎么办"放在原始报文**之前**, 截断就只可能吃掉报文尾巴, 永远吃不掉那
+        # 句能让用户行动的话。
+        raise RuntimeError(
+            f"[{channel.label}] 生成失败, 未自动切换其他通道 —— "
+            f"可在工具栏换一个再试。供应商返回: {exc}"
+        ) from exc
 
 
 def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
@@ -361,7 +325,7 @@ def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
         if url.startswith(("http://", "https://")):
             assert_source_url_reachable(url)
 
-    image_bytes_list = _generate_with_fallback(
+    image_bytes_list = _generate_on_channel(
         prompt=job.prompt,
         image_urls=image_urls,
         size=job.size or "1024x1024",
@@ -490,7 +454,7 @@ def run_cutout_llm_step(job: ImageEditJob) -> None:
     extra = (job.prompt or "").strip()
     cutout_prompt = f"{CUTOUT_LLM_PROMPT}\n\n{extra}" if extra else CUTOUT_LLM_PROMPT
 
-    image_bytes_list = _generate_with_fallback(
+    image_bytes_list = _generate_on_channel(
         prompt=cutout_prompt,
         image_urls=[source_url],
         size=job.size or "1024x1024",

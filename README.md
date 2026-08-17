@@ -96,11 +96,7 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 | `CANVAS_CHAT_API_KEY` | ✅ chat | LLM key for the agent. Must support OpenAI-style tool calling. Does **not** fall back to `OPENAI_*`. |
 | `CANVAS_CHAT_BASE_URL` | – | Chat endpoint; empty = OpenAI default. |
 | `CANVAS_CHAT_MODEL` | – | Default `gpt-4o-mini`. |
-| `CANVAS_IMAGE_PRIMARY_API_KEY` | ✅ images | Key for image generation / editing. Falls back to `OPENAI_API_KEY` if unset. |
-| `CANVAS_IMAGE_PRIMARY_BASE_URL` | – | Image endpoint (OpenAI-compatible `/images/generations`). Falls back to `OPENAI_BASE_URL`. |
-| `CANVAS_IMAGE_PRIMARY_MODEL` | ✅ images | Image model name. |
 | `CANVAS_VIDEO_API_KEY` / `_BASE_URL` / `_MODEL` | ✅ video | Required to use the Video feature (OpenAI-compatible `POST {base}/videos/generations` + poll). |
-| `CANVAS_ANGLE_FAL_API_KEY` | ✅ angle | [fal.ai](https://fal.ai) key; required for the Angle (camera-viewpoint) feature. |
 | `PUBLIC_MEDIA_BASE` | ⚠️ | Public URL of this backend (default `http://localhost:28000`). Must be reachable by the providers for image-to-image / video / angle (they fetch the source image) — use a tunnel/CDN in prod. Pure text-to-image doesn't need it. |
 | `CANVAS_AGENT_STORE_BACKEND` | – | `memory` (default, in-process) or `postgres` (persistent agent memory). |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | Default all `canvex`. |
@@ -109,9 +105,10 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 
 Notes:
 
-- The **Angle** (multi-viewpoint) feature runs on [fal.ai](https://fal.ai): sign up for a fal.ai account, create an API key, and set it as `CANVAS_ANGLE_FAL_API_KEY`. No fal.ai account is needed for the other features.
-- The image channel also accepts a fallback provider (`CANVAS_IMAGE_FALLBACK_*`) plus per-provider field-mapping / async-polling knobs (`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`, `_RESPONSE_FORMAT`, `_POLL_ENABLED`, `_POLL_MAX_ATTEMPTS`, `_POLL_INTERVAL`, …) so it works with non-OpenAI gateways. See [.env.example](./.env.example).
-- Chat and image/video can share one provider (set the matching `*_BASE_URL` and keys).
+- **Image generation and Angle are not configured here** — endpoint, API key, model name and per-provider request knobs all live in the UI, under **Configure providers** in the left sidebar. Add as many providers and models as you like and switch between them from the toolbar when you generate.
+- The **Angle** (multi-viewpoint) feature runs on [fal.ai](https://fal.ai): sign up, create an API key, and add it as an Angle provider in that same panel. No fal.ai account is needed for the other features.
+- Upgrading from an older version: your existing `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` values are imported into the database once by migrations `0008` / `0010`. After that they are no longer read and can be deleted from `.env`.
+- Chat and video can share one provider (set the matching `*_BASE_URL` and keys).
 - The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).
 
 ## API
@@ -177,6 +174,6 @@ Cutout / Split is a 2-stage chain: stage 1 (LLM, on `canvas`) produces a white-b
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **Image / video looks wrong or errors** — verify the provider model name, base URL, and the `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_VIDEO_*` keys.
+- **Image looks wrong or errors** — check the provider's base URL, key and model name under **Configure providers** in the sidebar; the panel has a test button. For video, verify the `CANVAS_VIDEO_*` env keys.
 - **Image-to-image / video / angle never returns** — the provider must be able to fetch your source image; set `PUBLIC_MEDIA_BASE` to a publicly reachable URL.
 - **Frontend requests blocked by CORS** — keep `CORS_ALLOW_ALL_ORIGINS=true` (default) or list your origin in `CORS_ALLOWED_ORIGINS`.

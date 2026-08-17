@@ -96,11 +96,7 @@ docker compose up -d --build
 | `CANVAS_CHAT_API_KEY` | ✅ 聊天 | agent 用的 LLM key，需支持 OpenAI 风格的 tool calling。**不会**回退到 `OPENAI_*`。 |
 | `CANVAS_CHAT_BASE_URL` | – | 聊天端点；留空 = OpenAI 默认。 |
 | `CANVAS_CHAT_MODEL` | – | 默认 `gpt-4o-mini`。 |
-| `CANVAS_IMAGE_PRIMARY_API_KEY` | ✅ 图像 | 图像生成/编辑的 key；未设时回退 `OPENAI_API_KEY`。 |
-| `CANVAS_IMAGE_PRIMARY_BASE_URL` | – | 图像端点（OpenAI 兼容 `/images/generations`）；回退 `OPENAI_BASE_URL`。 |
-| `CANVAS_IMAGE_PRIMARY_MODEL` | ✅ 图像 | 图像模型名。 |
 | `CANVAS_VIDEO_API_KEY` / `_BASE_URL` / `_MODEL` | ✅ 视频 | 用视频功能必填（OpenAI 兼容 `POST {base}/videos/generations` + 轮询）。 |
-| `CANVAS_ANGLE_FAL_API_KEY` | ✅ 换视角 | [fal.ai](https://fal.ai) key；换视角（机位）功能必填。 |
 | `PUBLIC_MEDIA_BASE` | ⚠️ | 本后端的公网地址（默认 `http://localhost:28000`）。图生图/视频/换视角时供应商要来拉源图，必须可公网访问 —— 生产用隧道/CDN。纯文生图不需要。 |
 | `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆）。 |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
@@ -109,9 +105,10 @@ docker compose up -d --build
 
 说明：
 
-- **换视角**（多视角）功能跑在 [fal.ai](https://fal.ai) 上：需要去 fal.ai 注册一个账号、创建一个 API key，填到 `CANVAS_ANGLE_FAL_API_KEY`。其它功能不需要 fal.ai 账号。
-- 图像通道还支持备用供应商（`CANVAS_IMAGE_FALLBACK_*`）及按供应商的字段映射 / 异步轮询旋钮（`CANVAS_IMAGE_PRIMARY_IMAGE_FIELD`、`_RESPONSE_FORMAT`、`_POLL_ENABLED`、`_POLL_MAX_ATTEMPTS`、`_POLL_INTERVAL` …），以适配非 OpenAI 网关。详见 [.env.example](./.env.example)。
-- 聊天与图像/视频可共用一个供应商（设置对应的 `*_BASE_URL` 和 key）。
+- **生图和换视角不在这里配** —— 端点、API key、模型名、按供应商的请求参数全部在界面上填：左侧栏「配置供应商」。可以配多个供应商、多个模型，生成时在工具栏切换。
+- **换视角**（多视角）功能跑在 [fal.ai](https://fal.ai) 上：去 fal.ai 注册账号、创建 API key，在同一个面板里加一条 Angle 通道即可。其它功能不需要 fal.ai 账号。
+- 从旧版本升级：原有的 `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` 会被迁移 `0008` / `0010` 自动导进库，导完就不再读取，可以从 `.env` 里删掉。
+- 聊天与视频可共用一个供应商（设置对应的 `*_BASE_URL` 和 key）。
 - 产品免费、单工作区：没有鉴权，计费是空操作桩（`CANVAS_CREDIT_COST_*` 不起作用）。
 
 ## API
@@ -177,6 +174,6 @@ backend/
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **图像/视频结果不对或报错** —— 先核对供应商模型名、base URL，以及 `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_VIDEO_*` 的 key。
+- **图像结果不对或报错** —— 在侧栏「配置供应商」里核对 base URL、key 和模型名，那个面板带测试按钮。视频则核对 `CANVAS_VIDEO_*` 的 env。
 - **图生图/视频/换视角一直不返回** —— 供应商要能拉到你的源图；把 `PUBLIC_MEDIA_BASE` 设成可公网访问的地址。
 - **前端请求被 CORS 拦** —— 保持 `CORS_ALLOW_ALL_ORIGINS=true`（默认），或把你的来源加进 `CORS_ALLOWED_ORIGINS`。

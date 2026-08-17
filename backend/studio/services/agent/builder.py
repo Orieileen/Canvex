@@ -295,8 +295,9 @@ def build_canvas_agent():
         if not settings.CANVAS_CHAT_API_KEY:
             raise RuntimeError(
                 "CANVAS_CHAT_API_KEY is required — the chat agent must hit a "
-                "provider that supports the OpenAI tools parameter. Image/video "
-                "slots are separate (CANVAS_IMAGE_PRIMARY_* / CANVAS_VIDEO_*)."
+                "provider that supports the OpenAI tools parameter. Image "
+                "providers are configured in the UI; video is a separate env "
+                "slot (CANVAS_VIDEO_*)."
             )
 
         model = ChatOpenAI(

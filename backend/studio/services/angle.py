@@ -54,13 +54,14 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_angle_channel(job: AngleJob) -> ImageChannel:
-    """这次 angle 调用用哪套配置。四级降级, 跟生图路径同一套顺序:
+    """这次 angle 调用用哪套配置。跟生图路径同一套顺序:
 
     1. job 行上选的通道 (用户在 Angle tab 里挑的)
-    2. 库里第一条启用的 angle 通道 —— 「后端默认」的实际含义
-    3. `CANVAS_ANGLE_FAL_*` env —— 0010 迁移只在库里没有 angle 供应商时导一次,
-       导完用户可以把它删掉; 删干净了还想用 env 就得靠这条
-    4. 都没有 → 抛, 由 job_lifecycle 落成 FAILED
+    2. 库里第一条启用的 angle 通道 —— 排队期间那条被删了才会走到这
+    3. 都没有 → 抛, 由 job_lifecycle 落成 FAILED
+
+    配置只有库一个来源: `CANVAS_ANGLE_FAL_*` 那一级连同「后端默认」一起去掉了。老部署的
+    env 值由 0010 迁移一次性导进库, 之后就在界面上改。
 
     复用 ImageChannel 而不是给 angle 单开一个 dataclass: 这里只用得上它的 base_url /
     api_key / model / timeout / label 五个字段, 为剩下的十几个用不上的字段再造一个平行
@@ -69,22 +70,11 @@ def resolve_angle_channel(job: AngleJob) -> ImageChannel:
     channel = channel_for_model_id(job.image_model_id, ImageProvider.Kind.ANGLE)
     if channel is None:
         channel = default_channel(ImageProvider.Kind.ANGLE)
-    if channel is not None:
-        return channel
-
-    api_key = (settings.CANVAS_ANGLE_FAL_API_KEY or "").strip()
-    if not api_key:
+    if channel is None:
         raise RuntimeError(
-            "还没有配置 Angle 供应商 —— 在生图设置里加一个 Angle 通道, "
-            "或设置 CANVAS_ANGLE_FAL_API_KEY"
+            "还没有配置 Angle 供应商 —— 在左侧栏点「配置供应商」加一个 Angle 通道。"
         )
-    return ImageChannel(
-        base_url=(settings.CANVAS_ANGLE_FAL_BASE_URL or "https://fal.run").rstrip("/"),
-        api_key=api_key,
-        model=settings.CANVAS_ANGLE_FAL_MODEL,
-        label="Angle (env)",
-        timeout=settings.CANVAS_ANGLE_FAL_TIMEOUT,
-    )
+    return channel
 
 
 # ---------------------------------------------------------------------------
