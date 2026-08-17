@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { toolbarSelectClass } from "@/lib/canvas-toolbar-styles";
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
 /**
@@ -24,15 +25,15 @@ import type { CanvasImageModelChoice } from "@/types/canvex";
  * UX 约定:
  * - **选择是粘的**(存 localStorage), 不是 per-message。画布是连续多轮的, 每次重选很烦;
  *   这跟旁边的 SkillSelector 刚好相反 —— 那个是刻意 per-message 的。
- * - 不选 = 用后端默认通道(env 里配的那条), 按钮不显徽标, 没配过供应商的人完全不会
- *   注意到这个功能存在。
- * - 一个模型都没配时, popover 直接引导去配置页, 而不是显示一个空列表。
+ * - **总是落在一个具体模型上**: useStickyModelChoice 会把没选过 / 已失效的选择自动
+ *   落到列表第一项。所以 value 为空只可能是"一个通道都没配"。
+ * - 那种情况下 popover 直接引导去配置页, 而不是显示一个空列表。
  */
 
 interface ImageModelSelectorProps {
   /** GET /image-models/ 的结果。空 = 还没配过任何供应商。 */
   models: CanvasImageModelChoice[];
-  /** 当前选中的 ImageModel.id;空 = 用后端默认通道。 */
+  /** 当前选中的 ImageModel.id;空只可能是 models 为空(一个都没配)。 */
   value: string;
   onChange: (modelId: string) => void;
   /** 打开供应商配置面板。 */
@@ -78,11 +79,11 @@ export function ImageModelSelector({
             disabled={buttonDisabled}
             aria-label={t("imageModels.pick")}
             title={hoverTitle}
-            // 刻意抄 ImageEditBar 的 selectClass —— 它跟 Auto / 2K / ×1 是同一行同一
-            // 类东西, 长得不一样就会被当成动作按钮。
+            // 跟同一行的 Auto / 2K / ×1 共用一份样式 —— 长得不一样就会被当成动作按钮。
+            // hover:bg-transparent / font-normal / rounded-none 是压掉 Button 自带的。
             className={cn(
-              "h-10 gap-1 rounded-none px-2 text-xs font-normal text-muted-foreground",
-              "hover:bg-transparent hover:text-foreground",
+              toolbarSelectClass,
+              "gap-1 rounded-none font-normal hover:bg-transparent",
               className,
             )}
           >

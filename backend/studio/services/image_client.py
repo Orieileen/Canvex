@@ -192,6 +192,14 @@ class ImageClient:
         return result
 
 
+# ImageClient 上那些旋钮的默认值 —— ImageChannel 直接引用, 不再抄第二份。
+#
+# 抄一份的下场很安静: build_image_client 会把两边同名的字段**全部**显式传进 ImageClient
+# (见 _CLIENT_FIELDS), 所以只要是配过的通道, ImageClient 自己的默认值根本轮不到生效。
+# 那时改 ImageClient.timeout=600 会毫无反应, 而两张表已经不一致了, 没有任何报错。
+_D = {f.name: f.default for f in fields(ImageClient)}
+
+
 @dataclass(frozen=True)
 class ImageChannel:
     """一次生图调用需要的全部供应商参数 —— 「用哪个模型、怎么跟它说话」。
@@ -208,14 +216,15 @@ class ImageChannel:
     base_url: str
     api_key: str
     model: str
-    # ── 请求形状 ──
-    image_field: str = "image"
-    image_as_single: bool = False
-    response_format: str = "b64_json"
-    quality: str = ""
-    watermark: bool | None = None
-    inline_image: bool = False
-    timeout: int = 300
+    # ── 请求形状 (默认值取自 ImageClient, 见上面 _D) ──
+    image_field: str = _D["image_field"]
+    image_as_single: bool = _D["image_as_single"]
+    response_format: str = _D["response_format"]
+    quality: str = _D["quality"]
+    watermark: bool | None = _D["watermark"]
+    inline_image: bool = _D["inline_image"]
+    timeout: int = _D["timeout"]
+    # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
     size_mode: str = ""
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
@@ -224,7 +233,7 @@ class ImageChannel:
     poll_max_attempts: int = 60
     poll_interval: int = 5
     poll_timeout: int = 30
-    # 只用于日志和报错文案, 不参与请求 (env 通道是前缀名, 库通道是"供应商 · 模型")
+    # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
     label: str = ""
 
 

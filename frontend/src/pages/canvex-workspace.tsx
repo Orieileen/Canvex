@@ -13,11 +13,7 @@ import { CanvasGeneratingOverlay } from "@/components/canvas/CanvasGeneratingOve
 import { CanvasLandingOverlay } from "@/components/canvas/CanvasLandingOverlay";
 import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
-import {
-  CanvasSidebar,
-  CANVAS_OPEN_IMAGE_SETTINGS_EVENT,
-  CANVAS_OPEN_MEDIA_LIBRARY_EVENT,
-} from "@/components/canvas/CanvasSidebar";
+import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { ImageProviderSettings } from "@/components/canvas/ImageProviderSettings";
 import { Button } from "@/components/ui/button";
@@ -42,7 +38,7 @@ import { useImageAdjust } from "@/hooks/use-image-adjust";
 import { useSelectionPreview } from "@/hooks/use-selection-preview";
 import { useMergeLayer } from "@/hooks/use-merge-layer";
 import { useSplit } from "@/hooks/use-split";
-import { useStickyModelChoice } from "@/hooks/use-sticky-model-choice";
+import { useChannelPickers, type ChannelPickers } from "@/hooks/use-channel-pickers";
 import { useVideoEdit } from "@/hooks/use-video-edit";
 import { getMockupBinding, worldPointToBaseUv } from "@/lib/canvas-mockup";
 import { DEFAULT_ADJUST_BINDING, getAdjustBinding } from "@/lib/canvas-adjust";
@@ -56,7 +52,6 @@ import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
-  CanvasImageModelChoice,
   CanvasMediaImage,
   CanvasMediaVideo,
   CanvasScene,
@@ -75,11 +70,6 @@ import type {
 
 import { ChatOverlay, type ChatOverlayStatus } from "@/components/canvas/ChatOverlay";
 import { FloatingAdjustPanel, ImageEditBar } from "@/components/canvas/ImageEditBar";
-
-// 选中的通道存这里 —— 粘性选择, 跨刷新保留。两种 kind 各一个键: 模型集合不相交,
-// 共用一个键会让切换 tab 时互相把对方清成默认。
-const IMAGE_MODEL_KEY = "canvex:image-model";
-const ANGLE_MODEL_KEY = "canvex:angle-model";
 
 const SAVE_DEBOUNCE_MS = 1500;
 const STATUS_FADE_MS = 2500;
@@ -227,11 +217,6 @@ function buildInitialData(data: unknown): InitialData {
   } as InitialData;
 }
 
-/** 配置面板改动了供应商 / 模型 → 广播给 CanvasArea 重拉工具栏列表。反方向的桥:
- *  面板在顶层, 消费列表的选择器在 CanvasArea 里, 而 CanvasArea 会随 scene 切换
- *  整棵重挂载, 所以用事件而不是把 state 提上来穿一路 props。 */
-const CANVAS_IMAGE_MODELS_CHANGED_EVENT = "canvas:image-models-changed";
-
 /**
  * Top-level Canvex workspace. Single-route (`/`): the active scene is held in
  * local state (no router param) and driven by the in-page CanvasSidebar's
@@ -243,11 +228,10 @@ export default function CanvexWorkspacePage() {
   // 生图配置面板挂在这一层, 不在 CanvasArea —— 供应商配置跟画布无关, 一张画布都没有
   // 时(EmptyState)也得能打开, 否则新用户开箱就配不了 key。
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
-  useEffect(() => {
-    const open = () => setImageSettingsOpen(true);
-    window.addEventListener(CANVAS_OPEN_IMAGE_SETTINGS_EVENT, open);
-    return () => window.removeEventListener(CANVAS_OPEN_IMAGE_SETTINGS_EVENT, open);
-  }, []);
+  const openImageSettings = useCallback(() => setImageSettingsOpen(true), []);
+  // 通道选择器的状态同样挂这一层 —— 它跟画布无关, 挂进 CanvasArea 会随每次换画布
+  // 重新 GET 一遍并闪回"未配置"。
+  const channels = useChannelPickers(openImageSettings);
   return (
     <div className="flex h-screen min-h-0">
       <CanvasSidebar
@@ -255,12 +239,13 @@ export default function CanvexWorkspacePage() {
         onSelectScene={setActiveSceneId}
         onSceneCreated={setActiveSceneId}
         onSceneDeleted={() => setActiveSceneId(null)}
+        onOpenImageSettings={openImageSettings}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeSceneId ? (
           // key 强制 scene 切换时整棵 CanvasArea 重挂载, 干净重置所有 ref /
           // Excalidraw 实例 —— 比手动收口每个 ref 可靠。
-          <CanvasArea key={activeSceneId} sceneId={activeSceneId} />
+          <CanvasArea key={activeSceneId} sceneId={activeSceneId} channels={channels} />
         ) : (
           <EmptyState />
         )}
@@ -268,9 +253,7 @@ export default function CanvexWorkspacePage() {
       <ImageProviderSettings
         open={imageSettingsOpen}
         onOpenChange={setImageSettingsOpen}
-        onChanged={() =>
-          window.dispatchEvent(new CustomEvent(CANVAS_IMAGE_MODELS_CHANGED_EVENT))
-        }
+        onChanged={channels.reload}
       />
     </div>
   );
@@ -278,9 +261,10 @@ export default function CanvexWorkspacePage() {
 
 interface CanvasAreaProps {
   sceneId: string;
+  channels: ChannelPickers;
 }
 
-function CanvasArea({ sceneId }: CanvasAreaProps) {
+function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
   const { t } = useTranslation("canvasUi");
   // Always-current `t` for use inside effects that must NOT re-run on language
   // change (react-i18next returns a new `t` ref each `languageChanged`). Without
@@ -365,38 +349,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the textarea; cleared after every successful send. Per-message ephemeral
   // (matches disabledSkills lifetime).
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  // 配置页里的全部通道。null = 还没成功拉到 (首次加载中 / 请求失败), [] = 确实一个都
-  // 没配 —— 这个区分被 useStickyModelChoice 用来判断该不该清掉失效的选择。
-  const [imageModels, setImageModels] = useState<CanvasImageModelChoice[] | null>(null);
-  const reloadImageModels = useCallback(() => {
-    canvasService
-      .listImageModels()
-      .then(({ data }) => setImageModels(data))
-      // 后端不可达 → 回到"未知", 选择器照常引导去配置页, 但不会据此清掉用户的选择
-      .catch(() => setImageModels(null));
-  }, []);
-  useEffect(() => reloadImageModels(), [reloadImageModels]);
-  // 配置面板挂在顶层 (见 CANVAS_OPEN_IMAGE_SETTINGS_EVENT), 用户在那里增删改完,
-  // 这里得重拉一次列表, 否则工具栏还列着已经删掉的通道。
-  useEffect(() => {
-    window.addEventListener(CANVAS_IMAGE_MODELS_CHANGED_EVENT, reloadImageModels);
-    return () =>
-      window.removeEventListener(CANVAS_IMAGE_MODELS_CHANGED_EVENT, reloadImageModels);
-  }, [reloadImageModels]);
-  // 一次请求拿回全部, 两个选择器各自按 kind 筛 —— 两边的接口形状不同 (angle 的模型名在
-  // URL 路径里、认证是 Key), 混着列会让人选到一个必然发不出去的组合。
-  const imageChoices = useMemo(
-    () => imageModels?.filter((m) => m.kind === "image") ?? null,
-    [imageModels],
-  );
-  const angleChoices = useMemo(
-    () => imageModels?.filter((m) => m.kind === "angle") ?? null,
-    [imageModels],
-  );
-  const imageModelChoice = useStickyModelChoice(imageChoices, IMAGE_MODEL_KEY);
-  const angleModelChoice = useStickyModelChoice(angleChoices, ANGLE_MODEL_KEY);
-  const { value: selectedImageModelId, setValue: setSelectedImageModelId } = imageModelChoice;
-  const imageModelIdRef = imageModelChoice.ref;
+  // 通道选择器由页面那一层持有 (跟画布无关, 见 useChannelPickers) —— 这里只是消费。
+  const imageModelIdRef = channels.image.ref;
   const [showMinimap, setShowMinimap] = useState(false);
   // Bump 每次 Excalidraw 写入新 api —— 给 Minimap 一个 effect dep, 比靠 ref
   // 时序猜测可靠 (scene 切换 + StrictMode + HMR 多次重 mount, ref 反复换).
@@ -508,7 +462,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
-    angleModelIdRef: angleModelChoice.ref,
+    angleModelIdRef: channels.angle.ref,
   });
   const splitEdit = useSplit({
     sceneId: activeSceneId,
@@ -1215,10 +1169,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
-        imageModels={imageChoices ?? []}
-        selectedImageModelId={selectedImageModelId}
-        onSelectImageModel={setSelectedImageModelId}
-        onOpenImageSettings={() => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT))}
+        imageModel={channels.image}
         onStop={handleStopStream}
         isStreaming={isStreaming}
         status={chatStatus}
@@ -1375,18 +1326,8 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             onSubmit: () => void mergeLayer.merge(selection),
             onDismissError: mergeLayer.dismissError,
           }}
-          imageModel={{
-            models: imageChoices ?? [],
-            value: imageModelChoice.value,
-            onChange: imageModelChoice.setValue,
-            onOpenSettings: () => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT)),
-          }}
-          angleModel={{
-            models: angleChoices ?? [],
-            value: angleModelChoice.value,
-            onChange: angleModelChoice.setValue,
-            onOpenSettings: () => window.dispatchEvent(new CustomEvent(CANVAS_OPEN_IMAGE_SETTINGS_EVENT)),
-          }}
+          imageModel={channels.image}
+          angleModel={channels.angle}
           mockup={{
             binding: selectedBinding,
             isReceiving: isReceivingSelected,

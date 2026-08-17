@@ -696,7 +696,7 @@ function ModelRow({
 }
 
 /** 可调参数的编辑器。provider 默认值和 model 覆盖项共用, 字段按 provider 的 kind 裁剪。
- *  只把**明确设过**的键写进 values —— 空 = 继承上一层 / 用后端默认。 */
+ *  只把**明确设过**的键写进 values —— 空 = 继承上一层 / 用 ImageChannel 的字段默认值。 */
 function TunableEditor({
   title,
   hint,

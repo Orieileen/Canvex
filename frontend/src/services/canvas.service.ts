@@ -273,7 +273,7 @@ export interface ImageEditCreatePayload {
   size?: string;
   resolution?: "1K" | "2K" | "4K";
   n?: 1 | 2 | 4;
-  /** 工具栏选中的生图模型 (ImageModel.id)。空 = 用后端默认通道。 */
+  /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条启用的通道。 */
   imageModelId?: string;
 }
 
@@ -293,7 +293,7 @@ export interface AngleCreatePayload {
   horizontal_angle: number;
   vertical_angle: number;
   zoom: number;
-  /** Angle tab 选的通道 (kind=angle 的 ImageModel.id)。空 = 后端默认。 */
+  /** Angle tab 选的通道 (kind=angle 的 ImageModel.id)。空 = 后端退到库里第一条。 */
   image_model?: string;
 }
 

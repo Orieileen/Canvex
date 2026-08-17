@@ -5,7 +5,8 @@ import { Check, Image as ImageIcon, Loader2, SendHorizontal, Sparkles, Square, W
 import { SmartImage } from "@/components/SmartImage";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
-import type { CanvasImageModelChoice, CanvasSkill, ChatAttachment } from "@/types/canvex";
+import type { CanvasSkill, ChatAttachment } from "@/types/canvex";
+import type { ChannelPicker } from "@/hooks/use-channel-pickers";
 
 import { SkillSelector } from "./SkillSelector";
 import { ImageModelSelector } from "./ImageModelSelector";
@@ -50,13 +51,10 @@ interface ChatOverlayProps {
   placeholder?: string;
   /** All skills the agent has loaded. Empty / undefined = hide selector. */
   skills?: CanvasSkill[];
-  /** 可选的生图模型。空数组仍然渲染选择器 —— popover 里会引导去配置页, 这比
-   *  "按钮根本不出现"更容易被发现。 */
-  imageModels?: CanvasImageModelChoice[];
-  /** 当前选中的模型 id;空 = 后端默认通道。**粘性**, 由 page 持有并持久化。 */
-  selectedImageModelId?: string;
-  onSelectImageModel?: (id: string) => void;
-  onOpenImageSettings?: () => void;
+  /** 生图通道选择器的全套 props (由页面那一层持有, 见 useChannelPickers)。models 为空
+   *  数组时仍然渲染选择器 —— popover 里会引导去配置页, 这比"按钮根本不出现"更容易被
+   *  发现。省略即不渲染。 */
+  imageModel?: ChannelPicker;
   /** Canvas attachments queued for this message (added via ImageEditBar's
    *  "Send to chat"). Parent owns the list because it's seeded from canvas
    *  events; this component just renders chips + supports remove. */
@@ -73,10 +71,7 @@ export function ChatOverlay({
   skillBadges,
   placeholder,
   skills,
-  imageModels,
-  selectedImageModelId = "",
-  onSelectImageModel,
-  onOpenImageSettings,
+  imageModel,
   attachments,
   onRemoveAttachment,
 }: ChatOverlayProps) {
@@ -225,14 +220,8 @@ export function ChatOverlay({
                 buttonDisabled={isStreaming}
               />
             )}
-            {onSelectImageModel && onOpenImageSettings && (
-              <ImageModelSelector
-                models={imageModels ?? []}
-                value={selectedImageModelId}
-                onChange={onSelectImageModel}
-                onOpenSettings={onOpenImageSettings}
-                buttonDisabled={isStreaming}
-              />
+            {imageModel && (
+              <ImageModelSelector {...imageModel} buttonDisabled={isStreaming} />
             )}
           </div>
           <Button

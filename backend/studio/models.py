@@ -278,7 +278,7 @@ class ImageEditJob(models.Model):
     num_images = models.PositiveSmallIntegerField(default=1)
     # 用户在工具栏选中的模型。**必须落在 job 行上**, 因为这条路径是异步的 —— 请求早就
     # 返回了, celery worker 之后才捞这条记录去跑, 光靠请求参数传不到那时候。
-    # 空 = 没选 / 老任务 → 回退到 env 通道 (primary→fallback)。SET_NULL: 用户删了一个
+    # 空 = 没选 / 老任务 → 退到库里第一条启用的通道。SET_NULL: 用户删了一个
     # 模型配置不该把历史任务一起删掉。
     image_model = models.ForeignKey(
         "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
@@ -418,7 +418,7 @@ class AngleJob(models.Model):
     num_images = models.PositiveSmallIntegerField(default=1)
 
     # 用户在 Angle tab 选的通道 (kind=angle 的那些)。同 ImageEditJob.image_model:
-    # 这条路径是异步的, 选择必须落在行上, worker 之后才捞。空 = 回退 env。
+    # 这条路径是异步的, 选择必须落在行上, worker 之后才捞。空 = 退到库里第一条。
     image_model = models.ForeignKey(
         "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
     )

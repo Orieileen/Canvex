@@ -28,6 +28,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { toolbarSelectClass as selectClass } from "@/lib/canvas-toolbar-styles";
 import { DEFAULT_CAMERA_ANGLES, type CameraAngles } from "@/lib/angle";
 import {
   ADJUST_GROUPS,
@@ -62,7 +63,7 @@ import {
   type VideoDuration,
 } from "@/hooks/use-video-edit";
 import { ImageModelSelector } from "@/components/canvas/ImageModelSelector";
-import type { CanvasImageModelChoice } from "@/types/canvex";
+import type { ChannelPicker } from "@/hooks/use-channel-pickers";
 
 /**
  * Floating "edit this selection" toolbar — canvex-style horizontal row with
@@ -132,15 +133,6 @@ function composePrompt(selection: CanvasSelection, userText: string): string {
   return [fromTexts, userText.trim()].filter(Boolean).join("\n");
 }
 
-/** 一个通道选择器需要的全部东西。生图和 angle 各传一份。 */
-interface ChannelChoiceProps {
-  /** 已按 kind 筛过的可选项。 */
-  models: CanvasImageModelChoice[];
-  value: string;
-  onChange: (modelId: string) => void;
-  onOpenSettings: () => void;
-}
-
 interface ImageEditBarProps {
   selection: CanvasSelection;
   /** Resolved display URL for single-image selections — `sourceUrl` (chat-
@@ -190,10 +182,10 @@ interface ImageEditBarProps {
   /** 生图通道选择器 —— 同一份画布级 state, 聊天栏那个改的也是它。
    *  只发给 Image / Split 两个面板: Video 还是另一套配置、Merge/Mockup 根本不调 API,
    *  摆上选择器等于骗人。 */
-  imageModel: ChannelChoiceProps;
+  imageModel: ChannelPicker;
   /** Angle 通道选择器。跟上面是两份独立选择 —— fal 的视角模型发不了生图请求, 反之
    *  亦然, 所以它们的列表和粘性选择都各归各。 */
-  angleModel: ChannelChoiceProps;
+  angleModel: ChannelPicker;
   merge: {
     isProcessing: boolean;
     error: string | null;
@@ -570,30 +562,6 @@ function PreviewImage({ url, className }: { url: string; className?: string }) {
 
 // ─── Image panel ────────────────────────────────────────────────────────────
 
-/** 参数行里的通道选择器 —— 文字形态, 跟同一行的 Auto / 2K / ×1 一致。
- *  当前选的模型名直接显示在按钮上, 不用点开才知道。 */
-function PanelModelSelector({
-  choice,
-  disabled,
-  title,
-}: {
-  choice: ChannelChoiceProps;
-  disabled: boolean;
-  title?: string;
-}) {
-  return (
-    <ImageModelSelector
-      models={choice.models}
-      value={choice.value}
-      onChange={choice.onChange}
-      onOpenSettings={choice.onOpenSettings}
-      buttonDisabled={disabled}
-      variant="text"
-      title={title}
-    />
-  );
-}
-
 interface ImagePanelProps {
   /** Drives the final prompt: image-with-shapes routes arrows through
    *  `buildSpatialPrompt`, other kinds use the flat canvas-text join. */
@@ -613,7 +581,7 @@ interface ImagePanelProps {
     resolution: ImageEditResolution;
     n: ImageEditCount;
   }) => void;
-  imageModel: ChannelChoiceProps;
+  imageModel: ChannelPicker;
 }
 
 function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit, imageModel }: ImagePanelProps) {
@@ -672,7 +640,7 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
         className={inputClass}
       />
       <Divider />
-      <PanelModelSelector choice={imageModel} disabled={isSubmitting} />
+      <ImageModelSelector {...imageModel} variant="text" buttonDisabled={isSubmitting} />
       <Divider />
       <select
         value={size}
@@ -840,7 +808,7 @@ interface AnglePanelProps {
   sourceUrl: string | null;
   isSubmitting: boolean;
   onSubmit: (params: { angles: CameraAngles }) => void;
-  angleModel: ChannelChoiceProps;
+  angleModel: ChannelPicker;
 }
 
 function AnglePanel({ sourceUrl, isSubmitting, onSubmit, angleModel }: AnglePanelProps) {
@@ -872,9 +840,10 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit, angleModel }: AnglePane
           {t("edit.dragCube")}
         </div>
         <Divider />
-        <PanelModelSelector
-          choice={angleModel}
-          disabled={isSubmitting}
+        <ImageModelSelector
+          {...angleModel}
+          variant="text"
+          buttonDisabled={isSubmitting}
           title={t("imageModels.angleTitle")}
         />
         <Divider />
@@ -900,7 +869,7 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit, angleModel }: AnglePane
 interface SplitPanelProps {
   isSubmitting: boolean;
   onSubmit: (params: { resolution: ImageEditResolution }) => void;
-  imageModel: ChannelChoiceProps;
+  imageModel: ChannelPicker;
 }
 
 /** Split = subject cutout + clean-bg inpaint (fixed pipeline); the knobs are the
@@ -918,7 +887,7 @@ function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
     <form onSubmit={handleSubmit} className={toolbarClass}>
       <div className="flex-1 px-3 text-xs text-muted-foreground">{t("edit.splitDesc")}</div>
       <Divider />
-      <PanelModelSelector choice={imageModel} disabled={isSubmitting} />
+      <ImageModelSelector {...imageModel} variant="text" buttonDisabled={isSubmitting} />
       <Divider />
       <select
         value={resolution}
@@ -1356,11 +1325,6 @@ const toolbarClass = cn("flex items-center gap-0", panelChromeClass);
 const inputClass = cn(
   "h-10 min-w-[220px] flex-1 bg-transparent px-3 text-sm outline-none",
   "placeholder:text-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-60",
-);
-
-const selectClass = cn(
-  "h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground",
-  "outline-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60",
 );
 
 function Divider() {

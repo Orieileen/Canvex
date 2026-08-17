@@ -27,27 +27,29 @@ _TUNABLE_FIELDS = frozenset(
 ) - _NON_TUNABLE_FIELDS
 
 
-def _scalar_type(f: dataclasses.Field) -> type | None:
+def _scalar_type(annotation) -> type | None:
     """这个旋钮接受的标量类型。`bool | None` (watermark) → bool; 认不出 → None。
 
     同样从 dataclass 派生而不是手抄: 加一个旋钮时表会自己跟上, 校验不会悄悄漏掉它。
+
+    取注解走 `typing.get_type_hints` 而不是 `Field.type`: 后者在 image_client 哪天加上
+    `from __future__ import annotations` 之后会变成字符串, 于是这里认不出**任何**类型,
+    TUNABLE_TYPES 静默变空 —— 校验全体失效, 而且没有任何报错。get_type_hints 两种写法
+    都解析成真实类型。
     """
-    args = [a for a in typing.get_args(f.type) if a is not type(None)]
+    args = [a for a in typing.get_args(annotation) if a is not type(None)]
     if args:
         return args[0] if isinstance(args[0], type) else None
-    if isinstance(f.type, type):
-        return f.type
-    # `from __future__ import annotations` 会让 f.type 变成字符串, 那时退到默认值的类型
-    return type(f.default) if f.default is not None else None
+    return annotation if isinstance(annotation, type) else None
 
 
 # 旋钮名 → 它接受的标量类型。serializers._validate_tunables 用它在**保存的那一刻**
 # 拦下类型不对的值 —— 否则 poll_enabled="false" (非空字符串, 真值) 会静默打开轮询,
 # size_mode=123 会在几分钟后的 worker 里炸 AttributeError。
 TUNABLE_TYPES: dict[str, type] = {
-    f.name: t
-    for f in dataclasses.fields(ImageChannel)
-    if f.name in _TUNABLE_FIELDS and (t := _scalar_type(f)) is not None
+    name: t
+    for name, annotation in typing.get_type_hints(ImageChannel).items()
+    if name in _TUNABLE_FIELDS and (t := _scalar_type(annotation)) is not None
 }
 
 
@@ -122,35 +124,19 @@ def resolve_model_id(raw, kind: str = ImageProvider.Kind.IMAGE) -> uuid_lib.UUID
     return model.id if model is not None else None
 
 
-def channel_for_model_id(model_id, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
-    """任务行上的选择 → 通道; 找不到 / 已禁用 → None, 由调用方回退到默认通道。
+def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
+    """「选中的那条, 没选/已失效就退到库里第一条」—— 生图和 angle 走的是同一条阶梯。
 
-    与 resolve_model_id 的区别只是返回什么: 那个在入队前把 id 择干净, 这个在 worker
-    里把它变成可调用的通道。中间隔着一段真实的时间 —— 配置可能在排队期间被删掉。
+    一个函数而不是在两处各拼一遍: 那两份抄写已经分叉过一次 (一边补了"是哪个通道挂的"
+    报错文案, 另一边没有)。
+
+    退到第一条只有两种触发: 任务排队期间选中的那条被删了, 或者调用方(老的入队路径 /
+    agent 没传 model 参数)本来就没带选择。前端选择器会自动落位到列表第一项, 所以正常
+    使用不依赖它。排序跟选择器一致 (sort_order, label), 两边的"第一条"是同一条。
     """
-    model = _enabled_model(model_id, kind)
-    return channel_for_model(model) if model is not None else None
-
-
-def default_channel(kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
-    """库里配好的第一条启用模型 —— 调用方没带选择时的兜底; 一条都没有则 None。
-
-    现在只有两种情况会走到这: 任务排队期间选中的那条被删了, 或者调用方(老的入队路径 /
-    agent 没传 model 参数)本来就没带选择。前端的选择器会自动落位到列表第一项, 所以正常
-    使用不会依赖这里。排序跟选择器一致 (sort_order, label), 两边"第一条"是同一条。
-    """
-    model = (
+    model = _enabled_model(raw, kind) or (
         ImageModel.objects.filter(enabled=True, provider__kind=kind)
         .select_related("provider")
         .first()
     )
     return channel_for_model(model) if model is not None else None
-
-
-def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
-    """「选中的那条, 没选/已失效就退到库里第一条」—— 生图和 angle 用的是同一条阶梯。
-
-    写成一个函数而不是在两处各拼一遍 `channel_for_model_id(...) or default_channel(...)`:
-    两份抄写已经开始分叉一次了 (一边补了"是哪个通道挂的"的报错文案, 另一边没有)。
-    """
-    return channel_for_model_id(raw, kind) or default_channel(kind)

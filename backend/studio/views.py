@@ -901,9 +901,16 @@ class ImageProviderViewSet(viewsets.ModelViewSet):
     没有鉴权门: 这是本地单机开源项目, 只有屏幕前的人能访问。见设计文档。
     """
 
-    queryset = ImageProvider.objects.prefetch_related("models")
+    queryset = ImageProvider.objects.all()
     serializer_class = ImageProviderSerializer
     permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        # 只在读的时候 prefetch。写路径上它是纯浪费: UpdateModelMixin 在 save() 后会清掉
+        # _prefetched_objects_cache 再重查一遍, destroy 则从头到尾没读过这些行。
+        if self.action in ("list", "retrieve"):
+            return self.queryset.prefetch_related("models")
+        return self.queryset
 
 
 class ImageModelChoiceListView(ListAPIView):

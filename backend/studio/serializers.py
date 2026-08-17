@@ -82,7 +82,7 @@ class ChatMessageCreateSerializer(serializers.Serializer):
         max_length=20,
     )
     # 用户在工具栏选中的生图模型 (ImageModel.id)。跟 attachments 一样是每轮透传:
-    # 生成是异步的, 这个值最终会落到 ImageEditJob 行上。空/未知 id → 回退 env 通道,
+    # 生成是异步的, 这个值最终会落到 ImageEditJob 行上。空/未知 id → 退到库里第一条,
     # 所以这里不校验存在性 (校验会让"刚删掉一个配置"变成整轮聊天失败)。
     image_model_id = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=64,
@@ -126,7 +126,7 @@ def _channel_choice_field(kind: str):
     - **用 PrimaryKeyRelatedField 而不是 CharField** —— 要它当场报"配置不存在", 而不是
       等到 worker 里静默回退成别的模型。显式选择失败该显式说。
 
-    可空 = 用户没选 → 后端默认通道。
+    可空 = 用户没选 → 退到库里第一条启用的通道。
     """
     return serializers.PrimaryKeyRelatedField(
         queryset=ImageModel.objects.filter(enabled=True, provider__kind=kind),

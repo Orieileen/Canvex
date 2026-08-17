@@ -65,7 +65,7 @@ def create_image_edit_job(*, scene, image_file=None, image_files=None, validated
             source_images=source_images,
             status=ImageEditJob.Status.QUEUED,
             # 工具栏选的模型。异步路径 —— 请求早就返回了, worker 之后才捞这行, 所以
-            # 选择必须落在行上而不是留在请求里。None = 没选 → 回退 env 通道。
+            # 选择必须落在行上而不是留在请求里。None = 没选 → 退到库里第一条。
             image_model=validated.get("image_model"),
         )
         reserve_canvas_credit(job)
