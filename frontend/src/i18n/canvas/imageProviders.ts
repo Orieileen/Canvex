@@ -149,7 +149,6 @@ export const imageModels = {
   en: {
     title: "Image model",
     angleTitle: "Angle model",
-    subtitle: "Applies to the next generation, and sticks until you change it.",
     pick: "Pick image model",
     /** 触发按钮上显示 —— 只有一个通道都没配时才会出现。 */
     none: "None",
@@ -159,7 +158,6 @@ export const imageModels = {
   zh: {
     title: "生图模型",
     angleTitle: "视角模型",
-    subtitle: "对下一次生成生效,并且会一直沿用到你改为止。",
     pick: "选择生图模型",
     none: "未配置",
     empty: "还没有配置任何模型。",

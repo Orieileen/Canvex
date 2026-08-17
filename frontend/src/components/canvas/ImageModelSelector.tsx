@@ -115,9 +115,6 @@ export function ImageModelSelector({
       <PopoverContent align="start" className="w-72 p-0">
         <div className="border-b border-border px-3 py-2">
           <div className="text-[13px] font-medium">{title ?? t("imageModels.title")}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {t("imageModels.subtitle")}
-          </div>
         </div>
 
         {models.length === 0 ? (

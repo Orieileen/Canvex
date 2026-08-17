@@ -38,8 +38,7 @@ from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.image_channels import (
-    channel_for_model_id,
-    default_channel,
+    channel_or_default,
     resolve_model_id,
 )
 from studio.services.image_client import ImageChannel, build_image_client
@@ -274,17 +273,15 @@ def _generate_on_channel(
 ) -> list[bytes]:
     """生成 n 张图, 带重试。**不会替用户换通道**。
 
-    `channel` 是显式选中的那条 (工具栏的模型选择器 / agent 的 model 参数)。为 None 只
-    剩两种情况: 排队期间配置被删了, 或者调用方本来就没带选择 —— 这时退到库里第一条启用
-    的模型。
+    `channel` 已经是解析完的那条 —— 「选中的那条, 没选/已失效就退到库里第一条」这级阶梯
+    由调用方的 `channel_or_default` 走完 (angle 路径的 resolve_angle_channel 走的是同一
+    个函数)。到这里还是 None 就只剩一种情况: 库里一条启用的模型都没有。
 
     一个通道失败**不切另一个**: 换供应商会换出完全不同的画风, 而用户并不知道发生了什么。
     明确告诉他"这个通道失败了、换一个再试"才是对的。(早先这里有一条 env 的
     primary → fallback 自动切换链, 连同「后端默认」一起去掉了 —— 生图配置现在只有库
     一个来源。)
     """
-    if channel is None:
-        channel = default_channel()
     if channel is None:
         raise RuntimeError(
             "没有可用的生图通道 —— 还没有配置任何供应商。"
@@ -331,8 +328,8 @@ def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
         size=job.size or "1024x1024",
         n=job.num_images,
         resolution=job.resolution or "",
-        # 用户选的通道(工具栏选择器 / agent 参数)。None = 没选 → 回退 env primary→fallback。
-        channel=channel_for_model_id(job.image_model_id),
+        # 用户选的通道(工具栏选择器 / agent 参数); 没选 / 排队期间被删 → 库里第一条。
+        channel=channel_or_default(job.image_model_id),
     )
     return _persist_results(job, image_bytes_list)
 
@@ -460,7 +457,7 @@ def run_cutout_llm_step(job: ImageEditJob) -> None:
         size=job.size or "1024x1024",
         n=1,  # cutout 永远 1 张, num_images 上层 serializer 已 enforce
         resolution=job.resolution or "",
-        channel=channel_for_model_id(job.image_model_id),
+        channel=channel_or_default(job.image_model_id),
     )
     if not image_bytes_list:
         raise RuntimeError("cutout LLM stage returned no images")

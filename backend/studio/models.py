@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -29,6 +30,29 @@ def canvas_edit_intermediate_upload_to(instance, filename: str) -> str:
     ext = Path(filename).suffix.lower()
     now = datetime.utcnow()
     return f"canvas/edits/intermediate/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
+
+
+# ─────────────────────────── 供应商端点校验 ───────────────────────────
+
+def validate_endpoint_url(value: str) -> None:
+    """供应商 base_url 的校验: 只要求是一个能发出请求的 http(s) 地址。
+
+    刻意**不用** django 的 URLValidator —— 它只特例了 `localhost`, 别的单段主机名一律
+    判非法, 而 compose 里另一个容器的地址正好是单段的 (`http://ollama:11434`)。这个项目
+    是自部署工具, 接本机 / 同网段的推理服务是主线场景, 不是要防的东西。
+    """
+    try:
+        # 两处都会抛 ValueError, 都得接住, 否则一个手滑的输入变成 500:
+        #   - urlsplit 本身 —— 方括号不配对的 IPv6 (`http://[::1`)
+        #   - .port —— 端口非数字 / 越界, 要到取值时才验
+        # 顺带用 hostname 而不是 netloc: `http://:8080` 的 netloc 非空但 hostname 是
+        # None, 只看 netloc 会放它进库, 直到发请求时才炸成 requests.InvalidURL。
+        parts = urlsplit((value or "").strip())
+        host, _port = parts.hostname, parts.port
+    except ValueError as exc:
+        raise ValidationError("这个地址解析不了, 检查一下主机名和端口") from exc
+    if parts.scheme not in ("http", "https") or not host:
+        raise ValidationError("请填一个 http:// 或 https:// 开头的地址")
 
 
 # ─────────────────────────── 素材库(Canvex 自有,保留)───────────────────────────
@@ -174,7 +198,12 @@ class ImageProvider(models.Model):
     )
     # 允许私有地址 (http://host.docker.internal:11434 这类本机推理服务) —— 不做 SSRF
     # 公网校验, 那会把"接本地模型"这个自部署项目最有价值的场景整个砍掉。
-    base_url = models.URLField(max_length=500)
+    #
+    # CharField + 自己的校验器而不是 URLField: django 的 URLValidator 只特例了
+    # `localhost`, 任何**单段主机名**都被判非法 —— 而 compose 里另一个容器的地址正是
+    # 单段的 (`http://ollama:11434` / `http://comfyui:8188`)。用 URLField 会把这次改造
+    # 最想支持的那个场景挡在"请输入合法的 URL"后面。
+    base_url = models.CharField(max_length=500, validators=[validate_endpoint_url])
     api_key = models.CharField(max_length=500, blank=True)
     defaults = models.JSONField(default=dict, blank=True)
 

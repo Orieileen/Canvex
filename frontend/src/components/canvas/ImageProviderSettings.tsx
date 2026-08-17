@@ -91,6 +91,17 @@ type Values = Record<string, unknown>;
 const inputCls =
   "w-full rounded-md border border-border bg-background px-2 py-1 text-[12px] outline-none focus:border-foreground/30";
 
+/** 本地临时 id —— 后端还没有这条记录。
+ *
+ *  **必须以 `new-` 开头**: save / remove / reload / providerPayload 全靠这个前缀判断
+ *  "该 create 还是 update"、"这行模型的 id 能不能发给后端"。
+ *
+ *  后面缀一个自增序号而不是只用 `Date.now()`: 连点两次「新建」(或 curl 导入紧接着新建)
+ *  会落在同一毫秒, 两张卡片拿到同一个 key —— 后一张直接把前一张从 drafts 里覆盖掉,
+ *  用户刚填的东西无声消失。 */
+let localIdSeq = 0;
+const newLocalId = () => `new-${Date.now()}-${localIdSeq++}`;
+
 /** 空草稿 —— 「新建供应商」和 curl 导入都从它开始。 */
 const emptyProvider = (): CanvasImageProvider => ({
   id: "",
@@ -125,8 +136,23 @@ const providerPayload = (p: CanvasImageProvider) => ({
   })),
 });
 
+/** JSON.stringify 但对象键按名字排序 —— 比较两份配置时必须用这个。
+ *
+ *  `defaults` / `overrides` 是自由 JSON, 存的是 Postgres jsonb, **不保留键顺序**
+ *  (jsonb 按键长度+字典序重排)。拿原生 stringify 比, 本地按输入顺序、服务端按 jsonb
+ *  顺序, 同一份配置也会被判成"改过了" —— 于是「有未保存的改动」永远亮着, 而 reload
+ *  会永久把这张卡片钉在本地副本上, 别处的改动再也刷不进来。 */
+const stableStringify = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+};
+
 const isDirty = (draft: CanvasImageProvider, saved: CanvasImageProvider) =>
-  JSON.stringify(providerPayload(draft)) !== JSON.stringify(providerPayload(saved));
+  stableStringify(providerPayload(draft)) !== stableStringify(providerPayload(saved));
 
 interface ImageProviderSettingsProps {
   open: boolean;
@@ -146,7 +172,12 @@ export function ImageProviderSettings({
   const [drafts, setDrafts] = useState<Record<string, CanvasImageProvider>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  /** `discardDraft` = 刚保存成功的那张卡片的草稿 id, 用服务端版本无条件顶掉它。
+   *
+   *  丢弃必须发生在**这一次 setDrafts 里**, 不能在保存后先单独 delete 一次: 那样卡片
+   *  会在整个 reload 请求期间从列表里消失 (ProviderCard 被卸载 → 展开着的 overrides
+   *  面板全部收起), reload 万一失败还会一直消失到重新打开面板。 */
+  const reload = useCallback(async (discardDraft?: string) => {
     setLoading(true);
     try {
       const { data } = await canvasService.listImageProviders();
@@ -157,15 +188,24 @@ export function ImageProviderSettings({
       setDrafts((prev) => {
         const next: Record<string, CanvasImageProvider> = {};
         for (const [id, draft] of Object.entries(prev)) {
-          if (id.startsWith("new-")) next[id] = draft;
+          if (id.startsWith("new-") && id !== discardDraft) next[id] = draft;
         }
         for (const p of data) {
-          const local = prev[p.id];
+          const local = p.id === discardDraft ? undefined : prev[p.id];
           next[p.id] = local && isDirty(local, p) ? local : structuredClone(p);
         }
         return next;
       });
     } catch (err) {
+      // 列表没拉回来, 但 discardDraft 那条**确实已经存进库了** —— 草稿还留着的话, 下
+      // 一次 reload 成功时本地临时卡片和服务端那张会并排出现两份。所以这里也得丢。
+      if (discardDraft) {
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[discardDraft];
+          return next;
+        });
+      }
       toast.error(extractApiError(err, "load providers failed"));
     } finally {
       setLoading(false);
@@ -181,7 +221,7 @@ export function ImageProviderSettings({
 
   const addDraft = (seed?: Partial<CanvasImageProvider>) => {
     // 本地临时 id: 后端还没有这条记录, 保存时走 create。
-    const id = `new-${Date.now()}`;
+    const id = newLocalId();
     setDrafts((prev) => ({ ...prev, [id]: { ...emptyProvider(), ...seed, id } }));
     setExpanded(id);
   };
@@ -194,19 +234,17 @@ export function ImageProviderSettings({
     }
     try {
       const body = providerPayload(draft);
-      if (id.startsWith("new-")) {
-        await canvasService.createImageProvider(body);
-        // 这条草稿已经落库, reload 会带回它的真身 —— 临时行留着会变成两张一样的卡片
-        setDrafts((prev) => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-      } else {
-        await canvasService.updateImageProvider(id, body);
-      }
+      if (id.startsWith("new-")) await canvasService.createImageProvider(body);
+      else await canvasService.updateImageProvider(id, body);
       toast.success(t("imageProviders.saved"));
-      await reload();
+      // 保存成功后**一定**丢掉这份草稿, 更新和新建都一样 —— 刚存过, 没有未保存的东西
+      // 可保。留着它的话 reload 里 `isDirty(local, p)` 会判真 (草稿里刚加的模型行不带
+      // id, 服务端返回的那行带真 id, 两边永远比不相等), 于是卡片一直显示本地那份:
+      // 模型行卡在临时 id 上("请先保存再测试"), 而每次再保存都会把它删掉重建换一个新
+      // UUID —— 正是 ImageModelSerializer 显式声明可写 id 要避免的那种翻搅 (历史任务
+      // 的 image_model 被 SET_NULL, 前端粘性选择变成死 id)。
+      // 交给 reload 在换上服务端版本的那一次 setDrafts 里丢, 卡片就不会中途消失。
+      await reload(id);
       onChanged();
     } catch (err) {
       toast.error(extractApiError(err, "save provider failed"));
@@ -352,7 +390,7 @@ function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProv
         defaults: tunables as Values,
         models: model
           ? [{
-              id: `new-${Date.now()}`, label: model, model,
+              id: newLocalId(), label: model, model,
               overrides: {}, enabled: true, sort_order: 0,
             }]
           : [],
@@ -545,7 +583,7 @@ function ProviderCard({
                     models: [
                       ...draft.models,
                       {
-                        id: `new-${Date.now()}`, label: "", model: "",
+                        id: newLocalId(), label: "", model: "",
                         overrides: {}, enabled: true, sort_order: draft.models.length,
                       },
                     ],

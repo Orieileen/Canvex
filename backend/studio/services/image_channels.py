@@ -10,6 +10,7 @@
 """
 import dataclasses
 import logging
+import typing
 import uuid as uuid_lib
 
 from studio.models import ImageModel, ImageProvider
@@ -24,6 +25,30 @@ _NON_TUNABLE_FIELDS = frozenset({"base_url", "api_key", "model", "label"})
 _TUNABLE_FIELDS = frozenset(
     f.name for f in dataclasses.fields(ImageChannel)
 ) - _NON_TUNABLE_FIELDS
+
+
+def _scalar_type(f: dataclasses.Field) -> type | None:
+    """这个旋钮接受的标量类型。`bool | None` (watermark) → bool; 认不出 → None。
+
+    同样从 dataclass 派生而不是手抄: 加一个旋钮时表会自己跟上, 校验不会悄悄漏掉它。
+    """
+    args = [a for a in typing.get_args(f.type) if a is not type(None)]
+    if args:
+        return args[0] if isinstance(args[0], type) else None
+    if isinstance(f.type, type):
+        return f.type
+    # `from __future__ import annotations` 会让 f.type 变成字符串, 那时退到默认值的类型
+    return type(f.default) if f.default is not None else None
+
+
+# 旋钮名 → 它接受的标量类型。serializers._validate_tunables 用它在**保存的那一刻**
+# 拦下类型不对的值 —— 否则 poll_enabled="false" (非空字符串, 真值) 会静默打开轮询,
+# size_mode=123 会在几分钟后的 worker 里炸 AttributeError。
+TUNABLE_TYPES: dict[str, type] = {
+    f.name: t
+    for f in dataclasses.fields(ImageChannel)
+    if f.name in _TUNABLE_FIELDS and (t := _scalar_type(f)) is not None
+}
 
 
 def channel_for_model(model: ImageModel) -> ImageChannel:
@@ -120,3 +145,12 @@ def default_channel(kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None
         .first()
     )
     return channel_for_model(model) if model is not None else None
+
+
+def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
+    """「选中的那条, 没选/已失效就退到库里第一条」—— 生图和 angle 用的是同一条阶梯。
+
+    写成一个函数而不是在两处各拼一遍 `channel_for_model_id(...) or default_channel(...)`:
+    两份抄写已经开始分叉一次了 (一边补了"是哪个通道挂的"的报错文案, 另一边没有)。
+    """
+    return channel_for_model_id(raw, kind) or default_channel(kind)

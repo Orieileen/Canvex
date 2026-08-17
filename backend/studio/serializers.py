@@ -11,6 +11,7 @@ from .models import (
     Scene,
     VideoJob,
 )
+from .services.image_channels import TUNABLE_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -342,12 +343,57 @@ class MediaLibraryFolderSerializer(serializers.Serializer):
 # 分钟后的 worker 里 (TypeError: unhashable type), 而不是用户按下保存的这一刻。
 _TUNABLE_VALUE_TYPES = (str, bool, int, float)
 
+_TRUE_WORDS = {"true", "1", "yes", "on"}
+_FALSE_WORDS = {"false", "0", "no", "off"}
+
+
+def _coerce_tunable(key: str, raw):
+    """把一个旋钮的值归一成它声明的标量类型, 归一不了就抛。
+
+    「是标量」不够: 每个旋钮的类型也得对上。JSON 里一个 `"poll_enabled": "false"` 是非空
+    字符串 = 真值, 会**静默打开**轮询; `"size_mode": 123` 会在几分钟后的 worker 里炸
+    `AttributeError: 'int' object has no attribute 'lower'`; 一个 `2.5` 的
+    poll_max_attempts 会让 `range()` 抛 TypeError。全都是保存时看不见、生成时才炸的。
+    """
+    expected = TUNABLE_TYPES.get(key)
+    if expected is None:
+        return raw  # 不认识的键: channel_for_model 会丢掉并记 warning, 这里不拦
+    if expected is bool:
+        if isinstance(raw, bool):
+            return raw
+        token = str(raw).strip().lower()
+        if token in _TRUE_WORDS:
+            return True
+        if token in _FALSE_WORDS:
+            return False
+        raise serializers.ValidationError(f"{key}: 需要 true / false")
+    if expected is int:
+        if isinstance(raw, bool):
+            raise serializers.ValidationError(f"{key}: 需要一个整数")
+        try:
+            number = int(str(raw).strip())
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError(f"{key}: 需要一个整数") from exc
+        # 负数跟类型错一样是"保存时看不见、生成时才炸": urllib3 见到 timeout=-1 直接抛
+        # ValueError (整个 job FAILED, 报错跟这个输入框毫无关系), poll_max_attempts<0
+        # 则让 range() 一轮都不转、静默当成"轮询完了没结果"。
+        if number < 0:
+            raise serializers.ValidationError(f"{key}: 不能是负数")
+        return number
+    if expected is str:
+        if isinstance(raw, str):
+            return raw
+        raise serializers.ValidationError(f"{key}: 需要一个字符串")
+    return raw
+
 
 def _validate_tunables(value):
-    """校验 defaults / overrides 这类自由 JSON: 必须是对象, 值必须是标量。
+    """校验并归一 defaults / overrides 这类自由 JSON。
 
     键名不校验 —— channel_for_model 会把不认识的键丢掉并记 warning, 一个拼错的键不该
-    让保存失败。但值的**类型**必须拦在入口, 理由见 _TUNABLE_VALUE_TYPES。
+    让保存失败。但值必须是标量 (理由见 _TUNABLE_VALUE_TYPES), 且**认识的键**的值还要
+    能归一成它声明的类型 (理由见 _coerce_tunable)。null = 没设这一项, 直接丢掉 ——
+    留着会变成 `timeout=None` 这种"永不超时"。
     """
     if not isinstance(value, dict):
         raise serializers.ValidationError("必须是一个 JSON 对象")
@@ -359,7 +405,7 @@ def _validate_tunables(value):
         raise serializers.ValidationError(
             f"这些项的值必须是字符串 / 数字 / 布尔: {', '.join(bad)}"
         )
-    return value
+    return {k: _coerce_tunable(k, v) for k, v in value.items() if v is not None}
 
 
 class ImageModelSerializer(serializers.ModelSerializer):

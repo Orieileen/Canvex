@@ -60,7 +60,7 @@ from .services.agent.skills import list_skills
 from .services.agent.tools.image import _single_generation
 from .services.agent.tools.common import enqueue_on_commit
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
-from .services.angle import create_angle_job
+from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
 from .services.curl_import import CurlParseError, parse_curl
 from .services.image_channels import channel_for_model
@@ -944,6 +944,22 @@ class ImageProviderTestView(APIView):
     TEST_OP_TIMEOUT = 15
     TEST_POLL_INTERVAL = 3
 
+    # angle 通道是**一次同步阻塞出图** (fal.run 的 sync endpoint, 实测 15-30s), 没有
+    # 轮询可压缩。给它整个预算, 否则一条配得完全正确的通道也会被 15s 掐断、报成"失败"。
+    ANGLE_OP_TIMEOUT = TEST_BUDGET_SECONDS
+    # 64×64 白色 PNG (132 字节)。angle 的请求体必须带源图, 而这里只是要问供应商
+    # "端点/密钥/模型名对不对" —— 用尽量小的图, 别让测试变成一次真实构图。
+    #
+    # 不用 1×1: 视觉模型对入参尺寸普遍有下限 (fal 的 Qwen-Image-Edit 这类会直接 422),
+    # 那样一条**配得完全正确**的通道也会被报成"测试失败" —— 正是这个按钮要消灭的那种
+    # 假信号。64×64 仍然小到不值一提, 但落在所有已知实现的合法范围里。
+    ANGLE_PROBE_IMAGE = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo33UrYvQQc"
+        "kD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAYHLAMpT0sIcNbcE"
+        "AAAAAElFTkSuQmCC"
+    )
+
     @classmethod
     def _budgeted(cls, channel):
         """把通道压到一次同步请求撑得住的预算内。
@@ -965,6 +981,26 @@ class ImageProviderTestView(APIView):
             ),
         )
 
+    @classmethod
+    def _probe(cls, provider, channel) -> int:
+        """按通道形状发一次最小的真实调用, 返回拿到的字节数。
+
+        **必须按 kind 分流**: 两种接口形状同住一张表, 但请求怎么拼是完全不同的两件事
+        (angle 的模型名在 URL 路径里、认证是 `Key`、请求体是相机坐标)。用生图那条去测
+        angle 通道, 配得完全正确的人也会拿到一个 404 —— 而这个按钮是没有内置预设之后
+        唯一的反馈回路。
+        """
+        if provider.kind == ImageProvider.Kind.ANGLE:
+            return probe_angle_channel(
+                replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
+                image_url=cls.ANGLE_PROBE_IMAGE,
+            )
+        return len(_single_generation(
+            cls._budgeted(channel),
+            prompt="a small red circle on a white background",
+            image_urls=[], size="1024x1024", resolution="1K",
+        ))
+
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)
         model_id = request.data.get("image_model")
@@ -982,16 +1018,13 @@ class ImageProviderTestView(APIView):
             model = provider.models.first()
         if model is None:
             raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
-
-        channel = self._budgeted(channel_for_model(model))
+        # channel_for_model 会读 model.provider —— 那就是我们手上这条, 喂给 FK 缓存,
+        # 省掉一次纯属多余的往返。
+        model.provider = provider
 
         started = time.monotonic()
         try:
-            data = _single_generation(
-                channel,
-                prompt="a small red circle on a white background",
-                image_urls=[], size="1024x1024", resolution="1K",
-            )
+            image_bytes = self._probe(provider, channel_for_model(model))
         except Exception as exc:  # noqa: BLE001 — 原样回传才是这个接口的价值
             logger.info("image provider test failed: provider=%s model=%s", provider.label, model.label)
             return Response(
@@ -1007,7 +1040,7 @@ class ImageProviderTestView(APIView):
         return Response({
             "ok": True,
             "elapsed": round(time.monotonic() - started, 1),
-            "bytes": len(data),
+            "bytes": image_bytes,
         })
 
 
