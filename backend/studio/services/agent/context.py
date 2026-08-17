@@ -33,3 +33,6 @@ class CanvasAgentContext:
     # worker 之后据此解析出通道。空 = 没选 → 退到库里第一条。跟 attachment_urls 一样是
     # 每轮从 chat POST body 透传进来的。
     image_model_id: str = ""
+    # 同上, 但是 Video tab 那个选择器选的 (kind=video)。两个分开是因为模型集合不相交 ——
+    # 一个视频模型发不了生图请求, 反之亦然。空 = 退到库里第一条 video 通道。
+    video_model_id: str = ""

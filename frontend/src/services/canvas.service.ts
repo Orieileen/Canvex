@@ -161,8 +161,10 @@ export async function* postChatStream(
     signal?: AbortSignal;
     disabledSkills?: string[];
     attachments?: ChatAttachment[];
-    /** 工具栏选中的生图模型 (ImageModel.id)。空 = 用默认通道。 */
+    /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条。 */
     imageModelId?: string;
+    /** Video tab 选的通道 (kind=video)。agent 调 generate_video 时用。 */
+    videoModelId?: string;
   } = {},
 ): AsyncGenerator<CanvasChatStreamEvent, void, void> {
   // Empty / undefined optional fields → omit so backend serializer's
@@ -177,6 +179,9 @@ export async function* postChatStream(
   }
   if (options.imageModelId) {
     body.image_model_id = options.imageModelId;
+  }
+  if (options.videoModelId) {
+    body.video_model_id = options.videoModelId;
   }
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/chat/`,

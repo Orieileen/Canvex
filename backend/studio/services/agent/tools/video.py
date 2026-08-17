@@ -24,7 +24,7 @@ from langchain.tools import ToolRuntime, tool
 from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
-from studio.services.image_channels import channel_or_default
+from studio.services.image_channels import channel_or_default, resolve_model_id
 from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -99,6 +99,7 @@ def enqueue_video_generation(
     aspect_ratio: str,
     reference_image_urls: list[str] | None,
     scene_id: str,
+    image_model_id: str | None = None,
 ) -> str:
     """Pure-args helper: create VideoJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -123,6 +124,11 @@ def enqueue_video_generation(
             image_urls=urls,
             duration=duration_clamped,
             aspect_ratio=aspect_ratio or "16:9",
+            # 先过 resolve_model_id 再进 FK 列: 前端的选择是粘的 (localStorage), 一个被删掉
+            # 的 id 会一直跟着每轮聊天发过来 —— 直接塞进外键的话, 合法 UUID 撞约束抛
+            # IntegrityError, 不合法字符串抛 ValidationError, 两种都是把"选择已失效"变成
+            # 整轮聊天 500。kind 也要筛: 一个生图模型 id 送到这里必须当作没选。
+            image_model_id=resolve_model_id(image_model_id, ImageProvider.Kind.VIDEO),
             status=VideoJob.Status.QUEUED,
         )
         reserve_error = reserve_or_friendly_message(job, action_label="video generation")
@@ -171,6 +177,7 @@ def generate_video(
         aspect_ratio=aspect_ratio,
         reference_image_urls=reference_image_urls,
         scene_id=ctx.scene_id,
+        image_model_id=ctx.video_model_id,
     )
 
 

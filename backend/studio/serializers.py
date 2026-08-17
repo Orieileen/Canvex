@@ -91,6 +91,10 @@ class ChatMessageCreateSerializer(serializers.Serializer):
     image_model_id = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=64,
     )
+    # 同上, Video tab 选的通道 (kind=video)。generate_video 建 job 时写到行上。
+    video_model_id = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=64,
+    )
     # Per-message canvas image attachments (user clicked "Send to chat" on
     # selected canvas image(s)). Each item: {url, width, height}. URLs come
     # from canvas → known CDN host; we don't re-validate beyond shape +

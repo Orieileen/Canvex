@@ -267,6 +267,7 @@ class SceneChatView(APIView):
         disabled_skills = serializer.validated_data["disabled_skills"]
         attachments = serializer.validated_data["attachments"]
         image_model_id = serializer.validated_data["image_model_id"]
+        video_model_id = serializer.validated_data["video_model_id"]
 
         # 预先持久化用户消息, 使其在流中途失败时仍然保留。
         user_msg = ChatMessage.objects.create(
@@ -291,6 +292,7 @@ class SceneChatView(APIView):
                     disabled_skills=disabled_skills,
                     attachments=attachments,
                     image_model_id=image_model_id,
+                    video_model_id=video_model_id,
                 ):
                     yield _sse_event(event)
                     if event.get("event") == StreamEvent.ASSISTANT_FINAL:

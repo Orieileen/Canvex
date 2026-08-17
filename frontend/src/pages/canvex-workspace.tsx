@@ -350,7 +350,10 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
   // (matches disabledSkills lifetime).
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   // 通道选择器由页面那一层持有 (跟画布无关, 见 useChannelPickers) —— 这里只是消费。
+  // 摊成局部 ref 而不是在 callback 里写 channels.x.ref: ref 本身是稳定的, 而
+  // `channels.video.ref` 这种成员访问会被 exhaustive-deps 要求进依赖数组。
   const imageModelIdRef = channels.image.ref;
+  const videoModelIdRef = channels.video.ref;
   const [showMinimap, setShowMinimap] = useState(false);
   // Bump 每次 Excalidraw 写入新 api —— 给 Minimap 一个 effect dep, 比靠 ref
   // 时序猜测可靠 (scene 切换 + StrictMode + HMR 多次重 mount, ref 反复换).
@@ -456,7 +459,7 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
-    videoModelIdRef: channels.video.ref,
+    videoModelIdRef,
   });
   const angleEdit = useAngleEdit({
     sceneId: activeSceneId,
@@ -937,6 +940,7 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
             attachments,
             // agent 调 generate_image 时用哪个通道, 跟工具栏那条路同一个选择
             imageModelId: imageModelIdRef.current,
+            videoModelId: videoModelIdRef.current,
           },
         )) {
           switch (event.event) {
@@ -1124,6 +1128,7 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
       pinImage,
       ensureChatFrame,
       imageModelIdRef,
+      videoModelIdRef,
       pollAndPinJob,
       resetPackRow,
       resetStream,
