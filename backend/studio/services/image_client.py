@@ -210,6 +210,17 @@ class ImageChannel:
 
     字段分三组: 连接 / 请求形状(各家差异都在这里) / 异步轮询。为什么需要这些奇怪的
     旋钮见 ImageClient 上各字段的注释 —— 那些注释就是前端配置表单的字段提示。
+
+    **这个类的字段声明就是前端配置表单**: `image_channels.tunable_schema()` 从这里派生出
+    控件类型、占位符、空选项语义, 前端照着渲染。所以
+
+      - 声明**顺序 = 表单里的顺序**, 别随手调;
+      - 加一个旋钮, 表单里自动多一行 (只需补两条 i18n 文案);
+      - 注解类型决定控件: str→输入框, int→数字框, bool→下拉, `bool | None`→下拉且
+        "不填"的含义是**不下发该字段**(而不是"用我们的默认")。
+
+    `metadata={"example": ...}` 用于占位符不等于默认值的字段 —— 只有 size_mode 是这样:
+    它默认空(不做适配), 而 "pixel" 是个合法取值的示例。
     """
 
     # ── 连接 ──
@@ -223,10 +234,10 @@ class ImageChannel:
     quality: str = _D["quality"]
     watermark: bool | None = _D["watermark"]
     inline_image: bool = _D["inline_image"]
-    timeout: int = _D["timeout"]
     # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
-    size_mode: str = ""
+    size_mode: str = field(default="", metadata={"example": "pixel"})
+    timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False
     poll_url: str = ""          # 空则用 base_url

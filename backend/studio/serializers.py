@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import serializers
 
 from .models import (
@@ -11,7 +13,9 @@ from .models import (
     Scene,
     VideoJob,
 )
-from .services.image_channels import TUNABLE_TYPES
+from .services.image_channels import TUNABLE_TYPES, tunables_for_kind
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +448,36 @@ class ImageProviderSerializer(serializers.ModelSerializer):
 
     def validate_defaults(self, value):
         return _validate_tunables(value)
+
+    def validate(self, data):
+        """丢掉这种 kind 读不到的旋钮。
+
+        对象级而不是字段级: 判定要同时看 `kind` 和 `defaults` / `models[].overrides`,
+        字段校验器拿不到 kind。
+
+        **丢弃而不是报错**是刻意的: 把一个已有的 image 供应商改成 angle 是正常操作, 那
+        12 个 image 旋钮此刻全都作废 —— 报错会把用户卡在"改不了 kind"上, 而留着它们则会
+        存进库、被 channel_for_model 合进通道、然后被 submit_angle 完全忽略, 静默无痕。
+        跟 channel_for_model 处理不认识的键同一个态度: 记一条 warning, 当没配过。
+        """
+        kind = data.get("kind") or getattr(self.instance, "kind", ImageProvider.Kind.IMAGE)
+        allowed = tunables_for_kind(kind)
+
+        def prune(values, where):
+            dropped = sorted(set(values) - allowed)
+            if dropped:
+                logger.warning(
+                    "image provider (%s): %s 里的 %s 不适用于这种通道, 已丢弃",
+                    kind, where, ", ".join(dropped),
+                )
+            return {k: v for k, v in values.items() if k in allowed}
+
+        if "defaults" in data:
+            data["defaults"] = prune(data["defaults"], "defaults")
+        for m in data.get("models") or []:
+            if "overrides" in m:
+                m["overrides"] = prune(m["overrides"], f"model {m.get('label', '?')} overrides")
+        return data
 
     def _sync_models(self, provider, models_data):
         """全量替换: 请求里没出现的模型行删掉, 带 id 的更新, 不带 id 的新建。

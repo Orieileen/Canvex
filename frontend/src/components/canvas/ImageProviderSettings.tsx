@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -35,6 +35,7 @@ import type {
   CanvasImageModel,
   CanvasImageProvider,
   CanvasImageProviderKind,
+  CanvasTunableSpec,
 } from "@/types/canvex";
 
 /**
@@ -53,38 +54,10 @@ import type {
  * 第 3 条尤其重要: 没有预设之后, 它是用户唯一的反馈回路。
  */
 
-/** 一个可调参数的描述。`kind` 决定渲染成什么控件。 */
-interface Tunable {
-  key: string;
-  kind: "text" | "bool" | "number";
-  /** bool 的空选项文案键; 省略即 "unset"。watermark 用 "dontSend"。 */
-  emptyKey?: "unset" | "dontSend";
-  placeholder?: string;
-}
-
-// 顺序 = 表单里的顺序: 先是最常需要改的请求形状, 再是异步轮询。
-const TUNABLES: Tunable[] = [
-  { key: "image_field", kind: "text", placeholder: "image" },
-  { key: "image_as_single", kind: "bool" },
-  { key: "response_format", kind: "text", placeholder: "b64_json" },
-  { key: "quality", kind: "text" },
-  { key: "watermark", kind: "bool", emptyKey: "dontSend" },
-  { key: "inline_image", kind: "bool" },
-  { key: "size_mode", kind: "text", placeholder: "pixel" },
-  { key: "timeout", kind: "number", placeholder: "300" },
-  { key: "poll_enabled", kind: "bool" },
-  { key: "poll_url", kind: "text" },
-  { key: "poll_max_attempts", kind: "number", placeholder: "60" },
-  { key: "poll_interval", kind: "number", placeholder: "5" },
-  { key: "poll_timeout", kind: "number", placeholder: "30" },
-];
-
-// Angle 通道能调的只有超时 —— 它的"参数"是相机坐标, 由画布上那个立方体在控, 不是这里
-// 填的东西。把另外 12 项摆给用户看只会让人以为填了会生效。
-const ANGLE_TUNABLE_KEYS = new Set(["timeout"]);
-
-const tunablesFor = (kind: CanvasImageProviderKind): Tunable[] =>
-  kind === "angle" ? TUNABLES.filter((f) => ANGLE_TUNABLE_KEYS.has(f.key)) : TUNABLES;
+// 可调参数那张表**由后端下发** (GET /image-providers/schema/, 从 ImageChannel 的字段声明
+// 派生)。这里曾经手抄过一份 13 项的清单 + 一个"angle 只能调 timeout"的集合 —— 而后端
+// image_channels.py 顶上的注释警告的正是"手抄的那份会悄悄落后, 表现是在界面上配了却不
+// 生效, 而且没有任何报错"。现在加一个旋钮只需在 ImageChannel 上加一行, 再补两条翻译。
 
 type Values = Record<string, unknown>;
 
@@ -171,6 +144,10 @@ export function ImageProviderSettings({
   const [loading, setLoading] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, CanvasImageProvider>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
+  // 表单的字段表由后端下发。跟 providers 分开拉: 它跟用户配了什么无关, 只随后端版本变,
+  // 保存/删除后不需要重拉。拉不到就给空数组 —— 那样参数区是空的, 但名称 / Base URL /
+  // key / 模型这些正经字段照常能填能存。
+  const [tunables, setTunables] = useState<CanvasTunableSpec[]>([]);
 
   /** `discardDraft` = 刚保存成功的那张卡片的草稿 id, 用服务端版本无条件顶掉它。
    *
@@ -213,7 +190,16 @@ export function ImageProviderSettings({
   }, []);
 
   useEffect(() => {
-    if (open) void reload();
+    if (!open) return;
+    void reload();
+    if (tunables.length === 0) {
+      canvasService
+        .getImageProviderSchema()
+        .then(({ data }) => setTunables(data.tunables))
+        .catch(() => setTunables([]));
+    }
+    // tunables 刻意不进依赖: 它只在还没拿到时拉一次, 进依赖会在 setTunables 后再触发一轮。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, reload]);
 
   const patchDraft = (id: string, patch: Partial<CanvasImageProvider>) =>
@@ -326,6 +312,7 @@ export function ImageProviderSettings({
               onPatch={(patch) => patchDraft(id, patch)}
               onSave={() => void save(id)}
               onDelete={() => void remove(id)}
+              tunables={tunables}
             />
           ))}
 
@@ -464,6 +451,7 @@ function ProviderCard({
   onPatch,
   onSave,
   onDelete,
+  tunables,
 }: {
   draft: CanvasImageProvider;
   saved?: CanvasImageProvider;
@@ -472,10 +460,18 @@ function ProviderCard({
   onPatch: (patch: Partial<CanvasImageProvider>) => void;
   onSave: () => void;
   onDelete: () => void;
+  /** 后端下发的全部旋钮, 未按 kind 过滤。 */
+  tunables: CanvasTunableSpec[];
 }) {
   const { t } = useTranslation("canvasUi");
   const [testing, setTesting] = useState("");
   const isNew = draft.id.startsWith("new-");
+  // 这种通道真的会读的那些 —— 摆上它读不到的项等于骗用户。切换 kind 时自动跟着变,
+  // 而后端保存时也会按同一份规则把不适用的键丢掉 (见 ImageProviderSerializer.validate)。
+  const specs = useMemo(
+    () => tunables.filter((f) => f.kinds.includes(draft.kind)),
+    [tunables, draft.kind],
+  );
 
   const test = async (model: CanvasImageModel) => {
     // 供应商没保存、或这一行模型还没保存, 后端都拿不到可查的记录 —— 模型行的本地临时
@@ -567,7 +563,7 @@ function ProviderCard({
                 <ModelRow
                   key={m.id || i}
                   model={m}
-                  kind={draft.kind}
+                  specs={specs}
                   testing={testing === m.id}
                   onPatch={(patch) => patchModel(i, patch)}
                   onTest={() => void test(m)}
@@ -599,7 +595,7 @@ function ProviderCard({
           <TunableEditor
             title={t("imageProviders.defaults")}
             hint={t("imageProviders.defaultsHint")}
-            kind={draft.kind}
+            specs={specs}
             values={draft.defaults}
             onChange={(defaults) => onPatch({ defaults })}
           />
@@ -626,14 +622,15 @@ function ProviderCard({
 
 function ModelRow({
   model,
-  kind,
+  specs,
   testing,
   onPatch,
   onTest,
   onDelete,
 }: {
   model: CanvasImageModel;
-  kind: CanvasImageProviderKind;
+  /** 已按 provider 的 kind 过滤好的旋钮表。 */
+  specs: CanvasTunableSpec[];
   testing: boolean;
   onPatch: (patch: Partial<CanvasImageModel>) => void;
   onTest: () => void;
@@ -686,7 +683,7 @@ function ModelRow({
       {showOverrides && (
         <TunableEditor
           hint={t("imageProviders.overridesHint")}
-          kind={kind}
+          specs={specs}
           values={model.overrides}
           onChange={(overrides) => onPatch({ overrides })}
         />
@@ -696,17 +693,19 @@ function ModelRow({
 }
 
 /** 可调参数的编辑器。provider 默认值和 model 覆盖项共用, 字段按 provider 的 kind 裁剪。
- *  只把**明确设过**的键写进 values —— 空 = 继承上一层 / 用 ImageChannel 的字段默认值。 */
+ *  只把**明确设过**的键写进 values —— 空 = 继承上一层 / 用 ImageChannel 的字段默认值。
+ *
+ *  `specs` 是后端下发的那张表, 已按 kind 过滤好。 */
 function TunableEditor({
   title,
   hint,
-  kind,
+  specs,
   values,
   onChange,
 }: {
   title?: string;
   hint?: string;
-  kind: CanvasImageProviderKind;
+  specs: CanvasTunableSpec[];
   values: Values;
   onChange: (v: Values) => void;
 }) {
@@ -723,7 +722,7 @@ function TunableEditor({
       {title && <div className="mb-1 text-[12px] font-medium">{title}</div>}
       {hint && <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
       <div className="flex flex-col gap-2">
-        {tunablesFor(kind).map((f) => {
+        {specs.map((f) => {
           // 三种控件都用同一份显示值: undefined (没配这项) → 空串, 其余原样转字符串。
           const shown = values[f.key] === undefined ? "" : String(values[f.key]);
           return (
@@ -731,11 +730,11 @@ function TunableEditor({
             <div className="w-[124px] shrink-0 pt-1">
               <div className="font-mono text-[11px] text-foreground">{f.key}</div>
               <div className="text-[10px] leading-tight text-muted-foreground">
-                {t(`imageProviders.field.${f.key}`)}
+                {t(`imageProviders.field.${f.key}`, f.key)}
               </div>
             </div>
             <div className="min-w-0 flex-1">
-              {f.kind === "bool" && (
+              {f.control === "bool" && (
                 <select
                   value={shown}
                   onChange={(e) => set(f.key, e.target.value === "" ? "" : e.target.value === "true")}
@@ -743,12 +742,12 @@ function TunableEditor({
                 >
                   {/* 空选项的语义按字段而定: 多数旋钮"不填"=用我们的默认, 而 watermark
                       不填是**不下发这个字段**、由供应商自己决定。 */}
-                  <option value="">{t(`imageProviders.${f.emptyKey ?? "unset"}`)}</option>
+                  <option value="">{t(`imageProviders.${f.empty_label}`)}</option>
                   <option value="true">true</option>
                   <option value="false">false</option>
                 </select>
               )}
-              {f.kind === "number" && (
+              {f.control === "number" && (
                 <input
                   type="number"
                   value={shown}
@@ -757,7 +756,7 @@ function TunableEditor({
                   className={inputCls}
                 />
               )}
-              {f.kind === "text" && (
+              {f.control === "text" && (
                 <input
                   value={shown}
                   placeholder={f.placeholder}

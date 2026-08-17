@@ -53,6 +53,66 @@ TUNABLE_TYPES: dict[str, type] = {
 }
 
 
+# 每种 kind 真正会读的旋钮。
+#
+# angle 只读 timeout: 它的"参数"是相机坐标 (画布上那个立方体在控), 请求体由 submit_angle
+# 自己拼, 剩下 12 项一个都不看。这条规则以前只写在前端 (一个 ANGLE_TUNABLE_KEYS 集合),
+# 于是后端照样接收、校验、入库、合并那 12 项 —— 用户在 angle 通道上配了 poll_enabled,
+# 存得下去、静默不生效; 反过来 angle 哪天要加旋钮, 后端改完在界面上也不会出现。现在
+# 判定只此一处, 并且随 schema 一起下发给前端。
+_KIND_TUNABLES: dict[str, frozenset[str]] = {
+    ImageProvider.Kind.IMAGE: _TUNABLE_FIELDS,
+    ImageProvider.Kind.ANGLE: frozenset({"timeout"}),
+}
+
+# 标量类型 → 前端控件。派生而不是让前端自己猜: 前端只认得 JSON 的 string/number/boolean,
+# 而 "这个字段是 int 还是 str" 是 ImageChannel 说了算。
+_CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
+
+
+def tunables_for_kind(kind: str) -> frozenset[str]:
+    """这种 kind 会读的旋钮名。未知 kind 按 image 处理(新增 kind 时默认全给, 而不是全砍)。"""
+    return _KIND_TUNABLES.get(kind, _TUNABLE_FIELDS)
+
+
+def tunable_schema() -> list[dict]:
+    """前端配置表单的字段表 —— 从 ImageChannel 的字段声明派生。
+
+    存在的理由: 这张表以前在前端手抄了一份 (13 项, 含控件类型和占位符), i18n 又各一份。
+    本模块顶上那条注释警告的正是"手抄的那份会悄悄落后, 表现是在界面上配了却不生效, 而且
+    没有任何报错" —— 而那份手抄就是它自己。现在前端照着渲染, 加一个旋钮只需在 ImageChannel
+    上加一行 (再补两条翻译)。
+
+    只下发**结构**, 不下发文案: label / hint 是翻译, 留在前端按 key 查, 查不到就退回显示
+    key 本身 —— 漏一条翻译只是标签难看, 而不是整个控件消失。
+    """
+    fields_by_name = {f.name: f for f in dataclasses.fields(ImageChannel)}
+    annotations = typing.get_type_hints(ImageChannel)
+    schema = []
+    # 顺序 = dataclass 里的声明顺序 = 表单里的顺序。
+    for name, f in fields_by_name.items():
+        control = _CONTROLS.get(TUNABLE_TYPES.get(name))
+        if control is None:
+            continue
+        # 占位符默认取字段默认值(告诉用户"不填就是这个"); size_mode 这种默认值本身是空、
+        # 但有个典型取值的, 用 metadata["example"] 覆盖。
+        example = f.metadata.get("example")
+        placeholder = example if example is not None else f.default
+        schema.append({
+            "key": name,
+            "control": control,
+            # False / "" / None 都不值得显示成占位符 —— 空占位符比 "false" 干净。
+            "placeholder": "" if placeholder in (None, "", False) else str(placeholder),
+            # `bool | None` 的"不填"= 不下发该字段(由供应商自己决定), 其余 = 用我们的默认。
+            # 这个区分以前是前端在 watermark 上硬写的一个 emptyKey。
+            "empty_label": (
+                "dont_send" if type(None) in typing.get_args(annotations[name]) else "unset"
+            ),
+            "kinds": sorted(k for k, allowed in _KIND_TUNABLES.items() if name in allowed),
+        })
+    return schema
+
+
 def channel_for_model(model: ImageModel) -> ImageChannel:
     """把一条 ImageModel (含其 provider) 压成一个可直接调用的通道。
 

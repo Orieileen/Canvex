@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ImageModelChoiceListView,
     ImageProviderCurlImportView,
+    ImageProviderSchemaView,
     ImageProviderTestView,
     ImageProviderViewSet,
     AngleJobRetrieveView,
@@ -39,6 +40,11 @@ urlpatterns = [
         "image-providers/import-curl/",
         ImageProviderCurlImportView.as_view(),
         name="canvas-image-provider-import-curl",
+    ),
+    path(
+        "image-providers/schema/",
+        ImageProviderSchemaView.as_view(),
+        name="canvas-image-provider-schema",
     ),
     path(
         "image-models/",

@@ -218,6 +218,25 @@ export interface CanvasImageProvider {
   updated_at: string;
 }
 
+/**
+ * 配置表单里一个可调参数的描述 —— **由后端下发** (GET /image-providers/schema/)。
+ *
+ * 不在前端写死这张表: 它的唯一来源是后端 `ImageChannel` 的字段声明。手抄一份的下场是
+ * 加了旋钮界面上不出现、或者界面上配了后端不认, 两种都没有报错。文案不在里面 —— label
+ * 走 i18n 按 key 查, 查不到就退回显示 key 本身。
+ */
+export interface CanvasTunableSpec {
+  key: string;
+  /** 渲染成什么控件。由字段的标量类型决定。 */
+  control: "text" | "bool" | "number";
+  /** 输入框的灰字提示。通常就是 Canvex 自己的默认值。 */
+  placeholder: string;
+  /** 下拉里"不填"那一项的语义: 用我们的默认, 还是根本不下发这个字段。 */
+  empty_label: "unset" | "dont_send";
+  /** 哪些 kind 的通道真的会读这一项。 */
+  kinds: CanvasImageProviderKind[];
+}
+
 /** 写回后端时的供应商形状。跟读取形状只差嵌套模型行的 id —— 前端刚加的那行还没
  *  落库, 省掉 id 让后端走 create;发个本地假 id 过去会被当成"更新一条不存在的行"。 */
 export type CanvasImageProviderWrite = Omit<CanvasImageProvider, "models"> & {

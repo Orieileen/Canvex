@@ -55,7 +55,7 @@ export const imageProviders = {
     parse: "Parse",
     parsing: "Parsing…",
     unset: "not set",
-    dontSend: "don't send",
+    dont_send: "don't send",
     field: {
       image_field: "field carrying the source image(s)",
       image_as_single: "send a single string instead of an array when n=1",
@@ -126,7 +126,7 @@ export const imageProviders = {
     parse: "解析",
     parsing: "解析中…",
     unset: "未设置",
-    dontSend: "不下发",
+    dont_send: "不下发",
     field: {
       image_field: "装源图的字段名",
       image_as_single: "n=1 时发单个字符串而不是数组",

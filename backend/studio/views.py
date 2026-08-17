@@ -63,7 +63,7 @@ from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachmen
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
 from .services.curl_import import CurlParseError, parse_curl
-from .services.image_channels import channel_for_model
+from .services.image_channels import channel_for_model, tunable_schema
 from .services.scenes import get_scene_and_org
 from .services.video import create_video_job
 
@@ -1049,6 +1049,20 @@ class ImageProviderTestView(APIView):
             "elapsed": round(time.monotonic() - started, 1),
             "bytes": image_bytes,
         })
+
+
+class ImageProviderSchemaView(APIView):
+    """GET /image-providers/schema/ —— 配置表单的字段表。
+
+    从 `ImageChannel` 的字段声明派生 (见 image_channels.tunable_schema)。前端照着渲染,
+    不再自己抄一份 13 项的清单 —— 那份抄写一旦落后, 表现是"新加的旋钮在界面上根本不出现",
+    或者"界面上配了但后端不认", 两种都没有报错。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({"tunables": tunable_schema()})
 
 
 class ImageProviderCurlImportView(APIView):
