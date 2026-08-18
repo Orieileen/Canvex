@@ -532,6 +532,7 @@ function ProviderCard({
               <option value="image">{t("imageProviders.kindImage")}</option>
               <option value="angle">{t("imageProviders.kindAngle")}</option>
               <option value="video">{t("imageProviders.kindVideo")}</option>
+              <option value="chat">{t("imageProviders.kindChat")}</option>
             </select>
           </Field>
           <Field
@@ -563,7 +564,7 @@ function ProviderCard({
                   key={m.id || i}
                   model={m}
                   specs={specs}
-                  canTest={draft.kind !== "video"}
+                  canTest={draft.kind === "image" || draft.kind === "angle"}
                   testing={testing === m.id}
                   onPatch={(patch) => patchModel(i, patch)}
                   onTest={() => void test(m)}
@@ -632,7 +633,8 @@ function ModelRow({
   model: CanvasImageModel;
   /** 已按 provider 的 kind 过滤好的旋钮表。 */
   specs: CanvasTunableSpec[];
-  /** 能不能一键测。video 不行 —— 一次生成是分钟级的, 撑不过一个同步请求。 */
+  /** 能不能一键测。只有 image / angle 行: video 一次生成是分钟级的撑不过同步请求;
+   *  chat 的探针要验的是"支不支持 tools", 跟发一张图不是一回事, 还没写。 */
   canTest: boolean;
   testing: boolean;
   onPatch: (patch: Partial<CanvasImageModel>) => void;

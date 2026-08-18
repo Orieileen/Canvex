@@ -78,6 +78,13 @@ class _KindSpec:
 KIND_SPECS: dict[str, _KindSpec] = {
     ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS),
     ImageProvider.Kind.ANGLE: _KindSpec(tunables=frozenset({"timeout"})),
+    # 聊天只用得上连接三件套 + 超时。温度之类的旋钮没加: ImageChannel 现在只认
+    # str/int/bool, 加 float 要连带扩控件映射, 而且 agent 的行为主要由 system prompt
+    # 和工具定义决定, 温度不是这次搬家的必需品。
+    ImageProvider.Kind.CHAT: _KindSpec(
+        tunables=frozenset({"timeout"}),
+        defaults={"timeout": 120},
+    ),
     ImageProvider.Kind.VIDEO: _KindSpec(
         tunables=frozenset({
             "timeout", "poll_url", "poll_max_attempts",

@@ -93,9 +93,6 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `CANVAS_CHAT_API_KEY` | ✅ chat | LLM key for the agent. Must support OpenAI-style tool calling. Does **not** fall back to `OPENAI_*`. |
-| `CANVAS_CHAT_BASE_URL` | – | Chat endpoint; empty = OpenAI default. |
-| `CANVAS_CHAT_MODEL` | – | Default `gpt-4o-mini`. |
 | `PUBLIC_MEDIA_BASE` | ⚠️ | Public URL of this backend (default `http://localhost:28000`). Must be reachable by the providers for image-to-image / video / angle (they fetch the source image) — use a tunnel/CDN in prod. Pure text-to-image doesn't need it. |
 | `CANVAS_AGENT_STORE_BACKEND` | – | `memory` (default, in-process) or `postgres` (persistent agent memory). |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | Default all `canvex`. |

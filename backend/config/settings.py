@@ -155,12 +155,9 @@ INTERNAL_MEDIA_BASE = os.getenv("INTERNAL_MEDIA_BASE", "http://backend:8000")
 # worker_canvas / worker_canvas_cpu)。
 CANVAS_CELERY_QUEUE = os.getenv("CANVAS_CELERY_QUEUE", "canvas")
 
-# Chat router (deepagents) —— 独立 slot, 不复用 OPENAI_*. agent 必须走支持 `tools`
-# 参数的 provider; 混用会让 agent 拿到 inline markdown 而不是 tool_call。不显式设
-# CANVAS_CHAT_API_KEY 则 build_canvas_agent 会炸 (比静默接错 provider 好调试)。
-CANVAS_CHAT_API_KEY = os.getenv("CANVAS_CHAT_API_KEY", "")
-CANVAS_CHAT_BASE_URL = os.getenv("CANVAS_CHAT_BASE_URL", "")  # 空则走 OpenAI 默认
-CANVAS_CHAT_MODEL = os.getenv("CANVAS_CHAT_MODEL", "gpt-4o-mini")
+# 聊天模型的端点 / key / 模型名现在住在库里 (侧栏「配置供应商」里的 kind=chat 一条),
+# 原来的 CANVAS_CHAT_* 由迁移 0015 一次性导入。它仍然刻意跟生图那把 key 分开 —— agent
+# 必须走支持 `tools` 参数的 provider, 接错了会拿到 inline markdown 而不是 tool_call。
 
 # deepagents /memories/ 后端. "memory" (默认) = InMemoryStore (单进程, 重启丢);
 # "postgres" 跨 web/worker 可见 + 持久, 需 langgraph-checkpoint-postgres 包 + DSN。

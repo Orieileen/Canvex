@@ -15,12 +15,15 @@ export const imageProviders = {
     kindImage: "Image generation (Image / Split)",
     kindAngle: "Camera angle re-render (Angle)",
     kindVideo: "Video generation (Video)",
+    kindChat: "Chat agent LLM",
     kindHint: {
       image: "Shows up in the Image and Split pickers, and in the chat bar.",
       angle:
         "Shows up in the Angle picker only. The request body is the camera coordinates from the cube, so timeout is the only tunable here.",
       video:
         "Shows up in the Video picker only. Submit returns a task id which we then long-poll, so the tunables here are the timeouts and the poll schedule.",
+      chat:
+        "The model behind the chat box. It must support OpenAI-style tool calling — one that doesn't will reply with markdown and quietly do nothing on the canvas. Don't point it at your image key.",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
@@ -30,6 +33,8 @@ export const imageProviders = {
         "Host only, e.g. https://fal.run — the model string is appended as the path. Put the full model id (fal-ai/…) in the model field below.",
       video:
         "Without the /videos/generations suffix — Canvex appends it, and polls {base}/videos/<task id>.",
+      chat:
+        "OpenAI-compatible chat completions endpoint. Leave blank for OpenAI's own.",
     },
     apiKey: "API key",
     apiKeyHint: "Stored as-is (local single-machine tool). It is never written to logs.",
@@ -93,12 +98,15 @@ export const imageProviders = {
     kindImage: "生图 (Image / Split)",
     kindAngle: "视角重渲染 (Angle)",
     kindVideo: "视频生成 (Video)",
+    kindChat: "聊天模型 (Chat)",
     kindHint: {
       image: "会出现在 Image、Split 两个选择器和聊天栏里。",
       angle:
         "只出现在 Angle 的选择器里。它的请求体是画布上那个立方体给的相机坐标,所以这里能调的只有超时。",
       video:
         "只出现在 Video 的选择器里。提交后拿到 task id 再长轮询,所以这里能调的是各种超时和轮询节奏。",
+      chat:
+        "聊天框背后的模型。它必须支持 OpenAI 风格的 tool calling —— 不支持的会回一段 markdown 然后画布上什么都不发生。别填生图那把 key。",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
@@ -108,6 +116,8 @@ export const imageProviders = {
         "只填域名,比如 https://fal.run —— 模型名会被拼成路径。完整模型 id (fal-ai/…) 填在下面的模型栏。",
       video:
         "不要带 /videos/generations 后缀,Canvex 会自己拼;轮询打的是 {base}/videos/<task id>。",
+      chat:
+        "OpenAI 兼容的 chat completions 端点。留空 = 用 OpenAI 官方的。",
     },
     apiKey: "API 密钥",
     apiKeyHint: "原样保存(本地单机工具)。不会写进日志。",

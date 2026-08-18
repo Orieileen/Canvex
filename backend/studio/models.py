@@ -190,6 +190,10 @@ class ImageProvider(models.Model):
         # 文/图生视频 ({base_url}/videos/generations 提交 → 拿 task_id → 长轮询)。
         # 请求体由 video.py 自己拼, 所以它只读连接超时 + 那套轮询参数。Video tab 用。
         VIDEO = "video", "Video generation"
+        # 聊天 agent 的 LLM (OpenAI 兼容 chat completions)。**必须支持 tools 参数** ——
+        # 不支持的代理会静默忽略 tools、回一段 markdown 而不是 tool_call, 于是画布上
+        # 什么都不会发生。所以它跟生图那把 key 刻意分开, 别指同一个聚合商端点。
+        CHAT = "chat", "Chat agent LLM"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     label = models.CharField(max_length=100)

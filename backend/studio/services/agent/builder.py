@@ -37,6 +37,7 @@ Public API:
 - `stream_canvas_agent(messages, *, scene_id)` → Iterator[dict] of
   `tool_call` / `tool_result` / `assistant_final` events for the view's SSE stream.
 """
+import functools
 import logging
 import queue
 import threading
@@ -59,6 +60,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
+
+from studio.models import ImageProvider
+from studio.services.image_channels import channel_or_default
+from studio.services.image_client import ImageChannel
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
@@ -136,7 +141,6 @@ You may read and write /memories/scene.md to record stable facts about this canv
 
 # Module-level caches — populate on first call, never mutate after.
 # Lock is used only once during agent construction.
-_agent: Any | None = None
 _agent_lock = threading.Lock()
 _store: BaseStore | None = None
 
@@ -275,40 +279,44 @@ def _skills_namespace(_rt) -> tuple[str, ...]:
 
 
 def build_canvas_agent():
-    """Return the cached deep-agent instance, initializing once per process.
+    """按当前配置好的聊天通道返回 deep-agent 实例, 每条通道各建一次。
 
-    Locked init avoids two concurrent first-callers both building a graph; the
-    second caller would have bound its graph to the same store and discarded
-    the first — benign but wasteful and non-deterministic under debugging.
+    配置来自库里 `kind=chat` 的供应商 (在侧栏「配置供应商」里配), 老部署的
+    `CANVAS_CHAT_*` 由迁移 0015 一次性导入。
+
+    **不是单例而是按通道缓存**: 用户在界面上改了 key / base_url / 模型, 下一轮聊天就该用
+    新的 —— 单例意味着要重启进程才生效, 而这个项目的全部改动就是"配置能在界面上改"。
+    graph 构建实测 ~20ms, 每轮重建也不算什么, 但缓存住能顺带复用连接。ImageChannel 是
+    frozen dataclass, 天然能当缓存键 (跟 build_image_client 同一套路)。
+
+    锁保留: 两个并发的首调用者会各建一遍图并绑到同一个 store, 后者丢掉前者 —— 无害但
+    浪费, 且调试时不确定。
     """
-    global _agent
-    if _agent is not None:
-        return _agent
+    channel = channel_or_default(None, ImageProvider.Kind.CHAT)
+    # 刻意**不回退**到生图那把 key —— 那个槽位常指向一个不支持 tools 参数的聚合代理
+    # (比如 tu-zi.com)。接错的话 agent 会静默忽略 tools, 回一段 markdown 而不是 tool_call,
+    # 表现是"聊天有回复但画布上什么都没发生", 极难排查。宁可明说没配。
+    if channel is None:
+        raise RuntimeError(
+            "还没有配置聊天模型 —— 在侧栏「配置供应商」里加一个「聊天模型」通道。"
+            "注意它必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具; "
+            "别直接填生图那把 key。"
+        )
+    return _agent_for_channel(channel)
+
+
+@functools.lru_cache(maxsize=4)
+def _agent_for_channel(channel: ImageChannel):
     with _agent_lock:
-        if _agent is not None:
-            return _agent
-
-        # Deliberately NOT fall back to OPENAI_API_KEY — that slot is shared
-        # with image/video paths which commonly point at a tool-less proxy
-        # (e.g. tu-zi.com). Misrouting chat there makes the agent silently
-        # ignore `tools` and return inline markdown instead of tool_calls.
-        if not settings.CANVAS_CHAT_API_KEY:
-            raise RuntimeError(
-                "CANVAS_CHAT_API_KEY is required — the chat agent must hit a "
-                "provider that supports the OpenAI tools parameter. Image "
-                "providers are configured in the UI; video is a separate env "
-                "slot (CANVAS_VIDEO_*)."
-            )
-
         model = ChatOpenAI(
-            api_key=settings.CANVAS_CHAT_API_KEY,
-            base_url=settings.CANVAS_CHAT_BASE_URL or None,
-            model=settings.CANVAS_CHAT_MODEL,
+            api_key=channel.api_key,
+            base_url=channel.base_url or None,
+            model=channel.model,
             max_retries=10,
-            timeout=120,
+            timeout=channel.timeout,
         )
 
-        _agent = create_deep_agent(
+        agent = create_deep_agent(
             model=model,
             tools=[generate_image, generate_video],
             system_prompt=CANVAS_SYSTEM_PROMPT,
@@ -325,10 +333,10 @@ def build_canvas_agent():
             context_schema=CanvasAgentContext,
         )
         logger.info(
-            "canvas agent built (model=%s base_url=%s)",
-            settings.CANVAS_CHAT_MODEL, settings.CANVAS_CHAT_BASE_URL or "<openai-default>",
+            "canvas agent built (channel=%s model=%s base_url=%s)",
+            channel.label, channel.model, channel.base_url or "<openai-default>",
         )
-    return _agent
+    return agent
 
 
 class CanvasAgentInvocationError(RuntimeError):

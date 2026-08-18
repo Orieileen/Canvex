@@ -93,9 +93,6 @@ docker compose up -d --build
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `CANVAS_CHAT_API_KEY` | ✅ 聊天 | agent 用的 LLM key，需支持 OpenAI 风格的 tool calling。**不会**回退到 `OPENAI_*`。 |
-| `CANVAS_CHAT_BASE_URL` | – | 聊天端点；留空 = OpenAI 默认。 |
-| `CANVAS_CHAT_MODEL` | – | 默认 `gpt-4o-mini`。 |
 | `PUBLIC_MEDIA_BASE` | ⚠️ | 本后端的公网地址（默认 `http://localhost:28000`）。图生图/视频/换视角时供应商要来拉源图，必须可公网访问 —— 生产用隧道/CDN。纯文生图不需要。 |
 | `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆）。 |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
