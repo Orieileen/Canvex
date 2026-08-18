@@ -16,7 +16,6 @@ export const imageProviders = {
     kindAngle: "Camera angle re-render (Angle)",
     kindVideo: "Video generation (Video)",
     kindChat: "Chat agent LLM",
-    kindLocked: "Fixed once saved — switching protocol would discard this channel's request config. Add a new channel instead.",
     kindHint: {
       image: "Shows up in the Image and Split pickers, and in the chat bar.",
       angle:
@@ -101,7 +100,6 @@ export const imageProviders = {
     kindAngle: "视角重渲染 (Angle)",
     kindVideo: "视频生成 (Video)",
     kindChat: "聊天模型 (Chat)",
-    kindLocked: "保存后不可改 —— 换协议会丢掉这条通道的请求配置。要换请新建一条。",
     kindHint: {
       image: "会出现在 Image、Split 两个选择器和聊天栏里。",
       angle:

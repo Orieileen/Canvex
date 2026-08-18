@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { toast } from "sonner";
 import {
   ChevronDown,
@@ -61,6 +62,10 @@ import type {
 // 生效, 而且没有任何报错"。现在加一个旋钮只需在 ImageChannel 上加一行, 再补两条翻译。
 
 type Values = Record<string, unknown>;
+
+/** kind → 界面上的展示名。徽标和新建时的下拉共用, 免得两处各拼一次 i18n key。 */
+const kindLabel = (t: TFunction, kind: string) =>
+  t(`imageProviders.kind${kind[0].toUpperCase()}${kind.slice(1)}`);
 
 const inputCls =
   "w-full rounded-md border border-border bg-background px-2 py-1 text-[12px] outline-none focus:border-foreground/30";
@@ -522,6 +527,11 @@ function ProviderCard({
           placeholder={t("imageProviders.labelPlaceholder")}
           className="min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none"
         />
+        {/* 折叠态也看得见 —— 以前要逐个展开才知道哪条是生图、哪条是聊天。
+            存过的卡片下面不再重复一个禁用的下拉, 这里就是通道类型的唯一显示处。 */}
+        <span className="shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {kindLabel(t, draft.kind)}
+        </span>
         <span className="shrink-0 text-[11px] text-muted-foreground">
           {t("imageProviders.modelCount", { n: draft.models.length })}
         </span>
@@ -538,31 +548,24 @@ function ProviderCard({
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border p-3">
           {/* kind 放在最前面: 它决定下面显示哪些字段, 以及这条通道会出现在哪个选择器里。 */}
-          <Field
-            label={t("imageProviders.kind")}
-            hint={
-              isNew
-                ? t(`imageProviders.kindHint.${draft.kind}`)
-                : `${t(`imageProviders.kindHint.${draft.kind}`)} ${t("imageProviders.kindLocked")}`
-            }
-          >
-            <select
-              value={draft.kind}
-              onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
-              // **存过之后就锁死。** 它不是一个设置, 是"这个端点说哪种协议" —— 改它等于
-              // 换了一个东西。改了再保存的后果是: 不适用的参数被后端整组丢掉 (image 的
-              // 请求形状 + 轮询配置全没, 不可撤销), base_url 却原样留着指向旧端点, 而这条
-              // 通道还会从它原来那个选择器里消失。要换协议就新建一条。
-              disabled={!isNew}
-              className={cn(inputCls, !isNew && "cursor-not-allowed opacity-60")}
-            >
-              {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
-                  多一项 (只需补一条 i18n 文案)。 */}
-              {kinds.map((k) => (
-                <option key={k} value={k}>{t(`imageProviders.kind${k[0].toUpperCase()}${k.slice(1)}`)}</option>
-              ))}
-            </select>
-          </Field>
+          {/* 只有新建时才是一个真实的选择。存过之后它就不是设置了 —— 是"这个端点说哪种
+              协议", 改它等于换一个东西 (后端也会拒), 所以这里不留一个点不动的下拉当摆设,
+              类型改由头部那个徽标显示。 */}
+          {isNew && (
+            <Field label={t("imageProviders.kind")} hint={t(`imageProviders.kindHint.${draft.kind}`)}>
+              <select
+                value={draft.kind}
+                onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
+                className={inputCls}
+              >
+                {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
+                    多一项 (只需补一条 i18n 文案)。 */}
+                {kinds.map((k) => (
+                  <option key={k} value={k}>{kindLabel(t, k)}</option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field
             label={t("imageProviders.baseUrl")}
             hint={t(`imageProviders.baseUrlHint.${draft.kind}`)}
