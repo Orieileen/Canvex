@@ -290,4 +290,7 @@ export interface CanvasCurlImportResult {
   quality?: string;
   watermark?: boolean;
   _unrecognized?: string[];
+  /** 这段 curl 打的不是 /images/generations —— base_url 里留着端点路径, 直接保存会拼出
+   *  一个多一截的地址。整句话由后端给, 因为"我们会打哪个端点"是后端的事。 */
+  _path_note?: string;
 }

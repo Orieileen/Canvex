@@ -382,7 +382,7 @@ function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProv
     setBusy(true);
     try {
       const { data } = await canvasService.importImageProviderCurl(text);
-      const { base_url, api_key, model, _unrecognized, ...tunables } = data;
+      const { base_url, api_key, model, _unrecognized, _path_note, ...tunables } = data;
       onImported({
         base_url: base_url ?? "",
         api_key: api_key ?? "",
@@ -395,6 +395,9 @@ function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProv
           : [],
       });
       // 示例里出现但我们不认识的键要说出来, 否则用户以为已经完整导入了
+      // 路径不对是**会导致请求必然失败**的那一类, 比"有几个键不认识"严重, 所以单独一条
+      // 且停留更久 —— 用户多半正要直接点保存。
+      if (_path_note) toast.warning(_path_note, { duration: 15000 });
       if (_unrecognized?.length) {
         toast.warning(t("imageProviders.curlUnknown", { keys: _unrecognized.join(", ") }));
       } else {

@@ -71,7 +71,10 @@ def parse_curl(text: str) -> dict:
     if not url:
         raise CurlParseError("没找到请求 URL")
 
-    out: dict = {"base_url": _strip_generation_path(url)}
+    base_url, path_note = _strip_generation_path(url)
+    out: dict = {"base_url": base_url}
+    if path_note:
+        out["_path_note"] = path_note
 
     api_key = _api_key_from_headers(headers)
     if api_key:
@@ -124,15 +127,33 @@ def _api_key_from_headers(headers: dict) -> str:
     return "" if placeholder else raw
 
 
-def _strip_generation_path(url: str) -> str:
-    """`https://host/v1/images/generations` → `https://host/v1`。
+# 剥完之后 base_url 里还允许剩下的路径段: 版本前缀而已。多出别的段说明这根本不是我们
+# 会打的那个端点 (比如 /v1/images/edits —— tu-zi 的图生图, multipart 表单)。
+_VERSION_SEGMENT_RE = re.compile(r"^(?:v\d+\w*|api|openai)$", re.I)
+
+
+def _strip_generation_path(url: str) -> tuple[str, str]:
+    """`https://host/v1/images/generations` → `https://host/v1`, 外加一句"没剥干净"的说明。
 
     ImageClient 自己拼 `/images/generations`, base_url 留着那段会拼成双份路径 —— 这是
     用户对着文档粘 curl 时几乎必然会踩的一脚。
+
+    剥不掉的情况必须**说出来**: 粘一段 `/v1/images/edits` (图生图, multipart) 进来时,
+    正则匹配不上, 于是整条路径原样留在 base_url 里, 之后拼成
+    `.../v1/images/edits/images/generations` —— 一个必然 404 的地址, 而用户完全看不出
+    哪里错了。这个导入框是没有内置预设之后唯一的反馈回路, 给一个静默的错答案是最坏的结果。
     """
     parts = urlparse(url)
     path = _GENERATION_PATH_RE.sub("", parts.path or "")
-    return urlunparse((parts.scheme, parts.netloc, path.rstrip("/"), "", "", ""))
+    leftover = [seg for seg in path.strip("/").split("/") if seg]
+    note = ""
+    if any(not _VERSION_SEGMENT_RE.match(seg) for seg in leftover):
+        note = (
+            f"这段 curl 打的是 /{'/'.join(leftover)}, 不是 Canvex 会打的 "
+            "/images/generations(或 /videos/generations)。Base URL 已按原样填入, "
+            "但请自行改成不带端点路径的部分(通常到 /v1 为止), 否则请求地址会多出一截。"
+        )
+    return urlunparse((parts.scheme, parts.netloc, path.rstrip("/"), "", "", "")), note
 
 
 def _from_body(body_raw: str) -> dict:
