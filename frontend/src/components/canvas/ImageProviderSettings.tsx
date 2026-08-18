@@ -538,11 +538,23 @@ function ProviderCard({
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border p-3">
           {/* kind 放在最前面: 它决定下面显示哪些字段, 以及这条通道会出现在哪个选择器里。 */}
-          <Field label={t("imageProviders.kind")} hint={t(`imageProviders.kindHint.${draft.kind}`)}>
+          <Field
+            label={t("imageProviders.kind")}
+            hint={
+              isNew
+                ? t(`imageProviders.kindHint.${draft.kind}`)
+                : `${t(`imageProviders.kindHint.${draft.kind}`)} ${t("imageProviders.kindLocked")}`
+            }
+          >
             <select
               value={draft.kind}
               onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
-              className={inputCls}
+              // **存过之后就锁死。** 它不是一个设置, 是"这个端点说哪种协议" —— 改它等于
+              // 换了一个东西。改了再保存的后果是: 不适用的参数被后端整组丢掉 (image 的
+              // 请求形状 + 轮询配置全没, 不可撤销), base_url 却原样留着指向旧端点, 而这条
+              // 通道还会从它原来那个选择器里消失。要换协议就新建一条。
+              disabled={!isNew}
+              className={cn(inputCls, !isNew && "cursor-not-allowed opacity-60")}
             >
               {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
                   多一项 (只需补一条 i18n 文案)。 */}

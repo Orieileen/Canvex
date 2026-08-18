@@ -471,6 +471,16 @@ class ImageProviderSerializer(serializers.ModelSerializer):
         会存进库、被 channel_for_model 合进通道、然后被 submit_angle 完全忽略, 静默无痕。
         跟 channel_for_model 处理不认识的键同一个态度: 记一条 warning, 当没配过。
         """
+        # **通道类型建完就不能改。** 它不是一个设置, 是"这个端点说哪种协议"。放开改的
+        # 后果实测过: 下面那段裁剪会把不适用的参数**整组丢掉** (生图的请求形状 + 轮询配置
+        # 一次全没, 不可撤销), 而 base_url 原样留着指向旧端点 —— 于是一条本来好好的通道
+        # 变成一条必然 404 的通道, 还从它原来那个选择器里消失了。前端也把下拉禁掉了, 但
+        # 拦截必须在这里: 界面不是唯一的客户端。
+        if self.instance is not None and "kind" in data and data["kind"] != self.instance.kind:
+            raise serializers.ValidationError({"kind": [
+                "通道类型建好之后不能改 —— 换协议会丢掉这条通道的请求配置。"
+                "请新建一条, 确认无误后再删掉旧的。"
+            ]})
         kind = data.get("kind") or getattr(self.instance, "kind", ImageProvider.Kind.IMAGE)
 
         # base_url 留空只对聊天通道合法 (= 走 OpenAI 官方端点, builder 里
