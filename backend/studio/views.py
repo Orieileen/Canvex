@@ -980,9 +980,19 @@ class ImageProviderTestView(APIView):
     def _budgeted(cls, channel):
         """把通道压到一次同步请求撑得住的预算内。
 
-        轮询轮数由剩余墙钟倒推, 而不是写死一个次数 —— interval 和单次超时都是用户可编辑
-        的, 写死次数换个配置就又跑到几分钟。
+        **分两种形状**, 因为"一次调用要多久"差一个数量级:
+
+        - **不轮询** (供应商同步出图, tu-zi / fal 这类): POST 就是全部, 给它整个预算。
+          实测 tu-zi 的 gpt-image-2 要 49 秒 —— 按 15 秒掐, 一条**配得完全正确**的通道
+          会稳定报"测试失败", 正是这个按钮要消灭的那种假信号。angle 早就为同一个理由拿
+          整个预算 (见 ANGLE_OP_TIMEOUT), 生图这条当时漏了。
+        - **轮询** (apimart 这类先返 task_id): 总耗时是 POST + N×(单次超时 + 间隔),
+          所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
+          interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
         """
+        if not channel.poll_enabled:
+            return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
+
         op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
         poll_timeout = min(channel.poll_timeout, cls.TEST_OP_TIMEOUT)
         interval = min(channel.poll_interval, cls.TEST_POLL_INTERVAL)
