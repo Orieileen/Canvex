@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
@@ -64,5 +64,8 @@ export function useStickyModelChoice(
     if (!models.some((m) => m.id === value)) setValue(models[0].id);
   }, [models, value]);
 
-  return { value, setValue, ref };
+  // 只在 value 真的变了时换身份 —— setValue 和 ref 本来就是稳定的。返回一个新字面量的
+  // 话, 上层 useChannelPickers 那个 useMemo 会把它当成"变了", 于是每次渲染都重建整个
+  // ChannelPickers 和三个 picker 的 props 对象, 那个 useMemo 就白写了。
+  return useMemo(() => ({ value, setValue, ref }), [value]);
 }

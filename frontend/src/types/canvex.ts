@@ -221,6 +221,21 @@ export interface CanvasImageProvider {
   updated_at: string;
 }
 
+/** 后端下发的、关于一种通道类型的全部表单规则 (GET /image-providers/schema/)。
+ *
+ *  这些以前是前端自己写死的 —— `kind !== "chat"`、`kind === "image" || kind === "angle"`、
+ *  一个 base_url 占位符三元表达式、四个硬编码的 <option>。也就是把后端规则手抄了一份,
+ *  而抄的那份还会**抢先**生效: 某个 kind 的 base_url 改成可选之后, 前端的 toast 会在
+ *  请求发出去之前就拦下来, 后端改了等于没改。 */
+export interface CanvasKindSpec {
+  tunables: CanvasTunableSpec[];
+  /** false = 这种通道的 base_url 可以留空 (chat 留空 = OpenAI 官方端点)。 */
+  requires_base_url: boolean;
+  base_url_example: string;
+  /** 有没有一键测试的探针。没有时 ⚡ 按钮不显示, 后端也会拒绝。 */
+  testable: boolean;
+}
+
 /**
  * 配置表单里一个可调参数的描述 —— **由后端下发** (GET /image-providers/schema/)。
  *

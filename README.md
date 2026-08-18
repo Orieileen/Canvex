@@ -101,10 +101,10 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 
 Notes:
 
-- **Image generation and Angle are not configured here** — endpoint, API key, model name and per-provider request knobs all live in the UI, under **Configure providers** in the left sidebar. Add as many providers and models as you like and switch between them from the toolbar when you generate.
+- **No provider is configured here** — chat, image generation, Angle and video all get their endpoint, API key, model name and per-provider request knobs from the UI, under **Configure providers** in the left sidebar. Add as many providers and models as you like and switch between them from the toolbar when you generate.
+- **Start by adding a Chat channel** — the chat box is dead without one (the agent raises "还没有配置聊天模型"). It must point at a provider that supports OpenAI-style tool calling; one that doesn't will reply with markdown and quietly do nothing on the canvas, so don't reuse your image key for it. Leave its Base URL blank to use OpenAI's own endpoint.
 - The **Angle** (multi-viewpoint) feature runs on [fal.ai](https://fal.ai): sign up, create an API key, and add it as an Angle provider in that same panel. No fal.ai account is needed for the other features.
-- Upgrading from an older version: your existing `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` values are imported into the database once by migrations `0008` / `0010`. After that they are no longer read and can be deleted from `.env`.
-- Chat and video can share one provider (set the matching `*_BASE_URL` and keys).
+- Upgrading from an older version: your existing `CANVAS_CHAT_*` / `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` / `CANVAS_VIDEO_*` values are imported into the database once by migrations `0008` / `0010` / `0013` / `0015`. After that they are no longer read and can be deleted from `.env`.
 - The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).
 
 ## API

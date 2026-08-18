@@ -13,6 +13,8 @@ import re
 import shlex
 from urllib.parse import urlparse, urlunparse
 
+from studio.services.image_channels import TUNABLE_TYPES
+
 logger = logging.getLogger(__name__)
 
 # 请求体里"装图"的字段候选。命中即认为是 image_field。顺序 = 优先级。
@@ -21,12 +23,22 @@ _IMAGE_KEYS = ("image_urls", "image_url", "images", "image", "reference_images",
 _IGNORED_BODY_KEYS = {"prompt", "n", "size", "seed", "user"}
 # 能从请求体直接抄过来的标量字段 → 期望类型。一张表同时驱动"抄出来"和"哪些算认识的",
 # 分成两处写的话, 加第五个字段时漏掉后半边就会被当成"无法识别"报给用户。
-_SCALAR_KEYS = {"model": str, "response_format": str, "quality": str, "watermark": bool}
+# 示例 curl 的请求体里, 哪些键我们认得 —— **类型从 TUNABLE_TYPES 取, 不再手写一份**。
+# 手写那份的失败方式很安静: 把 quality 在 ImageChannel 上改成 int 之后, 这里仍然只认
+# str, 于是那个值既进不了预填, 又会被塞进 `_unrecognized` 报给用户说"这个键我们不认识"
+# —— 一句错话, 且没有任何报错。model 不在 TUNABLE_TYPES 里 (它不是旋钮, 有自己的字段)。
+_SCALAR_KEYS = {"model": str} | {
+    k: TUNABLE_TYPES[k] for k in ("response_format", "quality", "watermark")
+}
 
 # ImageClient 会自己拼 `/images/generations`, 所以 base_url 要把这段路径剥掉。
 # 只剥这一段, 不要连版本前缀一起剥 —— `/v1/images/generations` 的 base_url 是
 # `…/v1`, 不是裸域名。
-_GENERATION_PATH_RE = re.compile(r"/(images/)?generations?/?$", re.I)
+#
+# `videos/` 也认: 视频通道自己拼 `/videos/generations`, 而这个导入框是通用的 (kind 就在
+# 下面一行选)。只剥 `generations` 的话 `/v1/videos/generations` 会留下 `/v1/videos`,
+# 换成 video 通道后拼出 `/v1/videos/videos/generations`, 而且看起来完全正常。
+_GENERATION_PATH_RE = re.compile(r"/(?:images/|videos/)?generations?/?$", re.I)
 
 
 class CurlParseError(ValueError):

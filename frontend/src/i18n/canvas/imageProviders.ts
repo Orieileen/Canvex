@@ -1,9 +1,9 @@
 export const imageProviders = {
   en: {
-    title: "Image providers",
+    title: "Channels",
     subtitle:
-      "Endpoint, key and request shape for image generation. Configured here, not in the backend env.",
-    empty: "No providers yet. Paste a provider's example curl above, or add one by hand.",
+      "Endpoint, key and request shape for every channel — image, angle, video and the chat model. Configured here, not in the backend env.",
+    empty: "No channels yet. Paste a provider's example curl above, or add one by hand. The chat box needs a Chat channel before the agent will run.",
     add: "Add provider",
     addModel: "Add model",
     models: "Models",
@@ -53,6 +53,7 @@ export const imageProviders = {
       "This removes the provider and all of its models. Generations that used them keep their images, but lose the record of which model made them. This can't be undone.",
     unsaved: "unsaved changes",
     needLabelAndUrl: "Name and Base URL are required",
+    needLabel: "Name is required",
     saveBeforeTest: "Save first — testing runs against the stored config",
     testHint: "Send one real minimal generation with this model (costs one generation)",
     testOk: "Works — responded in {{s}}s",
@@ -84,9 +85,9 @@ export const imageProviders = {
     },
   },
   zh: {
-    title: "生图供应商",
-    subtitle: "生图的端点、密钥和请求形状。在这里配,不再改后端 env。",
-    empty: "还没有配置供应商。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。",
+    title: "通道配置",
+    subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
+    empty: "还没有配置任何通道。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。聊天框要能用,得先加一条「聊天模型」通道。",
     add: "新建供应商",
     addModel: "添加模型",
     models: "模型",
@@ -135,6 +136,7 @@ export const imageProviders = {
       "会连同它下面的所有模型一起删掉。已经生成的图还在,但会丢掉「这张图是哪个模型出的」这条记录。不可撤销。",
     unsaved: "有未保存的改动",
     needLabelAndUrl: "名称和 Base URL 必填",
+    needLabel: "名称必填",
     saveBeforeTest: "请先保存再测试 —— 测试打的是已保存的那份配置",
     testHint: "用这个模型真发一次最小生成(会消耗一次生成额度)",
     testOk: "通了 —— {{s}} 秒返回",

@@ -35,6 +35,7 @@ import type {
   CanvasImageModel,
   CanvasImageProvider,
   CanvasImageProviderKind,
+  CanvasKindSpec,
   CanvasTunableSpec,
 } from "@/types/canvex";
 
@@ -147,7 +148,8 @@ export function ImageProviderSettings({
   // 表单的字段表由后端下发。跟 providers 分开拉: 它跟用户配了什么无关, 只随后端版本变,
   // 保存/删除后不需要重拉。拉不到就给空数组 —— 那样参数区是空的, 但名称 / Base URL /
   // key / 模型这些正经字段照常能填能存。
-  const [tunables, setTunables] = useState<Record<string, CanvasTunableSpec[]>>({});
+  const [tunables, setTunables] = useState<Record<string, CanvasKindSpec>>({});
+  const kinds = Object.keys(tunables);
 
   /** `discardDraft` = 刚保存成功的那张卡片的草稿 id, 用服务端版本无条件顶掉它。
    *
@@ -214,8 +216,12 @@ export function ImageProviderSettings({
 
   const save = async (id: string) => {
     const draft = drafts[id];
-    if (!draft.label.trim() || !draft.base_url.trim()) {
-      toast.error(t("imageProviders.needLabelAndUrl"));
+    // "这种通道要不要 base_url" 由后端下发 (chat 留空 = 走 OpenAI 官方端点)。不在这里
+    // 自己判 —— 那等于把后端规则抄一份, 而且抄的那份会**抢先**生效: 后端哪天把某个 kind
+    // 改成可空, 这里的 toast 会在请求发出去之前就拦下来。schema 没拉到时放行, 让后端拒。
+    const needsUrl = tunables[draft.kind]?.requires_base_url ?? false;
+    if (!draft.label.trim() || (needsUrl && !draft.base_url.trim())) {
+      toast.error(t(needsUrl ? "imageProviders.needLabelAndUrl" : "imageProviders.needLabel"));
       return;
     }
     try {
@@ -313,6 +319,7 @@ export function ImageProviderSettings({
               onSave={() => void save(id)}
               onDelete={() => void remove(id)}
               tunables={tunables}
+              kinds={kinds}
             />
           ))}
 
@@ -452,6 +459,7 @@ function ProviderCard({
   onSave,
   onDelete,
   tunables,
+  kinds,
 }: {
   draft: CanvasImageProvider;
   saved?: CanvasImageProvider;
@@ -460,21 +468,28 @@ function ProviderCard({
   onPatch: (patch: Partial<CanvasImageProvider>) => void;
   onSave: () => void;
   onDelete: () => void;
-  /** 后端下发的旋钮表, 已按 kind 分组。 */
-  tunables: Record<string, CanvasTunableSpec[]>;
+  /** 后端下发的按 kind 分组的表单规则。 */
+  tunables: Record<string, CanvasKindSpec>;
+  /** 可选的通道类型 = schema 的键。 */
+  kinds: string[];
 }) {
   const { t } = useTranslation("canvasUi");
   const [testing, setTesting] = useState("");
   const isNew = draft.id.startsWith("new-");
-  // 这种通道真的会读的那些 —— 摆上它读不到的项等于骗用户。切换 kind 时自动跟着变, 连
-  // 占位符都跟着换 (video 的 poll_interval 默认 20 秒, 生图是 5 秒); 后端保存时也会按
-  // 同一份规则把不适用的键丢掉 (见 ImageProviderSerializer.validate)。
-  const specs = tunables[draft.kind] ?? [];
+  // 这种通道的全部表单规则, 由后端下发。切换 kind 时旋钮列表、占位符、base_url 示例、
+  // 能不能一键测**同时**跟着换 —— 后端保存时按的是同一份 KIND_SPECS, 所以界面和真实
+  // 行为不会各说一套。
+  const spec = tunables[draft.kind];
+  const specs = spec?.tunables ?? [];
 
   const test = async (model: CanvasImageModel) => {
     // 供应商没保存、或这一行模型还没保存, 后端都拿不到可查的记录 —— 模型行的本地临时
     // id ("new-1723…") 不是 UUID, 发过去只会换来一个 500。
-    if (isNew || model.id.startsWith("new-")) {
+    //
+    // 卡片上有未保存的改动时同样拦下: 测试打的是**库里那份**配置。改完 key 直接点 ⚡
+    // 会拿到一个针对旧值的通过/失败, 而这个按钮存在的全部意义就是告诉用户"你刚填的这
+    // 份对不对" —— 给错答案比不给更糟。
+    if (isNew || model.id.startsWith("new-") || (saved && isDirty(draft, saved))) {
       toast.info(t("imageProviders.saveBeforeTest"));
       return;
     }
@@ -529,10 +544,11 @@ function ProviderCard({
               onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
               className={inputCls}
             >
-              <option value="image">{t("imageProviders.kindImage")}</option>
-              <option value="angle">{t("imageProviders.kindAngle")}</option>
-              <option value="video">{t("imageProviders.kindVideo")}</option>
-              <option value="chat">{t("imageProviders.kindChat")}</option>
+              {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
+                  多一项 (只需补一条 i18n 文案)。 */}
+              {kinds.map((k) => (
+                <option key={k} value={k}>{t(`imageProviders.kind${k[0].toUpperCase()}${k.slice(1)}`)}</option>
+              ))}
             </select>
           </Field>
           <Field
@@ -542,7 +558,7 @@ function ProviderCard({
             <input
               value={draft.base_url}
               onChange={(e) => onPatch({ base_url: e.target.value })}
-              placeholder={draft.kind === "angle" ? "https://fal.run" : "https://api.example.com/v1"}
+              placeholder={spec?.base_url_example ?? ""}
               className={inputCls}
             />
           </Field>
@@ -564,7 +580,7 @@ function ProviderCard({
                   key={m.id || i}
                   model={m}
                   specs={specs}
-                  canTest={draft.kind === "image" || draft.kind === "angle"}
+                  canTest={spec?.testable ?? false}
                   testing={testing === m.id}
                   onPatch={(patch) => patchModel(i, patch)}
                   onTest={() => void test(m)}

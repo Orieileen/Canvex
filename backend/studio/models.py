@@ -40,7 +40,14 @@ def validate_endpoint_url(value: str) -> None:
     刻意**不用** django 的 URLValidator —— 它只特例了 `localhost`, 别的单段主机名一律
     判非法, 而 compose 里另一个容器的地址正好是单段的 (`http://ollama:11434`)。这个项目
     是自部署工具, 接本机 / 同网段的推理服务是主线场景, 不是要防的东西。
+
+    空串直接放行: 聊天通道留空 = 走 OpenAI 官方端点 (builder 里
+    `channel.base_url or None` 就是这个语义, 迁移 0015 导进来的那条存的也是空串)。
+    「哪些 kind 允许留空」是 ImageProviderSerializer.validate 的事, 不是这里 ——
+    这个校验器只回答"填了的话是不是一个能发出请求的地址"。
     """
+    if not (value or "").strip():
+        return
     try:
         # 两处都会抛 ValueError, 都得接住, 否则一个手滑的输入变成 500:
         #   - urlsplit 本身 —— 方括号不配对的 IPv6 (`http://[::1`)
@@ -210,7 +217,11 @@ class ImageProvider(models.Model):
     # `localhost`, 任何**单段主机名**都被判非法 —— 而 compose 里另一个容器的地址正是
     # 单段的 (`http://ollama:11434` / `http://comfyui:8188`)。用 URLField 会把这次改造
     # 最想支持的那个场景挡在"请输入合法的 URL"后面。
-    base_url = models.CharField(max_length=500, validators=[validate_endpoint_url])
+    #
+    # blank=True 只是为了聊天通道: 留空 = 走 OpenAI 官方端点 (builder 里
+    # `channel.base_url or None`, 迁移 0015 存的就是空串)。其余 kind 必填 ——
+    # 那一条在 ImageProviderSerializer.validate 里按 kind 判, 因为字段级校验看不到 kind。
+    base_url = models.CharField(max_length=500, blank=True, validators=[validate_endpoint_url])
     api_key = models.CharField(max_length=500, blank=True)
     defaults = models.JSONField(default=dict, blank=True)
 

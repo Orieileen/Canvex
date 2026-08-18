@@ -53,14 +53,41 @@ TUNABLE_TYPES: dict[str, type] = {
 }
 
 
+# 这几个旋钮 0 跟负数一样是"保存时看不见、生成时才炸"的:
+#   timeout / poll_timeout  urllib3 对 <= 0 的超时直接抛 ValueError, 整个 job FAILED,
+#                           报错跟这个输入框毫无关系
+#   poll_interval           time.sleep(0) = 不间隔, 轮询变成一个尽全力锤供应商的死循环
+#   poll_max_attempts       range() 一轮都不转, 静默当成"轮询完了没结果"
+# poll_max_interval 不在里面 —— 它的 0 是有定义的 (= 不退避, 固定间隔), 见字段注释。
+POSITIVE_TUNABLES = frozenset({
+    "timeout", "poll_timeout", "poll_interval", "poll_max_attempts",
+})
+
+
 @dataclasses.dataclass(frozen=True)
 class _KindSpec:
-    """一种通道类型读哪些旋钮、以及它自己更合适的默认值。"""
+    """**关于一种通道类型的全部事实, 一行说完。**
+
+    以前这些事实散在四个模块里各写一遍: 旋钮子集在这里, "base_url 必不必填"在
+    serializers, "能不能一键测"在 views (还带一份文案), base_url 长什么样在前端的一个
+    三元表达式里。加第五种 kind 要翻四个不相干的文件, 而漏掉任何一处都**不会报错** ——
+    只会安静地要一个这种通道根本不用的 base_url, 或者给一条配得完全正确的通道报"测试
+    失败"。收在这里之后, 加一种 kind 就是加一行, 且这一行会随 schema 一起下发给前端。
+    """
 
     tunables: frozenset[str]
     # 只在跟 ImageChannel 的字段默认值**不同**时才写。既用于表单的占位符, 也真的在
     # channel_for_model 里垫在 provider.defaults 底下 —— 两处同一份, 不会各说一套。
     defaults: dict[str, object] = dataclasses.field(default_factory=dict)
+    # 这种通道要不要 base_url。chat 不要 —— 留空就是 OpenAI 官方端点。
+    requires_base_url: bool = True
+    # 表单里 base_url 输入框的灰字。angle 只填域名 (模型名会被拼成路径), 其余带 /v1。
+    base_url_example: str = "https://api.example.com/v1"
+    # 有没有探针 (见 views.ImageProviderTestView._probe)。**默认 False**: 加第五种 kind
+    # 时默认"测不了", 而不是默认拿生图那条去打它然后给一个假的 404。
+    testable: bool = False
+    # testable=False 时告诉用户该怎么验。空 = 用通用兜底文案。
+    untestable_reason: str = ""
 
 
 # 每种 kind 真正会读的旋钮。
@@ -76,14 +103,24 @@ class _KindSpec:
 # 它的默认值跟生图差很远: 生图 60 次 × 5 秒 = 5 分钟内敲 60 下, 而视频要跑 1-5 分钟 ——
 # 所以 9 次 × 20 秒起步、退避到 180 秒, 这几个数就是原来 CANVAS_VIDEO_* 的默认值。
 KIND_SPECS: dict[str, _KindSpec] = {
-    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS),
-    ImageProvider.Kind.ANGLE: _KindSpec(tunables=frozenset({"timeout"})),
+    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True),
+    ImageProvider.Kind.ANGLE: _KindSpec(
+        tunables=frozenset({"timeout"}),
+        base_url_example="https://fal.run",
+        testable=True,
+    ),
     # 聊天只用得上连接三件套 + 超时。温度之类的旋钮没加: ImageChannel 现在只认
     # str/int/bool, 加 float 要连带扩控件映射, 而且 agent 的行为主要由 system prompt
     # 和工具定义决定, 温度不是这次搬家的必需品。
     ImageProvider.Kind.CHAT: _KindSpec(
         tunables=frozenset({"timeout"}),
         defaults={"timeout": 120},
+        # 留空 = 用 OpenAI 官方端点, 所以这是唯一一种 base_url 可空的通道。
+        requires_base_url=False,
+        untestable_reason=(
+            "聊天通道不支持一键测试 —— 要验的是「支不支持 tools 参数」, 跟发一张图不是一回事。"
+            "直接在聊天框里说一句「生成一张图」即可: 画布上真的出图 = 通了。"
+        ),
     ),
     ImageProvider.Kind.VIDEO: _KindSpec(
         tunables=frozenset({
@@ -96,6 +133,10 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "poll_interval": 20,
             "poll_max_interval": 180,
         },
+        untestable_reason=(
+            "视频通道不支持一键测试 —— 一次生成要几分钟, 撑不过一个同步请求。"
+            "直接在 Video tab 生成一次即可, 失败信息会原样显示在画布上。"
+        ),
     ),
 }
 
@@ -104,17 +145,14 @@ KIND_SPECS: dict[str, _KindSpec] = {
 _CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
 
 
-def tunables_for_kind(kind: str) -> frozenset[str]:
-    """这种 kind 会读的旋钮名。未知 kind 按 image 处理(新增 kind 时默认全给, 而不是全砍)。"""
-    return _kind_spec(kind).tunables
+# 没有 `.get(kind, 兜底)`: Kind 就定义在 models.py 里紧挨着这张表, 四个成员全在这儿有行。
+# 加第五种 kind 却忘了加行时, 这里 KeyError 当场炸在"缺 spec"那一点上, 比悄悄把整套生图
+# 旋钮发给一个用不上它们的通道好得多。
+UNTESTABLE_FALLBACK = "这种通道还没有测试探针 —— 直接在对应的面板里跑一次即可。"
 
 
-def _kind_spec(kind: str) -> _KindSpec:
-    return KIND_SPECS.get(kind) or _KindSpec(tunables=_TUNABLE_FIELDS)
-
-
-def tunable_schema() -> dict[str, list[dict]]:
-    """前端配置表单的字段表, 按 kind 分好 —— 从 ImageChannel 的字段声明派生。
+def tunable_schema() -> dict[str, dict]:
+    """前端配置表单的**全部按 kind 分的规则** —— 从 KIND_SPECS + ImageChannel 派生。
 
     存在的理由: 这张表以前在前端手抄了一份 (13 项, 含控件类型和占位符), i18n 又各一份。
     本模块顶上那条注释警告的正是"手抄的那份会悄悄落后, 表现是在界面上配了却不生效, 而且
@@ -125,12 +163,19 @@ def tunable_schema() -> dict[str, list[dict]]:
     poll_interval 默认 20 秒, 生图是 5 秒), 一项一份占位符表达不了; 而且前端拿到就能直接
     渲染, 不用自己再过滤一遍。
 
+    除了旋钮表, 还带上 requires_base_url / testable / base_url_example —— 这三条以前是前端
+    自己写死的 (`kind !== "chat"`、`kind === "image" || kind === "angle"`、一个三元占位符),
+    也就是把后端规则手抄了一份。抄的那份还会**抢先**生效: 某个 kind 的 base_url 改成可选
+    之后, 前端的 toast 会在请求发出去之前就拦下来, 后端改了等于没改。
+
+    kind 列表本身也由这个 payload 的键决定, 前端不再硬编码那几个 <option>。
+
     只下发**结构**, 不下发文案: label / hint 是翻译, 留在前端按 key 查, 查不到就退回显示
     key 本身 —— 漏一条翻译只是标签难看, 而不是整个控件消失。
     """
     fields_by_name = {f.name: f for f in dataclasses.fields(ImageChannel)}
     annotations = typing.get_type_hints(ImageChannel)
-    out: dict[str, list[dict]] = {}
+    out: dict[str, dict] = {}
     for kind, spec in KIND_SPECS.items():
         rows = []
         # 顺序 = dataclass 里的声明顺序 = 表单里的顺序。
@@ -156,7 +201,12 @@ def tunable_schema() -> dict[str, list[dict]]:
                     "dont_send" if type(None) in typing.get_args(annotations[name]) else "unset"
                 ),
             })
-        out[str(kind)] = rows
+        out[str(kind)] = {
+            "tunables": rows,
+            "requires_base_url": spec.requires_base_url,
+            "base_url_example": spec.base_url_example,
+            "testable": spec.testable,
+        }
     return out
 
 
@@ -173,7 +223,7 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
     """
     provider = model.provider
     merged = {
-        **_kind_spec(provider.kind).defaults,
+        **KIND_SPECS[provider.kind].defaults,
         **(provider.defaults or {}),
         **(model.overrides or {}),
     }
@@ -195,6 +245,28 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
     )
 
 
+def _parse_model_id(raw) -> uuid_lib.UUID | None:
+    """随请求/随任务行传进来的东西 → 一个 UUID, 认不出就 None。
+
+    UUID 先行解析是必需的而不是防御性的: 不合法的字符串直接进 `.filter(id=...)` 会抛
+    django 的 ValidationError, 那就把"选择已失效"变成了一个 500。前端本地新建的临时 id
+    ("new-1786…") 正是这种输入。
+    """
+    if not raw:
+        return None
+    try:
+        return raw if isinstance(raw, uuid_lib.UUID) else uuid_lib.UUID(str(raw))
+    except (AttributeError, TypeError, ValueError):
+        logger.warning("image channel: 模型 id %r 格式非法, 回退默认通道", raw)
+        return None
+
+
+# 「哪个模型算可用」的唯一判定 —— 存在、启用、且是这种 kind。_enabled_model 和
+# resolve_model_id 都从这里出发, 所以两者不会对"可用"有不同看法。
+def _usable(parsed, kind: str):
+    return ImageModel.objects.filter(id=parsed, enabled=True, provider__kind=kind)
+
+
 def _enabled_model(raw, kind: str) -> ImageModel | None:
     """随请求/随任务行传进来的模型 id → 一条**存在且启用**的记录, 否则 None。
 
@@ -209,18 +281,12 @@ def _enabled_model(raw, kind: str) -> ImageModel | None:
     UUID 先行解析是必需的而不是防御性的: 不合法的字符串直接进 `.filter(id=...)` 会抛
     django 的 ValidationError, 那就把"选择已失效"变成了一个 500。
     """
-    if not raw:
+    parsed = _parse_model_id(raw)
+    if parsed is None:
         return None
-    try:
-        parsed = raw if isinstance(raw, uuid_lib.UUID) else uuid_lib.UUID(str(raw))
-    except (AttributeError, TypeError, ValueError):
-        logger.warning("image channel: 模型 id %r 格式非法, 回退默认通道", raw)
-        return None
-    model = (
-        ImageModel.objects.filter(id=parsed, enabled=True, provider__kind=kind)
-        .select_related("provider")
-        .first()
-    )
+    # select_related: 调用方一定会 deref model.provider (channel_for_model 要它的
+    # base_url / api_key), 不预取就是每条多一次查询。
+    model = _usable(parsed, kind).select_related("provider").first()
     if model is None:
         logger.warning(
             "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 回退默认通道", parsed, kind,
@@ -234,9 +300,42 @@ def resolve_model_id(raw, kind: str = ImageProvider.Kind.IMAGE) -> uuid_lib.UUID
     前端的选择是粘的 (存 localStorage), 所以一个被删掉的模型 id 会一直跟着每一次请求
     发过来。直接塞进 FK 列的话: 合法 UUID 撞外键约束 → IntegrityError, 不合法字符串 →
     ValidationError, 两种都是把"选择已失效"变成整轮聊天 500。
+
+    走 values_list 而不是 `_enabled_model(...).id`: 那个会 JOIN 出整行 provider (含
+    api_key / defaults JSON) 再实例化两个 model 对象, 而这里要的只是"这个 id 还能用吗"。
+    每次 generate_image / generate_video 工具调用、每次 image-edit / split / angle /
+    video 入队都会走这一趟。
     """
-    model = _enabled_model(raw, kind)
-    return model.id if model is not None else None
+    parsed = _parse_model_id(raw)
+    if parsed is None:
+        return None
+    model_id = _usable(parsed, kind).values_list("id", flat=True).first()
+    if model_id is None:
+        logger.warning(
+            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 退到库里第一条", parsed, kind,
+        )
+    return model_id
+
+
+def no_channel_error(noun: str, extra: str = "") -> RuntimeError:
+    """「这种通道一条都没配」那句话 —— 四条生成路径共用一份措辞。
+
+    四处原本各写各的, 已经漂成两种写法 ("在左侧栏点「配置供应商」加一个" vs "在侧栏
+    「配置供应商」里加一个")。这些字符串会变成 job.error, 再原样变成画布上那行红字 ——
+    侧栏那个按钮哪天改名或挪窝, 应该改一个格式串, 而不是 grep 四句手写中文。
+    """
+    tail = f" {extra}" if extra else ""
+    # 侧栏那个按钮的名字出现在这里 —— 它改名时改这一处即可, 这正是把四份手写中文收成
+    # 一个格式串的理由 (刚把按钮从「配置供应商」改成「通道配置」, 就验证了一次)。
+    return RuntimeError(f"还没有配置「{noun}」通道 —— 在侧栏「通道配置」里加一条再试。{tail}")
+
+
+def require_channel(raw, kind: str, *, noun: str, extra: str = "") -> ImageChannel:
+    """channel_or_default 的"必须有"版本: 没有就抛上面那句能照做的话。"""
+    channel = channel_or_default(raw, kind)
+    if channel is None:
+        raise no_channel_error(noun, extra)
+    return channel
 
 
 def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:

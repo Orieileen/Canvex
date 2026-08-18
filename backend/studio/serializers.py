@@ -1,5 +1,6 @@
 import logging
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
@@ -13,7 +14,7 @@ from .models import (
     Scene,
     VideoJob,
 )
-from .services.image_channels import TUNABLE_TYPES, tunables_for_kind
+from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,11 @@ def _coerce_tunable(key: str, raw):
         # 则让 range() 一轮都不转、静默当成"轮询完了没结果"。
         if number < 0:
             raise serializers.ValidationError(f"{key}: 不能是负数")
+        # 0 对超时/间隔/轮数这几项跟负数是同一类错误 —— urllib3 拒的是 <= 0 而不是 < 0,
+        # sleep(0) 会把轮询变成锤供应商的死循环。名单在 image_channels 里, 跟"哪些旋钮
+        # 存在"同住一处 (见 POSITIVE_TUNABLES)。poll_max_interval 的 0 是有定义的, 不在内。
+        if number == 0 and key in POSITIVE_TUNABLES:
+            raise serializers.ValidationError(f"{key}: 必须大于 0(留空 = 用默认值)")
         return number
     if expected is str:
         if isinstance(raw, str):
@@ -455,18 +461,28 @@ class ImageProviderSerializer(serializers.ModelSerializer):
         return _validate_tunables(value)
 
     def validate(self, data):
-        """丢掉这种 kind 读不到的旋钮。
+        """按 kind 判两件事: base_url 是不是必填, 以及丢掉这种 kind 读不到的旋钮。
 
-        对象级而不是字段级: 判定要同时看 `kind` 和 `defaults` / `models[].overrides`,
-        字段校验器拿不到 kind。
+        对象级而不是字段级: 两个判定都要同时看 `kind` 和另一个字段
+        (`base_url` / `defaults` / `models[].overrides`), 字段校验器拿不到 kind。
 
-        **丢弃而不是报错**是刻意的: 把一个已有的 image 供应商改成 angle 是正常操作, 那
-        12 个 image 旋钮此刻全都作废 —— 报错会把用户卡在"改不了 kind"上, 而留着它们则会
-        存进库、被 channel_for_model 合进通道、然后被 submit_angle 完全忽略, 静默无痕。
+        旋钮**丢弃而不是报错**是刻意的: 把一个已有的 image 供应商改成 angle 是正常操作,
+        那 12 个 image 旋钮此刻全都作废 —— 报错会把用户卡在"改不了 kind"上, 而留着它们则
+        会存进库、被 channel_for_model 合进通道、然后被 submit_angle 完全忽略, 静默无痕。
         跟 channel_for_model 处理不认识的键同一个态度: 记一条 warning, 当没配过。
         """
         kind = data.get("kind") or getattr(self.instance, "kind", ImageProvider.Kind.IMAGE)
-        allowed = tunables_for_kind(kind)
+
+        # base_url 留空只对聊天通道合法 (= 走 OpenAI 官方端点, builder 里
+        # `channel.base_url or None`; 迁移 0015 导进来的那条存的就是空串)。其余三种
+        # 都要靠它拼出端点, 空的话要到几分钟后的 worker 里才炸成 requests.MissingSchema。
+        base_url = data.get("base_url", getattr(self.instance, "base_url", ""))
+        if not (base_url or "").strip() and KIND_SPECS[kind].requires_base_url:
+            raise serializers.ValidationError(
+                {"base_url": ["这种通道必须填 Base URL(只有聊天通道可以留空 = 用 OpenAI 官方端点)"]}
+            )
+
+        allowed = KIND_SPECS[kind].tunables
 
         def prune(values, where):
             dropped = sorted(set(values) - allowed)
@@ -497,7 +513,11 @@ class ImageProviderSerializer(serializers.ModelSerializer):
             model_id = item.pop("id", None)
             item.setdefault("sort_order", order)
             if model_id in existing:
-                ImageModel.objects.filter(id=model_id).update(**item)
+                # queryset.update() 不走 save(), 所以 auto_now 的 updated_at 不会动 ——
+                # 不显式带上的话, 一条被改过十次的模型行时间戳永远停在创建那一刻。
+                ImageModel.objects.filter(id=model_id).update(
+                    updated_at=timezone.now(), **item,
+                )
                 keep_ids.append(model_id)
             else:
                 keep_ids.append(ImageModel.objects.create(provider=provider, **item).id)

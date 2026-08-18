@@ -36,8 +36,10 @@ def import_chat_env(apps, schema_editor):
         api_key=api_key,
         # 原来 ChatOpenAI 的 timeout 是写死的 120, 跟 KIND_SPECS 里 chat 的默认值一致,
         # 所以不用往 defaults 里写 —— 写了反而会把以后改默认值这件事变成改两处。
-        defaults={} if not env("CANVAS_CHAT_TIMEOUT") else {
-            "timeout": env_int("CANVAS_CHAT_TIMEOUT", 120),
+        # 跟 0008 / 0013 同一个哨兵套路: env_int 只认 isdigit, "60s" 会静默拿到 default
+        # 并被写进库 —— 那是把一个手滑的值伪装成用户的选择。-1 认出来当没设过。
+        defaults={} if env_int("CANVAS_CHAT_TIMEOUT", -1) < 0 else {
+            "timeout": env_int("CANVAS_CHAT_TIMEOUT", -1),
         },
     )
     ImageModel.objects.create(

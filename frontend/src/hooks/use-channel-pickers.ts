@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 
 import { canvasService } from "@/services/canvas.service";
-import { useStickyModelChoice } from "@/hooks/use-sticky-model-choice";
+import { useStickyModelChoice, type StickyModelChoice } from "@/hooks/use-sticky-model-choice";
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
-// 选中的通道存这里 —— 粘性选择, 跨刷新保留。两种 kind 各一个键: 模型集合不相交,
+/** 工具栏上有选择器的那几种通道 —— **chat 刻意不在里面**: 聊天模型是全局一条, 不是
+ *  每次生成挑一个, 所以它只在配置面板里配, 没有工具栏入口。
+ *
+ *  模块级常量 (不是 state / 不是 props): `.map` 出来的 hook 调用顺序必须每次渲染都一样。 */
+const PICKER_KINDS = ["image", "angle", "video"] as const;
+type PickerKind = (typeof PICKER_KINDS)[number];
+
+// 选中的通道存这里 —— 粘性选择, 跨刷新保留。每种 kind 一个键: 模型集合不相交,
 // 共用一个键会让切换 tab 时互相把对方清成默认。
-const IMAGE_MODEL_KEY = "canvex:image-model";
-const ANGLE_MODEL_KEY = "canvex:angle-model";
-const VIDEO_MODEL_KEY = "canvex:video-model";
+const storageKey = (kind: PickerKind) => `canvex:${kind}-model`;
 
 /** 一个选择器要的全部东西。前四项刻意跟 ImageModelSelector 的 props 同名, 直接摊开传。 */
 export interface ChannelPicker {
@@ -20,13 +25,10 @@ export interface ChannelPicker {
   ref: RefObject<string>;
 }
 
-export interface ChannelPickers {
-  image: ChannelPicker;
-  angle: ChannelPicker;
-  video: ChannelPicker;
+export type ChannelPickers = Record<PickerKind, ChannelPicker> & {
   /** 配置面板增删改完调它 —— 否则工具栏还列着已经删掉的通道。 */
   reload: () => void;
-}
+};
 
 /**
  * 生图 / angle 两个通道选择器的全部状态。
@@ -52,51 +54,39 @@ export function useChannelPickers(onOpenSettings: () => void): ChannelPickers {
   }, []);
   useEffect(() => reload(), [reload]);
 
-  // 一次请求拿回全部, 三个选择器各自按 kind 筛 —— 三边的接口形状都不同 (angle 的模型名在
+  // 一次请求拿回全部, 各选择器按 kind 自己筛 —— 几种接口形状都不同 (angle 的模型名在
   // URL 路径里、认证是 Key; video 是提交完再长轮询), 混着列会让人选到一个必然发不出去的
   // 组合。
-  const imageChoices = useMemo(
-    () => models?.filter((m) => m.kind === "image") ?? null,
-    [models],
-  );
-  const angleChoices = useMemo(
-    () => models?.filter((m) => m.kind === "angle") ?? null,
-    [models],
-  );
-  const videoChoices = useMemo(
-    () => models?.filter((m) => m.kind === "video") ?? null,
+  const byKind = useMemo(
+    () =>
+      Object.fromEntries(
+        PICKER_KINDS.map((k) => [k, models?.filter((m) => m.kind === k) ?? null]),
+      ) as Record<PickerKind, CanvasImageModelChoice[] | null>,
     [models],
   );
 
-  const image = useStickyModelChoice(imageChoices, IMAGE_MODEL_KEY);
-  const angle = useStickyModelChoice(angleChoices, ANGLE_MODEL_KEY);
-  const video = useStickyModelChoice(videoChoices, VIDEO_MODEL_KEY);
+  // hook 不能进循环体的条件分支, 但可以按一个**长度恒定的模块级数组**逐个调 —— 顺序
+  // 每次渲染都一样, 满足 hook 规则。
+  const image = useStickyModelChoice(byKind.image, storageKey("image"));
+  const angle = useStickyModelChoice(byKind.angle, storageKey("angle"));
+  const video = useStickyModelChoice(byKind.video, storageKey("video"));
+  const choices: Record<PickerKind, StickyModelChoice> = { image, angle, video };
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    const pack = (kind: PickerKind): ChannelPicker => ({
+      models: byKind[kind] ?? [],
+      value: choices[kind].value,
+      onChange: choices[kind].setValue,
+      onOpenSettings,
+      ref: choices[kind].ref,
+    });
+    return {
       reload,
-      image: {
-        models: imageChoices ?? [],
-        value: image.value,
-        onChange: image.setValue,
-        onOpenSettings,
-        ref: image.ref,
-      },
-      angle: {
-        models: angleChoices ?? [],
-        value: angle.value,
-        onChange: angle.setValue,
-        onOpenSettings,
-        ref: angle.ref,
-      },
-      video: {
-        models: videoChoices ?? [],
-        value: video.value,
-        onChange: video.setValue,
-        onOpenSettings,
-        ref: video.ref,
-      },
-    }),
-    [reload, imageChoices, angleChoices, videoChoices, image, angle, video, onOpenSettings],
-  );
+      image: pack("image"),
+      angle: pack("angle"),
+      video: pack("video"),
+    };
+    // choices 由下面三个 sticky 对象拼出来, 依赖列它们本身 (每个都是 useMemo 过的)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reload, byKind, image, angle, video, onOpenSettings]);
 }

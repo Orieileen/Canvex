@@ -39,9 +39,15 @@ from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.image_channels import (
     channel_or_default,
+    no_channel_error,
     resolve_model_id,
 )
-from studio.services.image_client import ImageChannel, build_image_client
+from studio.services.image_client import (
+    ImageChannel,
+    ImageClient,
+    build_image_client,
+    build_probe_client,
+)
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -142,6 +148,7 @@ def _volc_size(size: str, resolution: str) -> str:
 
 def _single_generation(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
+    client: ImageClient | None = None,
 ) -> bytes:
     """单次 provider 调用, n=1 固定, 返单张 image bytes.
 
@@ -151,8 +158,11 @@ def _single_generation(
 
     size 适配按 channel.size_mode: "pixel" → 火山合法像素 (_volc_size); 否则沿用旧
     行为 —— 异步 poll provider (apimart) 把像素归一成比例串喂过去.
+
+    `client` 留给调用方换重试策略 (worker 要重试, 同步的测试按钮不要 ——
+    见 probe_image_channel), 默认走缓存的那个带 retry 的。
     """
-    client = build_image_client(channel)
+    client = client or build_image_client(channel)
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
@@ -173,6 +183,24 @@ def _single_generation(
         interval=channel.poll_interval,
         req_timeout=channel.poll_timeout,
     )
+
+
+def probe_image_channel(channel: ImageChannel) -> int:
+    """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
+
+    公开一个函数而不是让 views 直接 import `_single_generation`: angle 那边已经有
+    `probe_angle_channel` 了, 两条探针一边公有、一边从外面伸手拿私有函数, 会让"探针住在
+    哪"这件事没有答案。顺带把"探针不重试"钉死在这里 (见 build_probe_client), 而不是指望
+    每个调用方自己记得 —— 忘掉的下场是 view 那个 60s 预算被静静乘成四倍。
+
+    尺寸取一个所有实现都合法的中庸值; 这里问的是"端点/密钥/模型名对不对", 不是构图。
+    """
+    return len(_single_generation(
+        channel,
+        client=build_probe_client(channel),
+        prompt="a small red circle on a white background",
+        image_urls=[], size="1024x1024", resolution="1K",
+    ))
 
 
 def _generate(
@@ -283,10 +311,7 @@ def _generate_on_channel(
     一个来源。)
     """
     if channel is None:
-        raise RuntimeError(
-            "没有可用的生图通道 —— 还没有配置任何供应商。"
-            "请在左侧栏点「配置供应商」加一个。"
-        )
+        raise no_channel_error("生图")
     try:
         return _call_with_retries(
             channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,

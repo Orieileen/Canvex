@@ -32,7 +32,7 @@ from studio.services.http_retry import make_retry_session
 
 from ..models import AngleJob, AngleResult, ImageProvider
 from . import save_canvas_source_image
-from .image_channels import channel_or_default
+from .image_channels import require_channel
 from .image_client import ImageChannel
 from .agent.tools.common import (
     DOWNLOAD_TIMEOUT,
@@ -72,12 +72,7 @@ def resolve_angle_channel(job: AngleJob) -> ImageChannel:
     api_key / model / timeout / label 五个字段, 为剩下的十几个用不上的字段再造一个平行
     类型, 换来的只是"字段更少"。请求体的差异在 `submit_angle` 里, 不在配置形状里。
     """
-    channel = channel_or_default(job.image_model_id, ImageProvider.Kind.ANGLE)
-    if channel is None:
-        raise RuntimeError(
-            "还没有配置 Angle 供应商 —— 在左侧栏点「配置供应商」加一个 Angle 通道。"
-        )
-    return channel
+    return require_channel(job.image_model_id, ImageProvider.Kind.ANGLE, noun="视角重渲染")
 
 
 # ---------------------------------------------------------------------------

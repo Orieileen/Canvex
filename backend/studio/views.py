@@ -57,13 +57,18 @@ from .services.agent.builder import (
     stream_canvas_agent,
 )
 from .services.agent.skills import list_skills
-from .services.agent.tools.image import _single_generation
 from .services.agent.tools.common import enqueue_on_commit
+from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
 from .services.curl_import import CurlParseError, parse_curl
-from .services.image_channels import channel_for_model, tunable_schema
+from .services.image_channels import (
+    KIND_SPECS,
+    UNTESTABLE_FALLBACK,
+    channel_for_model,
+    tunable_schema,
+)
 from .services.scenes import get_scene_and_org
 from .services.video import create_video_job
 
@@ -930,6 +935,8 @@ class ImageModelChoiceListView(ListAPIView):
         return ImageModel.objects.filter(enabled=True).select_related("provider")
 
 
+
+
 class ImageProviderTestView(APIView):
     """POST /image-providers/<id>/test/ —— 拿某个模型真发一次最小生成。
 
@@ -1004,25 +1011,20 @@ class ImageProviderTestView(APIView):
                 replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
                 image_url=cls.ANGLE_PROBE_IMAGE,
             )
-        return len(_single_generation(
-            cls._budgeted(channel),
-            prompt="a small red circle on a white background",
-            image_urls=[], size="1024x1024", resolution="1K",
-        ))
+        return probe_image_channel(cls._budgeted(channel))
 
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)
-        # video 不测: 一次真实的视频生成是"提交 → 长轮询"的分钟级流程, 压不进这里的 60 秒
-        # 同步预算。而拿生图那条去探它 (POST {base}/images/generations) 会让一条**配得完全
-        # 正确**的视频通道稳定报 404 —— 正是这个按钮存在的意义要消灭的假信号, 所以宁可
-        # 明说"测不了", 也不给一个假的失败。
-        if provider.kind == ImageProvider.Kind.VIDEO:
-            raise ValidationError(
-                {"image_model": [
-                    "视频通道不支持一键测试 —— 一次生成要几分钟, 撑不过一个同步请求。"
-                    "直接在 Video tab 生成一次即可, 失败信息会原样显示在画布上。"
-                ]}
-            )
+        # **白名单而不是黑名单**: 只有 image / angle 两种形状有探针 (见 _probe)。任何
+        # 其它 kind 走到下面都会被当成生图去 POST {base}/images/generations —— 一条**配得
+        # 完全正确**的视频 / 聊天通道也会稳定报 404, 正是这个按钮存在的意义要消灭的假
+        # 信号。宁可明说"测不了", 也不给一个假的失败。加第五种 kind 时这里默认拒绝, 而不是
+        # 默认给出错误答案。
+        spec = KIND_SPECS[provider.kind]
+        if not spec.testable:
+            raise ValidationError({"image_model": [
+                spec.untestable_reason or UNTESTABLE_FALLBACK,
+            ]})
         model_id = request.data.get("image_model")
         if model_id:
             try:

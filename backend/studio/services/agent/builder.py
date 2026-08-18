@@ -3,8 +3,10 @@
 DeepAgents API: create_deep_agent's signature and backend composition are the
 load-bearing bits.
 
-One `create_deep_agent(...)` instance is constructed lazily per process and
-cached. The /memories/ and /skills/ store backends are chosen by
+A `create_deep_agent(...)` instance is built lazily **per configured chat
+channel** (the `kind=chat` provider row) and cached, so editing the model / key
+in the UI takes effect on the next turn without a restart. The /memories/ and
+/skills/ store backends are chosen by
 `CANVAS_AGENT_STORE_BACKEND` (default InMemoryStore; "postgres" uses langgraph
 PostgresStore for multi-process sharing + durability).
 
@@ -32,7 +34,8 @@ Design notes:
 - 只挂 generate_image / generate_video 两个 tool(无 flowchart)。
 
 Public API:
-- `build_canvas_agent()` → cached CompiledStateGraph
+- `build_canvas_agent()` → CompiledStateGraph for the configured chat channel
+  (cached per channel)
 - `invoke_canvas_agent(messages, *, scene_id)` → final assistant text
 - `stream_canvas_agent(messages, *, scene_id)` → Iterator[dict] of
   `tool_call` / `tool_result` / `assistant_final` events for the view's SSE stream.
@@ -62,8 +65,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from studio.models import ImageProvider
-from studio.services.image_channels import channel_or_default
-from studio.services.image_client import ImageChannel
+from studio.services.image_channels import require_channel
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
@@ -238,7 +240,8 @@ def _build_postgres_store() -> BaseStore:
     dsn = settings.CANVAS_AGENT_STORE_DSN.strip() or _django_db_dsn()
     # from_conn_string() returns a context manager; we enter it once and leak
     # intentionally — the store lives for the process lifetime, just like
-    # InMemoryStore. No cleanup path because build_canvas_agent is init-once.
+    # InMemoryStore. No cleanup path because `get_store()` is init-once per
+    # process (the per-channel agent cache above it shares this one store).
     cm = PostgresStore.from_conn_string(dsn)
     store = cm.__enter__()
     store.setup()  # idempotent DDL; creates langgraph_store table if missing
@@ -289,53 +292,74 @@ def build_canvas_agent():
     graph 构建实测 ~20ms, 每轮重建也不算什么, 但缓存住能顺带复用连接。ImageChannel 是
     frozen dataclass, 天然能当缓存键 (跟 build_image_client 同一套路)。
 
-    锁保留: 两个并发的首调用者会各建一遍图并绑到同一个 store, 后者丢掉前者 —— 无害但
-    浪费, 且调试时不确定。
+    锁在**调用外面**而不是缓存函数里面: `functools.lru_cache` 在 miss 时是在自己的锁
+    之外调用被包装函数的, 所以把锁放进 `_agent_for_channel` 只能让两个并发首调用者排队
+    各建一遍图 —— 一点也没少建。包住整个查表 + 构建才真的做到"只建一次"; 命中之后它不过
+    是一次锁下的 dict 查找。
     """
-    channel = channel_or_default(None, ImageProvider.Kind.CHAT)
     # 刻意**不回退**到生图那把 key —— 那个槽位常指向一个不支持 tools 参数的聚合代理
     # (比如 tu-zi.com)。接错的话 agent 会静默忽略 tools, 回一段 markdown 而不是 tool_call,
     # 表现是"聊天有回复但画布上什么都没发生", 极难排查。宁可明说没配。
-    if channel is None:
+    channel = require_channel(
+        None, ImageProvider.Kind.CHAT, noun="聊天模型",
+        extra="注意它必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具; 别直接填生图那把 key。",
+    )
+    # key 单独判一次: 库字段是 blank=True (base_url 留空 = 走 OpenAI 官方端点, key 却
+    # 没有这种语义)。空 key 交给 ChatOpenAI 的下场是要么发出一个 `Bearer ` 换回 401、
+    # 要么被 langchain 当成"没传"从而回落到进程里的 OPENAI_API_KEY —— 后者正是这段代码
+    # 一直在防的"聊天被静默接到生图那把 key 上"。原来的 CANVAS_CHAT_API_KEY 硬要求就是
+    # 这一条, 搬到库里之后不能丢。
+    if not (channel.api_key or "").strip():
         raise RuntimeError(
-            "还没有配置聊天模型 —— 在侧栏「配置供应商」里加一个「聊天模型」通道。"
-            "注意它必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具; "
-            "别直接填生图那把 key。"
+            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「配置供应商」里补上。"
+            "它必须是一把支持 OpenAI tools 参数的 key, 别直接填生图那把。"
         )
-    return _agent_for_channel(channel)
+    with _agent_lock:
+        return _agent_for_channel(
+            channel.api_key, channel.base_url, channel.model, channel.timeout,
+        )
 
 
 @functools.lru_cache(maxsize=4)
-def _agent_for_channel(channel: ImageChannel):
-    with _agent_lock:
-        model = ChatOpenAI(
-            api_key=channel.api_key,
-            base_url=channel.base_url or None,
-            model=channel.model,
-            max_retries=10,
-            timeout=channel.timeout,
-        )
+def _agent_for_channel(api_key: str, base_url: str, model_name: str, timeout: int):
+    """建一条通道的 graph。**只在 `_agent_lock` 下调用** (见 build_canvas_agent)。
 
-        agent = create_deep_agent(
-            model=model,
-            tools=[generate_image, generate_video],
-            system_prompt=CANVAS_SYSTEM_PROMPT,
-            memory=["/memories/scene.md"],
-            skills=["/skills/"],
-            backend=CompositeBackend(
-                default=StateBackend(),
-                routes={
-                    "/memories/": StoreBackend(namespace=_scene_namespace),
-                    "/skills/": StoreBackend(namespace=_skills_namespace),
-                },
-            ),
-            store=get_store(),
-            context_schema=CanvasAgentContext,
-        )
-        logger.info(
-            "canvas agent built (channel=%s model=%s base_url=%s)",
-            channel.label, channel.model, channel.base_url or "<openai-default>",
-        )
+    键是这四个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
+    (= "供应商名 · 模型名") 也在里面 —— 在配置面板里给聊天供应商改个名字就会让这条失效,
+    下一轮聊天要重新编译整个 deep-agent graph 并新建一个 ChatOpenAI (连带新的 httpx 连接
+    池), 而且是握着进程级的 _agent_lock 做的, 期间所有并发的聊天全都排队等着。
+    image_client.build_image_client 早就为同一个理由把键收窄到 _CLIENT_FIELDS 了。
+    """
+    model = ChatOpenAI(
+        api_key=api_key,
+        base_url=base_url or None,
+        model=model_name,
+        max_retries=10,
+        timeout=timeout,
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        tools=[generate_image, generate_video],
+        system_prompt=CANVAS_SYSTEM_PROMPT,
+        memory=["/memories/scene.md"],
+        skills=["/skills/"],
+        backend=CompositeBackend(
+            default=StateBackend(),
+            routes={
+                "/memories/": StoreBackend(namespace=_scene_namespace),
+                "/skills/": StoreBackend(namespace=_skills_namespace),
+            },
+        ),
+        store=get_store(),
+        context_schema=CanvasAgentContext,
+    )
+    # 不打 label: 缓存键收窄到这四个字段之后, 这里已经拿不到通道的显示名了 —— 而那正是
+    # 收窄的目的 (改个名字不该丢掉编译好的 graph)。
+    logger.info(
+        "canvas agent built (model=%s base_url=%s)",
+        model_name, base_url or "<openai-default>",
+    )
     return agent
 
 

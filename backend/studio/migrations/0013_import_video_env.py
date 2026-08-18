@@ -45,8 +45,16 @@ def import_video_env(apps, schema_editor):
 
     defaults = {}
     for env_name, field in _POLL_FIELDS:
-        if env(env_name):  # 只搬显式设过的, 没设的交给 KIND_SPECS 的默认值
-            defaults[field] = env_int(env_name, 0)
+        if not env(env_name):  # 只搬显式设过的, 没设的交给 KIND_SPECS 的默认值
+            continue
+        # 跟 0008 用同一个哨兵套路: 走到这里说明这个键非空, 但可能不是数字 (env_int 只
+        # 认 isdigit, "60s" / "sixty" 都会拿到 default)。用 -1 认出来并跳过, 当没设过。
+        # 不能拿 0 当 default —— 那会把一个手滑的值写成 `timeout: 0`, 而 urllib3 见到
+        # <= 0 的超时直接抛 ValueError: 视频功能从此每次都 FAILED, 报错跟 .env 毫无关系。
+        value = env_int(env_name, -1)
+        if value < 0:
+            continue
+        defaults[field] = value
 
     provider = ImageProvider.objects.create(
         label="视频通道",

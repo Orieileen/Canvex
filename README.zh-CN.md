@@ -101,10 +101,10 @@ docker compose up -d --build
 
 说明：
 
-- **生图和换视角不在这里配** —— 端点、API key、模型名、按供应商的请求参数全部在界面上填：左侧栏「配置供应商」。可以配多个供应商、多个模型，生成时在工具栏切换。
+- **所有供应商都不在这里配** —— 聊天、生图、换视角、视频的端点、API key、模型名、按供应商的请求参数全部在界面上填：左侧栏「配置供应商」。可以配多个供应商、多个模型，生成时在工具栏切换。
+- **先加一条「聊天模型」通道** —— 没有它聊天框直接报错（「还没有配置聊天模型」）。它必须支持 OpenAI 风格的 tool calling，不支持的会回一段 markdown 然后画布上什么都不发生，所以别跟生图共用一把 key。Base URL 留空 = 用 OpenAI 官方端点。
 - **换视角**（多视角）功能跑在 [fal.ai](https://fal.ai) 上：去 fal.ai 注册账号、创建 API key，在同一个面板里加一条 Angle 通道即可。其它功能不需要 fal.ai 账号。
-- 从旧版本升级：原有的 `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` 会被迁移 `0008` / `0010` 自动导进库，导完就不再读取，可以从 `.env` 里删掉。
-- 聊天与视频可共用一个供应商（设置对应的 `*_BASE_URL` 和 key）。
+- 从旧版本升级：原有的 `CANVAS_CHAT_*` / `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` / `CANVAS_VIDEO_*` 会被迁移 `0008` / `0010` / `0013` / `0015` 自动导进库，导完就不再读取，可以从 `.env` 里删掉。
 - 产品免费、单工作区：没有鉴权，计费是空操作桩（`CANVAS_CREDIT_COST_*` 不起作用）。
 
 ## API

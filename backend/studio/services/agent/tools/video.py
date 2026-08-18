@@ -24,7 +24,7 @@ from langchain.tools import ToolRuntime, tool
 from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
-from studio.services.image_channels import channel_or_default, resolve_model_id
+from studio.services.image_channels import require_channel, resolve_model_id
 from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -59,12 +59,7 @@ def resolve_video_channel(job: VideoJob) -> ImageChannel:
     base_url / api_key / model / timeout + 那套轮询参数, 全是现成字段; 请求体的差异在
     `_submit` 里, 不在配置形状里。
     """
-    channel = channel_or_default(job.image_model_id, ImageProvider.Kind.VIDEO)
-    if channel is None:
-        raise RuntimeError(
-            "还没有配置视频供应商 —— 在侧栏「配置供应商」里加一个「视频生成」通道"
-        )
-    return channel
+    return require_channel(job.image_model_id, ImageProvider.Kind.VIDEO, noun="视频生成")
 
 
 def run_video_job(job: VideoJob) -> None:

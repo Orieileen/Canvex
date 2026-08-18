@@ -19,7 +19,7 @@ import type {
   CanvasScene,
   CanvasSceneListItem,
   CanvasSkill,
-  CanvasTunableSpec,
+  CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
 } from "@/types/canvex";
@@ -391,7 +391,7 @@ export const canvasService = {
     }),
   /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
   getImageProviderSchema: () =>
-    request.get<{ tunables: Record<string, CanvasTunableSpec[]> }>(`${IMAGE_PROVIDERS}schema/`),
+    request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),
   /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
   importImageProviderCurl: (curl: string) =>
     request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),

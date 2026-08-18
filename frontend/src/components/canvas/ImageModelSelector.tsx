@@ -106,7 +106,9 @@ export function ImageModelSelector({
             )}
           >
             <ImageIcon className="size-4" strokeWidth={2} />
-            {/* 选了非默认模型才点亮 —— 没配过的人看不出这里有东西 */}
+            {/* 有通道可用时点亮 —— 图标版不显示模型名, 这个点是"这里已经选中了某个
+                模型"的唯一提示。一个都没配时不点, 免得空按钮看起来像已经配好了。
+                (useStickyModelChoice 总会落到第一项, 所以 selected 等价于"列表非空"。) */}
             {selected && (
               <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary" />
             )}

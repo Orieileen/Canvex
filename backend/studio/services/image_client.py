@@ -266,6 +266,13 @@ def _build_client(client_key: tuple) -> ImageClient:
     return ImageClient(**dict(client_key))
 
 
+def _client_kwargs(channel: ImageChannel) -> dict:
+    """通道里 HTTP 层用得到的那部分。_CLIENT_FIELDS 存在的意义就是这个投影只写一次 ——
+    build_image_client / build_probe_client 两处各抄一遍的话, 它们的唯一真实差别
+    (session 和缓存) 就淹没在两段看起来一样的推导式里了。"""
+    return {k: v for k, v in asdict(channel).items() if k in _CLIENT_FIELDS}
+
+
 def build_image_client(channel: ImageChannel) -> ImageClient:
     """通道 → HTTP 客户端。HTTP 参数相同的通道共用一个实例 (TCP 池跨 task 复用)。
 
@@ -273,6 +280,19 @@ def build_image_client(channel: ImageChannel) -> ImageClient:
     size_mode 的模型 (豆包要 pixel、Google 不要 —— 正是这个特性的典型场景) 会各自建一个
     Session、对同一个 host 开两套连接池; 给供应商改个名字也会白白丢掉一个热的池子。
     """
-    return _build_client(
-        tuple(sorted((k, v) for k, v in asdict(channel).items() if k in _CLIENT_FIELDS)),
-    )
+    return _build_client(tuple(sorted(_client_kwargs(channel).items())))
+
+
+def build_probe_client(channel: ImageChannel) -> ImageClient:
+    """配置面板「测试」按钮专用的客户端: 不进缓存、**不重试**。
+
+    worker 里重试是对的 (用户不在场, 多等 7 秒好过一次 FAILED), 但测试是一次同步 HTTP
+    请求, 浏览器和反代都在等着 —— 默认的 total=3 会把 ImageProviderTestView 那个 60s 墙钟
+    预算悄悄乘成四倍 (4 × 单次超时 + 1/2/4s 退避), 用户拿到的是一句通用网络错误, 而这个
+    接口存在的全部价值就是把供应商的原始报文放到他眼前。angle 那边的 `_probe_session`
+    是同一条理由, 生图这条不能落下。
+
+    也不进 lru_cache: 探针用的是被钳过的一次性参数组合, 缓存它只会把真正在跑的通道从
+    32 格里挤出去, 连带丢掉一个热的连接池。
+    """
+    return ImageClient(session=make_retry_session(total=0), **_client_kwargs(channel))
