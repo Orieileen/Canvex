@@ -1,5 +1,8 @@
 import json
 import logging
+import time
+import uuid
+from dataclasses import replace
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
@@ -15,6 +18,8 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .models import (
+    ImageModel,
+    ImageProvider,
     AngleJob,
     AngleResult,
     ChatMessage,
@@ -25,6 +30,8 @@ from .models import (
 )
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
 from .serializers import (
+    ImageModelChoiceSerializer,
+    ImageProviderSerializer,
     AngleJobCreateSerializer,
     AngleJobSerializer,
     AngleResultSerializer,
@@ -39,6 +46,7 @@ from .serializers import (
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
+    SplitJobCreateSerializer,
     VideoJobCreateSerializer,
     VideoJobSerializer,
     result_asset_url,
@@ -50,9 +58,17 @@ from .services.agent.builder import (
 )
 from .services.agent.skills import list_skills
 from .services.agent.tools.common import enqueue_on_commit
+from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
-from .services.angle import create_angle_job
+from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
+from .services.curl_import import CurlParseError, parse_curl
+from .services.image_channels import (
+    KIND_SPECS,
+    UNTESTABLE_FALLBACK,
+    channel_for_model,
+    tunable_schema,
+)
 from .services.scenes import get_scene_and_org
 from .services.video import create_video_job
 
@@ -255,6 +271,8 @@ class SceneChatView(APIView):
         content = serializer.validated_data["content"].strip()
         disabled_skills = serializer.validated_data["disabled_skills"]
         attachments = serializer.validated_data["attachments"]
+        image_model_id = serializer.validated_data["image_model_id"]
+        video_model_id = serializer.validated_data["video_model_id"]
 
         # 预先持久化用户消息, 使其在流中途失败时仍然保留。
         user_msg = ChatMessage.objects.create(
@@ -278,6 +296,8 @@ class SceneChatView(APIView):
                     scene_id=scene_id_str,
                     disabled_skills=disabled_skills,
                     attachments=attachments,
+                    image_model_id=image_model_id,
+                    video_model_id=video_model_id,
                 ):
                     yield _sse_event(event)
                     if event.get("event") == StreamEvent.ASSISTANT_FINAL:
@@ -435,12 +455,17 @@ class SceneSplitView(APIView):
         if not image_file:
             raise ValidationError({"image": ["The image field is required."]})
 
+        serializer = SplitJobCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         scene, _ = get_scene_and_org(request.user, scene_id)
         # Plan B: subject region (box → coordinates) for the split prompts; "" → fallback.
-        region_clause = (request.data.get("region") or "").strip()
-        resolution = (request.data.get("resolution") or "").strip()
         background, cutout = create_split_jobs(
-            scene=scene, image_file=image_file, region_clause=region_clause, resolution=resolution,
+            scene=scene,
+            image_file=image_file,
+            region_clause=serializer.validated_data["region"].strip(),
+            resolution=serializer.validated_data["resolution"].strip(),
+            image_model=serializer.validated_data["image_model"],
         )
         # Lazy import: tasks.py → image_client 顶层可能有 settings 未就绪的副作用.
         # bg leg → canvas (gevent inpaint, 单 task). cutout leg → stage 1 (LLM 白底,
@@ -871,3 +896,211 @@ class MediaLibraryFolderItemsView(APIView):
                 "has_more": end < total,
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# 生图供应商配置
+# ---------------------------------------------------------------------------
+
+class ImageProviderViewSet(viewsets.ModelViewSet):
+    """用户在前端配的生图供应商 + 其下模型的增删改查。
+
+    没有鉴权门: 这是本地单机开源项目, 只有屏幕前的人能访问。见设计文档。
+    """
+
+    queryset = ImageProvider.objects.all()
+    serializer_class = ImageProviderSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        # 只在读的时候 prefetch。写路径上它是纯浪费: UpdateModelMixin 在 save() 后会清掉
+        # _prefetched_objects_cache 再重查一遍, destroy 则从头到尾没读过这些行。
+        if self.action in ("list", "retrieve"):
+            return self.queryset.prefetch_related("models")
+        return self.queryset
+
+
+class ImageModelChoiceListView(ListAPIView):
+    """GET /image-models/ —— 工具栏模型选择器拉的列表。
+
+    只返回展示需要的字段, **不含 base_url / api_key**: 选择器不需要它们, 少一个
+    把凭据带进前端日志/截图的地方。
+    """
+
+    permission_classes = [permissions.AllowAny]
+    serializer_class = ImageModelChoiceSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return ImageModel.objects.filter(enabled=True).select_related("provider")
+
+
+
+
+class ImageProviderTestView(APIView):
+    """POST /image-providers/<id>/test/ —— 拿某个模型真发一次最小生成。
+
+    为什么必须有: 没有内置预设之后, 这是用户唯一的反馈回路。配错一个字段 (比如
+    image_field 填成了另一家的写法), 不测的话表现是三分钟后 celery worker 里一个看不懂
+    的失败。这里当场发一次、把**供应商返回的原始错误**回传, 用户对着文档就能改。
+
+    注意: 这会真的产生一次生成消耗。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    # 测试必须在**一次同步 HTTP 请求**里返回。沿用通道自己的预算 (timeout 默认 300s,
+    # 外加 poll_max_attempts×poll_interval) 的话最长能跑十分钟, 浏览器和反代早就断了 ——
+    # 用户拿到的是一句通用网络错误, 而这个接口存在的全部价值就是把供应商的原始报文放到
+    # 他眼前。而且每次点击都占住一个同步 worker 那么久。
+    #
+    # 逐个钳制每个旋钮是不够的: 轮询的真实耗时是 POST + N×(单次超时 + 间隔), 而 interval
+    # 用户可以在界面上自己填。所以这里从**总墙钟预算**倒推出允许几轮, 让整体有个硬上限。
+    TEST_BUDGET_SECONDS = 60
+    TEST_OP_TIMEOUT = 15
+    TEST_POLL_INTERVAL = 3
+
+    # angle 通道是**一次同步阻塞出图** (fal.run 的 sync endpoint, 实测 15-30s), 没有
+    # 轮询可压缩。给它整个预算, 否则一条配得完全正确的通道也会被 15s 掐断、报成"失败"。
+    ANGLE_OP_TIMEOUT = TEST_BUDGET_SECONDS
+    # 64×64 白色 PNG (132 字节)。angle 的请求体必须带源图, 而这里只是要问供应商
+    # "端点/密钥/模型名对不对" —— 用尽量小的图, 别让测试变成一次真实构图。
+    #
+    # 不用 1×1: 视觉模型对入参尺寸普遍有下限 (fal 的 Qwen-Image-Edit 这类会直接 422),
+    # 那样一条**配得完全正确**的通道也会被报成"测试失败" —— 正是这个按钮要消灭的那种
+    # 假信号。64×64 仍然小到不值一提, 但落在所有已知实现的合法范围里。
+    ANGLE_PROBE_IMAGE = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo33UrYvQQc"
+        "kD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAYHLAMpT0sIcNbcE"
+        "AAAAAElFTkSuQmCC"
+    )
+
+    @classmethod
+    def _budgeted(cls, channel):
+        """把通道压到一次同步请求撑得住的预算内。
+
+        **分两种形状**, 因为"一次调用要多久"差一个数量级:
+
+        - **不轮询** (供应商同步出图, tu-zi / fal 这类): POST 就是全部, 给它整个预算。
+          实测 tu-zi 的 gpt-image-2 要 49 秒 —— 按 15 秒掐, 一条**配得完全正确**的通道
+          会稳定报"测试失败", 正是这个按钮要消灭的那种假信号。angle 早就为同一个理由拿
+          整个预算 (见 ANGLE_OP_TIMEOUT), 生图这条当时漏了。
+        - **轮询** (apimart 这类先返 task_id): 总耗时是 POST + N×(单次超时 + 间隔),
+          所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
+          interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
+        """
+        if not channel.poll_enabled:
+            return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
+
+        op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
+        poll_timeout = min(channel.poll_timeout, cls.TEST_OP_TIMEOUT)
+        interval = min(channel.poll_interval, cls.TEST_POLL_INTERVAL)
+        per_attempt = max(1, poll_timeout + interval)
+        return replace(
+            channel,
+            timeout=op_timeout,
+            poll_timeout=poll_timeout,
+            poll_interval=interval,
+            poll_max_attempts=max(
+                1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
+            ),
+        )
+
+    @classmethod
+    def _probe(cls, provider, channel) -> int:
+        """按通道形状发一次最小的真实调用, 返回拿到的字节数。
+
+        **必须按 kind 分流**: 两种接口形状同住一张表, 但请求怎么拼是完全不同的两件事
+        (angle 的模型名在 URL 路径里、认证是 `Key`、请求体是相机坐标)。用生图那条去测
+        angle 通道, 配得完全正确的人也会拿到一个 404 —— 而这个按钮是没有内置预设之后
+        唯一的反馈回路。
+        """
+        if provider.kind == ImageProvider.Kind.ANGLE:
+            return probe_angle_channel(
+                replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
+                image_url=cls.ANGLE_PROBE_IMAGE,
+            )
+        return probe_image_channel(cls._budgeted(channel))
+
+    def post(self, request, pk):
+        provider = get_object_or_404(ImageProvider, pk=pk)
+        # **白名单而不是黑名单**: 只有 image / angle 两种形状有探针 (见 _probe)。任何
+        # 其它 kind 走到下面都会被当成生图去 POST {base}/images/generations —— 一条**配得
+        # 完全正确**的视频 / 聊天通道也会稳定报 404, 正是这个按钮存在的意义要消灭的假
+        # 信号。宁可明说"测不了", 也不给一个假的失败。加第五种 kind 时这里默认拒绝, 而不是
+        # 默认给出错误答案。
+        spec = KIND_SPECS[provider.kind]
+        if not spec.testable:
+            raise ValidationError({"image_model": [
+                spec.untestable_reason or UNTESTABLE_FALLBACK,
+            ]})
+        model_id = request.data.get("image_model")
+        if model_id:
+            try:
+                model_pk = uuid.UUID(str(model_id))
+            except (AttributeError, TypeError, ValueError) as exc:
+                # 前端给还没保存的模型行发的是本地临时 id ("new-1723…"), 直接丢给
+                # UUIDField 查询会抛 django 的 ValidationError → 500。说人话地拦下来。
+                raise ValidationError(
+                    {"image_model": ["这个模型还没有保存, 先保存供应商再测试"]}
+                ) from exc
+            model = provider.models.filter(id=model_pk).first()
+        else:
+            model = provider.models.first()
+        if model is None:
+            raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
+        # channel_for_model 会读 model.provider —— 那就是我们手上这条, 喂给 FK 缓存,
+        # 省掉一次纯属多余的往返。
+        model.provider = provider
+
+        started = time.monotonic()
+        try:
+            image_bytes = self._probe(provider, channel_for_model(model))
+        except Exception as exc:  # noqa: BLE001 — 原样回传才是这个接口的价值
+            logger.info("image provider test failed: provider=%s model=%s", provider.label, model.label)
+            return Response(
+                {
+                    "ok": False,
+                    "elapsed": round(time.monotonic() - started, 1),
+                    # str(exc) 可能带供应商回的整段报文。这是本地工具, 用户就是要看它;
+                    # 但**不要**把 channel / 请求头拼进去 —— 那里面有 api_key。
+                    "error": f"{type(exc).__name__}: {exc}"[:2000],
+                },
+                status=status.HTTP_200_OK,  # 测试"失败"本身是成功的测试结果, 不是 HTTP 错误
+            )
+        return Response({
+            "ok": True,
+            "elapsed": round(time.monotonic() - started, 1),
+            "bytes": image_bytes,
+        })
+
+
+class ImageProviderSchemaView(APIView):
+    """GET /image-providers/schema/ —— 配置表单的字段表。
+
+    从 `ImageChannel` 的字段声明派生 (见 image_channels.tunable_schema)。前端照着渲染,
+    不再自己抄一份 13 项的清单 —— 那份抄写一旦落后, 表现是"新加的旋钮在界面上根本不出现",
+    或者"界面上配了但后端不认", 两种都没有报错。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({"tunables": tunable_schema()})
+
+
+class ImageProviderCurlImportView(APIView):
+    """POST /image-providers/import-curl/ —— 把供应商文档里的示例 curl 转成预填字段。
+
+    替代内置预设: 那 16 个旋钮是我们适配器的词汇而不是供应商的词汇, 用户没法直接从文档
+    抄; 但示例 curl 的请求体形状里就含着答案 (图字段叫什么、是数组还是单值)。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        try:
+            return Response(parse_curl(request.data.get("curl", "")))
+        except CurlParseError as exc:
+            raise ValidationError({"curl": [str(exc)]}) from exc

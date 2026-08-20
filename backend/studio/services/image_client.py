@@ -2,23 +2,28 @@
 通用图片生成 HTTP 客户端。
 
 适配任何 OpenAI 兼容的 /images/generations 接口，
-不同服务商的差异通过字段映射 + 环境变量解决。
+不同服务商的差异通过字段映射解决。
 
 用法:
-    client = build_image_client("PATTERN_PRIMARY")
+    channel = channel_for_model(model)     # services/image_channels.py
+    client = build_image_client(channel)
     result = client.generate(prompt=..., image_urls=[...], size=...)
+
+「通道」(ImageChannel) 是一次调用需要的全部供应商参数, 唯一来源是用户在前端配的
+ImageProvider/ImageModel (services/image_channels.py)。本模块只负责把它变成 HTTP,
+不关心它是怎么来的。
 """
 
 import base64
 import functools
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 import requests
 
 from studio.services.http_retry import make_retry_session
-from studio.services.listings_utils import SourceImageDownloadError, env, env_bool, env_int
+from studio.services.listings_utils import SourceImageDownloadError
 
 logger = logging.getLogger(__name__)
 
@@ -187,52 +192,107 @@ class ImageClient:
         return result
 
 
-@functools.cache
-def build_image_client(prefix: str) -> ImageClient:
+# ImageClient 上那些旋钮的默认值 —— ImageChannel 直接引用, 不再抄第二份。
+#
+# 抄一份的下场很安静: build_image_client 会把两边同名的字段**全部**显式传进 ImageClient
+# (见 _CLIENT_FIELDS), 所以只要是配过的通道, ImageClient 自己的默认值根本轮不到生效。
+# 那时改 ImageClient.timeout=600 会毫无反应, 而两张表已经不一致了, 没有任何报错。
+_D = {f.name: f.default for f in fields(ImageClient)}
+
+
+@dataclass(frozen=True)
+class ImageChannel:
+    """一次生图调用需要的全部供应商参数 —— 「用哪个模型、怎么跟它说话」。
+
+    frozen 是刻意的: 它同时是 build_image_client 的**缓存键**, 所以必须可哈希。用户在
+    前端改了任何一个字段 → 新的 ImageChannel → 自然拿到新 client, 不需要任何显式失效
+    逻辑; 没改则命中缓存, 连接池照常复用。
+
+    字段分三组: 连接 / 请求形状(各家差异都在这里) / 异步轮询。为什么需要这些奇怪的
+    旋钮见 ImageClient 上各字段的注释 —— 那些注释就是前端配置表单的字段提示。
+
+    **这个类的字段声明就是前端配置表单**: `image_channels.tunable_schema()` 从这里派生出
+    控件类型、占位符、空选项语义, 前端照着渲染。所以
+
+      - 声明**顺序 = 表单里的顺序**, 别随手调;
+      - 加一个旋钮, 表单里自动多一行 (只需补两条 i18n 文案);
+      - 注解类型决定控件: str→输入框, int→数字框, bool→下拉, `bool | None`→下拉且
+        "不填"的含义是**不下发该字段**(而不是"用我们的默认")。
+
+    `metadata={"example": ...}` 用于占位符不等于默认值的字段 —— 只有 size_mode 是这样:
+    它默认空(不做适配), 而 "pixel" 是个合法取值的示例。
     """
-    从环境变量构建 ImageClient。同 prefix 同进程一个实例 (TCP 池跨 task 复用).
 
-    参数:
-        prefix: 环境变量前缀，如 "PATTERN_PRIMARY" 或 "PATTERN_FALLBACK"
+    # ── 连接 ──
+    base_url: str
+    api_key: str
+    model: str
+    # ── 请求形状 (默认值取自 ImageClient, 见上面 _D) ──
+    image_field: str = _D["image_field"]
+    image_as_single: bool = _D["image_as_single"]
+    response_format: str = _D["response_format"]
+    quality: str = _D["quality"]
+    watermark: bool | None = _D["watermark"]
+    inline_image: bool = _D["inline_image"]
+    # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
+    # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
+    size_mode: str = field(default="", metadata={"example": "pixel"})
+    timeout: int = _D["timeout"]
+    # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
+    poll_enabled: bool = False
+    poll_url: str = ""          # 空则用 base_url
+    poll_max_attempts: int = 60
+    poll_interval: int = 5
+    # 退避上限: 每轮等待 ×1.5 直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
+    # 视频是分钟级的, 固定 5 秒去敲一个要跑 3 分钟的任务只是白敲。
+    poll_max_interval: int = 0
+    poll_timeout: int = 30
+    # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
+    label: str = ""
 
-    读取的环境变量:
-        {prefix}_BASE_URL           服务商端点      (可回退 OPENAI_BASE_URL)
-        {prefix}_API_KEY            Bearer 密钥     (可回退 OPENAI_API_KEY)
-        {prefix}_MODEL              模型名称         (必须)
-        {prefix}_IMAGE_FIELD        图片字段名       (默认 "image")
-        {prefix}_IMAGE_AS_SINGLE    n=1 时发 string  (默认 false; tu-zi 设 true)
-        {prefix}_RESPONSE_FORMAT    响应格式         (默认 "b64_json")
-        {prefix}_QUALITY            质量参数         (可选)
-        {prefix}_WATERMARK          是否打水印       (未设=不传; 火山默认 true 需显式 false)
-        {prefix}_INLINE_IMAGE       外部源 URL 下载转 base64 (默认 false; 火山拉不到远程源时设 true)
-        {prefix}_TIMEOUT            请求超时秒数     (默认 300)
+
+# ImageChannel 里 HTTP 层真正用得到的那些字段 —— 从两个 dataclass 的交集派生, 不手抄。
+# 手抄的那份会在有人给 ImageChannel 加旋钮时悄悄落后, 表现是"在界面上配了却不生效",
+# 而且没有任何报错。(session 是 ImageClient 自己 default_factory 出来的, 不从通道来。)
+_CLIENT_FIELDS = frozenset(f.name for f in fields(ImageClient)) & frozenset(
+    f.name for f in fields(ImageChannel)
+)
+
+
+# maxsize 而非无上限 cache: 通道现在可由用户在前端编辑, 每次改动产生一个新键, 无上限
+# 会一直堆积。32 远超任何人会配的通道数, 又保证旧 client (及其 TCP 池) 最终被回收。
+@functools.lru_cache(maxsize=32)
+def _build_client(client_key: tuple) -> ImageClient:
+    return ImageClient(**dict(client_key))
+
+
+def _client_kwargs(channel: ImageChannel) -> dict:
+    """通道里 HTTP 层用得到的那部分。_CLIENT_FIELDS 存在的意义就是这个投影只写一次 ——
+    build_image_client / build_probe_client 两处各抄一遍的话, 它们的唯一真实差别
+    (session 和缓存) 就淹没在两段看起来一样的推导式里了。"""
+    return {k: v for k, v in asdict(channel).items() if k in _CLIENT_FIELDS}
+
+
+def build_image_client(channel: ImageChannel) -> ImageClient:
+    """通道 → HTTP 客户端。HTTP 参数相同的通道共用一个实例 (TCP 池跨 task 复用)。
+
+    缓存键**只取 HTTP 层用得到的字段**, 不是整个通道。否则同一供应商下两个只差
+    size_mode 的模型 (豆包要 pixel、Google 不要 —— 正是这个特性的典型场景) 会各自建一个
+    Session、对同一个 host 开两套连接池; 给供应商改个名字也会白白丢掉一个热的池子。
     """
-    base_url = env(f"{prefix}_BASE_URL") or env("OPENAI_BASE_URL")
-    api_key = env(f"{prefix}_API_KEY") or env("OPENAI_API_KEY")
-    model = env(f"{prefix}_MODEL")
+    return _build_client(tuple(sorted(_client_kwargs(channel).items())))
 
-    if not base_url or not api_key or not model:
-        missing = []
-        if not base_url:
-            missing.append(f"{prefix}_BASE_URL")
-        if not api_key:
-            missing.append(f"{prefix}_API_KEY")
-        if not model:
-            missing.append(f"{prefix}_MODEL")
-        raise RuntimeError(f"缺少环境变量: {', '.join(missing)}")
 
-    # tri-state: env 未设 → None (不下发, 用 provider 默认); 设了 → 显式 true/false.
-    watermark = env_bool(f"{prefix}_WATERMARK") if env(f"{prefix}_WATERMARK") else None
+def build_probe_client(channel: ImageChannel) -> ImageClient:
+    """配置面板「测试」按钮专用的客户端: 不进缓存、**不重试**。
 
-    return ImageClient(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        image_field=env(f"{prefix}_IMAGE_FIELD") or "image",
-        image_as_single=env_bool(f"{prefix}_IMAGE_AS_SINGLE", default=False),
-        response_format=env(f"{prefix}_RESPONSE_FORMAT") or "b64_json",
-        quality=env(f"{prefix}_QUALITY"),
-        watermark=watermark,
-        inline_image=env_bool(f"{prefix}_INLINE_IMAGE", default=False),
-        timeout=env_int(f"{prefix}_TIMEOUT", 300),
-    )
+    worker 里重试是对的 (用户不在场, 多等 7 秒好过一次 FAILED), 但测试是一次同步 HTTP
+    请求, 浏览器和反代都在等着 —— 默认的 total=3 会把 ImageProviderTestView 那个 60s 墙钟
+    预算悄悄乘成四倍 (4 × 单次超时 + 1/2/4s 退避), 用户拿到的是一句通用网络错误, 而这个
+    接口存在的全部价值就是把供应商的原始报文放到他眼前。angle 那边的 `_probe_session`
+    是同一条理由, 生图这条不能落下。
+
+    也不进 lru_cache: 探针用的是被钳过的一次性参数组合, 缓存它只会把真正在跑的通道从
+    32 格里挤出去, 连带丢掉一个热的连接池。
+    """
+    return ImageClient(session=make_retry_session(total=0), **_client_kwargs(channel))

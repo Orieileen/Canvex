@@ -64,12 +64,17 @@ def create_image_edit_job(*, scene, image_file=None, image_files=None, validated
             source_image=source_image,
             source_images=source_images,
             status=ImageEditJob.Status.QUEUED,
+            # 工具栏选的模型。异步路径 —— 请求早就返回了, worker 之后才捞这行, 所以
+            # 选择必须落在行上而不是留在请求里。None = 没选 → 退到库里第一条。
+            image_model=validated.get("image_model"),
         )
         reserve_canvas_credit(job)
     return job
 
 
-def create_split_jobs(*, scene, image_file, region_clause: str = "", resolution: str = ""):
+def create_split_jobs(
+    *, scene, image_file, region_clause: str = "", resolution: str = "", image_model=None,
+):
     """Create atomic split pair: 1 background inpaint job + 1 cutout subject job.
 
     两条 leg 互填 split_partner 形成 pair, 前端靠它把两腿配对显示。Canvex 无计费:
@@ -83,6 +88,9 @@ def create_split_jobs(*, scene, image_file, region_clause: str = "", resolution:
     接到两条 leg 的 prompt 当主体定位 —— background leg 直接拼在 SPLIT_INPAINT_PROMPT
     后;cutout leg 放进 prompt(空 prompt 字段),run_cutout_llm_step 会拼到
     CUTOUT_LLM_PROMPT 后。空 region_clause → 两个 prompt 各自落到"最显眼主体"兜底。
+
+    `image_model`: 工具栏选的生图模型, 两条 leg 共用一个 —— 背景 inpaint 和主体抠图
+    出自同一张源图, 分别用不同供应商生成会得到风格对不上的一对。None = 默认通道。
 
     Returns (background_job, cutout_job).
 
@@ -107,6 +115,7 @@ def create_split_jobs(*, scene, image_file, region_clause: str = "", resolution:
             num_images=1,
             is_cutout=False,
             source_image=saved_path,
+            image_model=image_model,
             status=ImageEditJob.Status.QUEUED,
         )
         # Cutout leg (secondary): prompt = 框选区域坐标(run_cutout_llm_step 拼到
@@ -119,6 +128,7 @@ def create_split_jobs(*, scene, image_file, region_clause: str = "", resolution:
             num_images=1,
             is_cutout=True,
             source_image=saved_path,
+            image_model=image_model,
             split_partner=background,
             status=ImageEditJob.Status.QUEUED,
         )

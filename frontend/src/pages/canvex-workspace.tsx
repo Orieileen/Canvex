@@ -15,6 +15,7 @@ import { excalidrawLangCode, useLanguageToggle } from "@/hooks/use-language";
 import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
+import { ImageProviderSettings } from "@/components/canvas/ImageProviderSettings";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
 import { canvasService, waitForCanvasJob } from "@/services/canvas.service";
@@ -37,6 +38,7 @@ import { useImageAdjust } from "@/hooks/use-image-adjust";
 import { useSelectionPreview } from "@/hooks/use-selection-preview";
 import { useMergeLayer } from "@/hooks/use-merge-layer";
 import { useSplit } from "@/hooks/use-split";
+import { useChannelPickers, type ChannelPickers } from "@/hooks/use-channel-pickers";
 import { useVideoEdit } from "@/hooks/use-video-edit";
 import { getMockupBinding, worldPointToBaseUv } from "@/lib/canvas-mockup";
 import { DEFAULT_ADJUST_BINDING, getAdjustBinding } from "@/lib/canvas-adjust";
@@ -223,6 +225,13 @@ function buildInitialData(data: unknown): InitialData {
 export default function CanvexWorkspacePage() {
   // 当前 scene 由 sidebar 选择驱动 —— 不走路由参数 (Canvex 单页)。
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  // 生图配置面板挂在这一层, 不在 CanvasArea —— 供应商配置跟画布无关, 一张画布都没有
+  // 时(EmptyState)也得能打开, 否则新用户开箱就配不了 key。
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  const openImageSettings = useCallback(() => setImageSettingsOpen(true), []);
+  // 通道选择器的状态同样挂这一层 —— 它跟画布无关, 挂进 CanvasArea 会随每次换画布
+  // 重新 GET 一遍并闪回"未配置"。
+  const channels = useChannelPickers(openImageSettings);
   return (
     <div className="flex h-screen min-h-0">
       <CanvasSidebar
@@ -230,25 +239,32 @@ export default function CanvexWorkspacePage() {
         onSelectScene={setActiveSceneId}
         onSceneCreated={setActiveSceneId}
         onSceneDeleted={() => setActiveSceneId(null)}
+        onOpenImageSettings={openImageSettings}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeSceneId ? (
           // key 强制 scene 切换时整棵 CanvasArea 重挂载, 干净重置所有 ref /
           // Excalidraw 实例 —— 比手动收口每个 ref 可靠。
-          <CanvasArea key={activeSceneId} sceneId={activeSceneId} />
+          <CanvasArea key={activeSceneId} sceneId={activeSceneId} channels={channels} />
         ) : (
           <EmptyState />
         )}
       </main>
+      <ImageProviderSettings
+        open={imageSettingsOpen}
+        onOpenChange={setImageSettingsOpen}
+        onChanged={channels.reload}
+      />
     </div>
   );
 }
 
 interface CanvasAreaProps {
   sceneId: string;
+  channels: ChannelPickers;
 }
 
-function CanvasArea({ sceneId }: CanvasAreaProps) {
+function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
   const { t } = useTranslation("canvasUi");
   // Always-current `t` for use inside effects that must NOT re-run on language
   // change (react-i18next returns a new `t` ref each `languageChanged`). Without
@@ -333,6 +349,11 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
   // the textarea; cleared after every successful send. Per-message ephemeral
   // (matches disabledSkills lifetime).
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  // 通道选择器由页面那一层持有 (跟画布无关, 见 useChannelPickers) —— 这里只是消费。
+  // 摊成局部 ref 而不是在 callback 里写 channels.x.ref: ref 本身是稳定的, 而
+  // `channels.video.ref` 这种成员访问会被 exhaustive-deps 要求进依赖数组。
+  const imageModelIdRef = channels.image.ref;
+  const videoModelIdRef = channels.video.ref;
   const [showMinimap, setShowMinimap] = useState(false);
   // Bump 每次 Excalidraw 写入新 api —— 给 Minimap 一个 effect dep, 比靠 ref
   // 时序猜测可靠 (scene 切换 + StrictMode + HMR 多次重 mount, ref 反复换).
@@ -431,24 +452,28 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    imageModelIdRef,
   });
   const videoEdit = useVideoEdit({
     sceneId: activeSceneId,
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    videoModelIdRef,
   });
   const angleEdit = useAngleEdit({
     sceneId: activeSceneId,
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    angleModelIdRef: channels.angle.ref,
   });
   const splitEdit = useSplit({
     sceneId: activeSceneId,
     excalidrawApiRef,
     pinning,
     sceneAbortRef,
+    imageModelIdRef,
   });
   const mergeLayer = useMergeLayer({
     excalidrawApiRef,
@@ -909,7 +934,14 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
         for await (const event of canvasService.postChatStream(
           activeSceneId,
           content,
-          { signal: abort.signal, disabledSkills, attachments },
+          {
+            signal: abort.signal,
+            disabledSkills,
+            attachments,
+            // agent 调 generate_image 时用哪个通道, 跟工具栏那条路同一个选择
+            imageModelId: imageModelIdRef.current,
+            videoModelId: videoModelIdRef.current,
+          },
         )) {
           switch (event.event) {
             case "user_created":
@@ -1095,7 +1127,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
-                pollAndPinJob,
+      imageModelIdRef,
+      videoModelIdRef,
+      pollAndPinJob,
       resetPackRow,
       resetStream,
       showTransientStatus,
@@ -1141,6 +1175,7 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
       />
       <ChatOverlay
         onSubmit={handleChatSubmit}
+        imageModel={channels.image}
         onStop={handleStopStream}
         isStreaming={isStreaming}
         status={chatStatus}
@@ -1297,6 +1332,9 @@ function CanvasArea({ sceneId }: CanvasAreaProps) {
             onSubmit: () => void mergeLayer.merge(selection),
             onDismissError: mergeLayer.dismissError,
           }}
+          imageModel={channels.image}
+          angleModel={channels.angle}
+          videoModel={channels.video}
           mockup={{
             binding: selectedBinding,
             isReceiving: isReceivingSelected,

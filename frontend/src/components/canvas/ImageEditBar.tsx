@@ -28,6 +28,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { toolbarSelectClass as selectClass } from "@/lib/canvas-toolbar-styles";
 import { DEFAULT_CAMERA_ANGLES, type CameraAngles } from "@/lib/angle";
 import {
   ADJUST_GROUPS,
@@ -61,6 +62,8 @@ import {
   type VideoAspectRatio,
   type VideoDuration,
 } from "@/hooks/use-video-edit";
+import { ImageModelSelector } from "@/components/canvas/ImageModelSelector";
+import type { ChannelPicker } from "@/hooks/use-channel-pickers";
 
 /**
  * Floating "edit this selection" toolbar — canvex-style horizontal row with
@@ -176,6 +179,15 @@ interface ImageEditBarProps {
     onSubmit: (params: { resolution: ImageEditResolution }) => void;
     onDismissError: () => void;
   };
+  /** 生图通道选择器 —— 同一份画布级 state, 聊天栏那个改的也是它。
+   *  只发给 Image / Split 两个面板。Video / Angle 各有自己的一份 (接口形状不同, 模型集合
+   *  不相交); Merge / Mockup 根本不调 API, 摆上选择器等于骗人。 */
+  imageModel: ChannelPicker;
+  /** Angle 通道选择器。跟上面是两份独立选择 —— fal 的视角模型发不了生图请求, 反之
+   *  亦然, 所以它们的列表和粘性选择都各归各。 */
+  angleModel: ChannelPicker;
+  /** Video 通道选择器 —— 只发给 VideoPanel。 */
+  videoModel: ChannelPicker;
   merge: {
     isProcessing: boolean;
     error: string | null;
@@ -216,7 +228,7 @@ const EDGE_MARGIN = 8;
 
 const forwardWheelToCanvas = forwardWheelToExcalidrawCanvas;
 
-export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, onSendToChat }: ImageEditBarProps) {
+export function ImageEditBar({ selection, imageSourceUrl, preview, image, video, angle, split, merge, mockup, adjust, imageModel, angleModel, videoModel, onSendToChat }: ImageEditBarProps) {
   const { t } = useTranslation("canvasUi");
   // 初始 placement 用 0,0 而不是 screenY+screenHeight+ANCHOR_GAP —— 后者在
   // 巨图 (screenHeight > 1000px) 下会把 absolute child 定位到 y=2000+, 撑大
@@ -388,12 +400,14 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
               promptFromTexts={promptFromTexts}
               isSubmitting={image.isSubmitting}
               onSubmit={image.onSubmit}
+              imageModel={imageModel}
             />
           </TabsContent>
         )}
         {support.video && (
           <TabsContent value="video">
             <VideoPanel
+              videoModel={videoModel}
               canPin={!!imageSourceUrl}
               promptFromTexts={promptFromTexts}
               isSubmitting={video.isSubmitting}
@@ -407,12 +421,17 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
               sourceUrl={imageSourceUrl}
               isSubmitting={angle.isSubmitting}
               onSubmit={angle.onSubmit}
+              angleModel={angleModel}
             />
           </TabsContent>
         )}
         {support.split && (
           <TabsContent value="split">
-            <SplitPanel isSubmitting={split.isSubmitting} onSubmit={split.onSubmit} />
+            <SplitPanel
+              isSubmitting={split.isSubmitting}
+              onSubmit={split.onSubmit}
+              imageModel={imageModel}
+            />
           </TabsContent>
         )}
         {support.merge && (
@@ -565,9 +584,10 @@ interface ImagePanelProps {
     resolution: ImageEditResolution;
     n: ImageEditCount;
   }) => void;
+  imageModel: ChannelPicker;
 }
 
-function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit }: ImagePanelProps) {
+function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting, onSubmit, imageModel }: ImagePanelProps) {
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
@@ -622,6 +642,8 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
         disabled={isSubmitting}
         className={inputClass}
       />
+      <Divider />
+      <ImageModelSelector {...imageModel} variant="text" buttonDisabled={isSubmitting} />
       <Divider />
       <select
         value={size}
@@ -685,6 +707,7 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
 // ─── Video panel ────────────────────────────────────────────────────────────
 
 interface VideoPanelProps {
+  videoModel: ChannelPicker;
   /** False if the selected image has no public URL (only a local dataURL).
    *  External video provider can't fetch a local blob, so Generate is locked. */
   canPin: boolean;
@@ -697,7 +720,7 @@ interface VideoPanelProps {
   }) => void;
 }
 
-function VideoPanel({ canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPanelProps) {
+function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPanelProps) {
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
@@ -740,6 +763,13 @@ function VideoPanel({ canPin, promptFromTexts, isSubmitting, onSubmit }: VideoPa
         }
         disabled={!canPin || isSubmitting}
         className={inputClass}
+      />
+      <Divider />
+      <ImageModelSelector
+        {...videoModel}
+        variant="text"
+        buttonDisabled={isSubmitting}
+        title={t("imageModels.videoTitle")}
       />
       <Divider />
       <select
@@ -789,9 +819,10 @@ interface AnglePanelProps {
   sourceUrl: string | null;
   isSubmitting: boolean;
   onSubmit: (params: { angles: CameraAngles }) => void;
+  angleModel: ChannelPicker;
 }
 
-function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
+function AnglePanel({ sourceUrl, isSubmitting, onSubmit, angleModel }: AnglePanelProps) {
   const { t } = useTranslation("canvasUi");
   const [angles, setAngles] = useState<CameraAngles>(DEFAULT_CAMERA_ANGLES);
 
@@ -820,6 +851,13 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
           {t("edit.dragCube")}
         </div>
         <Divider />
+        <ImageModelSelector
+          {...angleModel}
+          variant="text"
+          buttonDisabled={isSubmitting}
+          title={t("imageModels.angleTitle")}
+        />
+        <Divider />
         <IconButton
           type="submit"
           disabled={!canGenerate}
@@ -842,11 +880,13 @@ function AnglePanel({ sourceUrl, isSubmitting, onSubmit }: AnglePanelProps) {
 interface SplitPanelProps {
   isSubmitting: boolean;
   onSubmit: (params: { resolution: ImageEditResolution }) => void;
+  imageModel: ChannelPicker;
 }
 
-/** Split = subject cutout + clean-bg inpaint (fixed pipeline); the only knob is
- *  the resolution tier (1K/2K/4K). For other tweaks, switch to the Image tab. */
-function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
+/** Split = subject cutout + clean-bg inpaint (fixed pipeline); the knobs are the
+ *  resolution tier (1K/2K/4K) and which model runs the inpaint leg. For other
+ *  tweaks, switch to the Image tab. */
+function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
   const { t } = useTranslation("canvasUi");
   const [resolution, setResolution] = useState<ImageEditResolution>("2K");
   function handleSubmit(e: FormEvent) {
@@ -857,6 +897,8 @@ function SplitPanel({ isSubmitting, onSubmit }: SplitPanelProps) {
   return (
     <form onSubmit={handleSubmit} className={toolbarClass}>
       <div className="flex-1 px-3 text-xs text-muted-foreground">{t("edit.splitDesc")}</div>
+      <Divider />
+      <ImageModelSelector {...imageModel} variant="text" buttonDisabled={isSubmitting} />
       <Divider />
       <select
         value={resolution}
@@ -1294,11 +1336,6 @@ const toolbarClass = cn("flex items-center gap-0", panelChromeClass);
 const inputClass = cn(
   "h-10 min-w-[220px] flex-1 bg-transparent px-3 text-sm outline-none",
   "placeholder:text-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-60",
-);
-
-const selectClass = cn(
-  "h-10 cursor-pointer border-none bg-transparent px-2 text-xs text-muted-foreground",
-  "outline-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60",
 );
 
 function Divider() {

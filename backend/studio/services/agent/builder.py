@@ -3,8 +3,10 @@
 DeepAgents API: create_deep_agent's signature and backend composition are the
 load-bearing bits.
 
-One `create_deep_agent(...)` instance is constructed lazily per process and
-cached. The /memories/ and /skills/ store backends are chosen by
+A `create_deep_agent(...)` instance is built lazily **per configured chat
+channel** (the `kind=chat` provider row) and cached, so editing the model / key
+in the UI takes effect on the next turn without a restart. The /memories/ and
+/skills/ store backends are chosen by
 `CANVAS_AGENT_STORE_BACKEND` (default InMemoryStore; "postgres" uses langgraph
 PostgresStore for multi-process sharing + durability).
 
@@ -32,11 +34,13 @@ Design notes:
 - 只挂 generate_image / generate_video 两个 tool(无 flowchart)。
 
 Public API:
-- `build_canvas_agent()` → cached CompiledStateGraph
+- `build_canvas_agent()` → CompiledStateGraph for the configured chat channel
+  (cached per channel)
 - `invoke_canvas_agent(messages, *, scene_id)` → final assistant text
 - `stream_canvas_agent(messages, *, scene_id)` → Iterator[dict] of
   `tool_call` / `tool_result` / `assistant_final` events for the view's SSE stream.
 """
+import functools
 import logging
 import queue
 import threading
@@ -59,6 +63,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
+
+from studio.models import ImageProvider
+from studio.services.image_channels import require_channel
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
@@ -136,7 +143,6 @@ You may read and write /memories/scene.md to record stable facts about this canv
 
 # Module-level caches — populate on first call, never mutate after.
 # Lock is used only once during agent construction.
-_agent: Any | None = None
 _agent_lock = threading.Lock()
 _store: BaseStore | None = None
 
@@ -234,7 +240,8 @@ def _build_postgres_store() -> BaseStore:
     dsn = settings.CANVAS_AGENT_STORE_DSN.strip() or _django_db_dsn()
     # from_conn_string() returns a context manager; we enter it once and leak
     # intentionally — the store lives for the process lifetime, just like
-    # InMemoryStore. No cleanup path because build_canvas_agent is init-once.
+    # InMemoryStore. No cleanup path because `get_store()` is init-once per
+    # process (the per-channel agent cache above it shares this one store).
     cm = PostgresStore.from_conn_string(dsn)
     store = cm.__enter__()
     store.setup()  # idempotent DDL; creates langgraph_store table if missing
@@ -275,59 +282,85 @@ def _skills_namespace(_rt) -> tuple[str, ...]:
 
 
 def build_canvas_agent():
-    """Return the cached deep-agent instance, initializing once per process.
+    """按当前配置好的聊天通道返回 deep-agent 实例, 每条通道各建一次。
 
-    Locked init avoids two concurrent first-callers both building a graph; the
-    second caller would have bound its graph to the same store and discarded
-    the first — benign but wasteful and non-deterministic under debugging.
+    配置来自库里 `kind=chat` 的供应商 (在侧栏「配置供应商」里配), 老部署的
+    `CANVAS_CHAT_*` 由迁移 0015 一次性导入。
+
+    **不是单例而是按通道缓存**: 用户在界面上改了 key / base_url / 模型, 下一轮聊天就该用
+    新的 —— 单例意味着要重启进程才生效, 而这个项目的全部改动就是"配置能在界面上改"。
+    graph 构建实测 ~20ms, 每轮重建也不算什么, 但缓存住能顺带复用连接。ImageChannel 是
+    frozen dataclass, 天然能当缓存键 (跟 build_image_client 同一套路)。
+
+    锁在**调用外面**而不是缓存函数里面: `functools.lru_cache` 在 miss 时是在自己的锁
+    之外调用被包装函数的, 所以把锁放进 `_agent_for_channel` 只能让两个并发首调用者排队
+    各建一遍图 —— 一点也没少建。包住整个查表 + 构建才真的做到"只建一次"; 命中之后它不过
+    是一次锁下的 dict 查找。
     """
-    global _agent
-    if _agent is not None:
-        return _agent
+    # 刻意**不回退**到生图那把 key —— 那个槽位常指向一个不支持 tools 参数的聚合代理
+    # (比如 tu-zi.com)。接错的话 agent 会静默忽略 tools, 回一段 markdown 而不是 tool_call,
+    # 表现是"聊天有回复但画布上什么都没发生", 极难排查。宁可明说没配。
+    channel = require_channel(
+        None, ImageProvider.Kind.CHAT, noun="聊天模型",
+        extra="注意它必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具; 别直接填生图那把 key。",
+    )
+    # key 单独判一次: 库字段是 blank=True (base_url 留空 = 走 OpenAI 官方端点, key 却
+    # 没有这种语义)。空 key 交给 ChatOpenAI 的下场是要么发出一个 `Bearer ` 换回 401、
+    # 要么被 langchain 当成"没传"从而回落到进程里的 OPENAI_API_KEY —— 后者正是这段代码
+    # 一直在防的"聊天被静默接到生图那把 key 上"。原来的 CANVAS_CHAT_API_KEY 硬要求就是
+    # 这一条, 搬到库里之后不能丢。
+    if not (channel.api_key or "").strip():
+        raise RuntimeError(
+            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「配置供应商」里补上。"
+            "它必须是一把支持 OpenAI tools 参数的 key, 别直接填生图那把。"
+        )
     with _agent_lock:
-        if _agent is not None:
-            return _agent
-
-        # Deliberately NOT fall back to OPENAI_API_KEY — that slot is shared
-        # with image/video paths which commonly point at a tool-less proxy
-        # (e.g. tu-zi.com). Misrouting chat there makes the agent silently
-        # ignore `tools` and return inline markdown instead of tool_calls.
-        if not settings.CANVAS_CHAT_API_KEY:
-            raise RuntimeError(
-                "CANVAS_CHAT_API_KEY is required — the chat agent must hit a "
-                "provider that supports the OpenAI tools parameter. Image/video "
-                "slots are separate (CANVAS_IMAGE_PRIMARY_* / CANVAS_VIDEO_*)."
-            )
-
-        model = ChatOpenAI(
-            api_key=settings.CANVAS_CHAT_API_KEY,
-            base_url=settings.CANVAS_CHAT_BASE_URL or None,
-            model=settings.CANVAS_CHAT_MODEL,
-            max_retries=10,
-            timeout=120,
+        return _agent_for_channel(
+            channel.api_key, channel.base_url, channel.model, channel.timeout,
         )
 
-        _agent = create_deep_agent(
-            model=model,
-            tools=[generate_image, generate_video],
-            system_prompt=CANVAS_SYSTEM_PROMPT,
-            memory=["/memories/scene.md"],
-            skills=["/skills/"],
-            backend=CompositeBackend(
-                default=StateBackend(),
-                routes={
-                    "/memories/": StoreBackend(namespace=_scene_namespace),
-                    "/skills/": StoreBackend(namespace=_skills_namespace),
-                },
-            ),
-            store=get_store(),
-            context_schema=CanvasAgentContext,
-        )
-        logger.info(
-            "canvas agent built (model=%s base_url=%s)",
-            settings.CANVAS_CHAT_MODEL, settings.CANVAS_CHAT_BASE_URL or "<openai-default>",
-        )
-    return _agent
+
+@functools.lru_cache(maxsize=4)
+def _agent_for_channel(api_key: str, base_url: str, model_name: str, timeout: int):
+    """建一条通道的 graph。**只在 `_agent_lock` 下调用** (见 build_canvas_agent)。
+
+    键是这四个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
+    (= "供应商名 · 模型名") 也在里面 —— 在配置面板里给聊天供应商改个名字就会让这条失效,
+    下一轮聊天要重新编译整个 deep-agent graph 并新建一个 ChatOpenAI (连带新的 httpx 连接
+    池), 而且是握着进程级的 _agent_lock 做的, 期间所有并发的聊天全都排队等着。
+    image_client.build_image_client 早就为同一个理由把键收窄到 _CLIENT_FIELDS 了。
+    """
+    model = ChatOpenAI(
+        api_key=api_key,
+        base_url=base_url or None,
+        model=model_name,
+        max_retries=10,
+        timeout=timeout,
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        tools=[generate_image, generate_video],
+        system_prompt=CANVAS_SYSTEM_PROMPT,
+        memory=["/memories/scene.md"],
+        skills=["/skills/"],
+        backend=CompositeBackend(
+            default=StateBackend(),
+            routes={
+                "/memories/": StoreBackend(namespace=_scene_namespace),
+                "/skills/": StoreBackend(namespace=_skills_namespace),
+            },
+        ),
+        store=get_store(),
+        context_schema=CanvasAgentContext,
+    )
+    # 不打 label: 缓存键收窄到这四个字段之后, 这里已经拿不到通道的显示名了 —— 而那正是
+    # 收窄的目的 (改个名字不该丢掉编译好的 graph)。
+    logger.info(
+        "canvas agent built (model=%s base_url=%s)",
+        model_name, base_url or "<openai-default>",
+    )
+    return agent
 
 
 class CanvasAgentInvocationError(RuntimeError):
@@ -388,6 +421,8 @@ def _prepare_agent_call(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
+    video_model_id: str = "",
 ) -> tuple[Any, dict, CanvasAgentContext, dict]:
     """Shared `invoke_` / `stream_` setup: cached agent, state dict, per-call
     context, langgraph config. Both wrappers diverge only in how they drive
@@ -410,7 +445,10 @@ def _prepare_agent_call(
     # unreliable about threading explicit kwargs through despite the
     # SystemMessage instructing it to.
     attachment_urls = [a["url"] for a in (attachments or []) if a.get("url")]
-    ctx = CanvasAgentContext(scene_id=scene_id, attachment_urls=attachment_urls)
+    ctx = CanvasAgentContext(
+        scene_id=scene_id, attachment_urls=attachment_urls, image_model_id=image_model_id,
+        video_model_id=video_model_id,
+    )
     config = {"recursion_limit": AGENT_RECURSION_LIMIT}
     return agent, state, ctx, config
 
@@ -421,6 +459,8 @@ def invoke_canvas_agent(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
+    video_model_id: str = "",
 ) -> str:
     """Sync invoke. Returns the final assistant message text.
 
@@ -430,6 +470,8 @@ def invoke_canvas_agent(
     agent, state, ctx, config = _prepare_agent_call(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
+        image_model_id=image_model_id,
+        video_model_id=video_model_id,
     )
     try:
         result = agent.invoke(state, context=ctx, config=config)
@@ -516,6 +558,8 @@ def stream_canvas_agent(
     scene_id: str,
     disabled_skills: list[str] | None = None,
     attachments: list[dict] | None = None,
+    image_model_id: str = "",
+    video_model_id: str = "",
 ) -> Iterator[dict]:
     """Stream per-node updates from the agent as structured event dicts.
 
@@ -552,6 +596,8 @@ def stream_canvas_agent(
     agent, state, ctx, config = _prepare_agent_call(
         messages, scene_id=scene_id,
         disabled_skills=disabled_skills, attachments=attachments,
+        image_model_id=image_model_id,
+        video_model_id=video_model_id,
     )
 
     # The graph runs on a background "pump" thread that puts frames on a thread-safe

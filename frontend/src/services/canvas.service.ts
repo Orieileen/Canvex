@@ -5,7 +5,12 @@ import type {
   CanvasAngleJob,
   CanvasChatMessage,
   CanvasChatStreamEvent,
+  CanvasCurlImportResult,
   CanvasImageEditJob,
+  CanvasImageModelChoice,
+  CanvasImageProvider,
+  CanvasImageProviderWrite,
+  CanvasImageProviderTestResult,
   CanvasJobStatus,
   CanvasMediaFolderList,
   CanvasMediaFolderPage,
@@ -14,6 +19,7 @@ import type {
   CanvasScene,
   CanvasSceneListItem,
   CanvasSkill,
+  CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
 } from "@/types/canvex";
@@ -27,6 +33,8 @@ const IMAGE_EDIT_JOBS = "/api/v1/canvas/image-edit-jobs/";
 const VIDEO_JOBS = "/api/v1/canvas/video-jobs/";
 const ANGLE_JOBS = "/api/v1/canvas/angle-jobs/";
 const SKILLS = "/api/v1/canvas/skills/";
+const IMAGE_PROVIDERS = "/api/v1/canvas/image-providers/";
+const IMAGE_MODELS = "/api/v1/canvas/image-models/";
 const MEDIA_LIBRARY_FOLDERS = "/api/v1/canvas/media-library/folders/";
 
 const TERMINAL_JOB_STATUSES: readonly CanvasJobStatus[] = ["SUCCEEDED", "FAILED"];
@@ -153,6 +161,10 @@ export async function* postChatStream(
     signal?: AbortSignal;
     disabledSkills?: string[];
     attachments?: ChatAttachment[];
+    /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条。 */
+    imageModelId?: string;
+    /** Video tab 选的通道 (kind=video)。agent 调 generate_video 时用。 */
+    videoModelId?: string;
   } = {},
 ): AsyncGenerator<CanvasChatStreamEvent, void, void> {
   // Empty / undefined optional fields → omit so backend serializer's
@@ -164,6 +176,12 @@ export async function* postChatStream(
   }
   if (options.attachments && options.attachments.length > 0) {
     body.attachments = options.attachments;
+  }
+  if (options.imageModelId) {
+    body.image_model_id = options.imageModelId;
+  }
+  if (options.videoModelId) {
+    body.video_model_id = options.videoModelId;
   }
   const resp = await fetch(
     `${API_URL}${SCENES}${encodeURIComponent(sceneId)}/chat/`,
@@ -248,6 +266,9 @@ export async function* postChatStream(
 // CanvasScene[], 但后端 defer 掉 data, 前端按 CanvasSceneListItem 消费更安全。
 // 所以 list 手写, 其余复用工厂。
 const sceneResource = createResource<CanvasScene>(SCENES);
+const imageProviderResource = createResource<CanvasImageProvider, CanvasImageProviderWrite>(
+  IMAGE_PROVIDERS,
+);
 
 export interface ImageEditCreatePayload {
   /** Single File → legacy `image` part (source_image ImageField).
@@ -258,6 +279,8 @@ export interface ImageEditCreatePayload {
   size?: string;
   resolution?: "1K" | "2K" | "4K";
   n?: 1 | 2 | 4;
+  /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条启用的通道。 */
+  imageModelId?: string;
 }
 
 export interface VideoCreatePayload {
@@ -267,6 +290,8 @@ export interface VideoCreatePayload {
   image_urls?: string[];
   duration?: number;
   aspect_ratio?: string;
+  /** Video tab 选的通道 (kind=video 的 ImageModel.id)。空 = 后端退到库里第一条。 */
+  imageModelId?: string;
 }
 
 export interface AngleCreatePayload {
@@ -276,6 +301,8 @@ export interface AngleCreatePayload {
   horizontal_angle: number;
   vertical_angle: number;
   zoom: number;
+  /** Angle tab 选的通道 (kind=angle 的 ImageModel.id)。空 = 后端退到库里第一条。 */
+  image_model?: string;
 }
 
 export const canvasService = {
@@ -341,12 +368,36 @@ export const canvasService = {
     if (payload.size) form.append("size", payload.size);
     if (payload.resolution) form.append("resolution", payload.resolution);
     if (payload.n) form.append("n", String(payload.n));
+    // 这条路是异步的 —— 选择会落到 ImageEditJob 行上, worker 之后据此解析通道。
+    if (payload.imageModelId) form.append("image_model", payload.imageModelId);
     // 不手填 Content-Type —— axios 会按 FormData 自动加 boundary
     return request.post<{ job_id: string; status: string }>(
       `${SCENES}${sceneId}/image-edit/`,
       form,
     );
   },
+  // ── 生图供应商配置 ────────────────────────────────────────────────────────
+  // 四个标准 CRUD 走跟 scene 同一个工厂 —— 手写一遍的话, URL 拼接和动词选择就有了
+  // 第二个住处, 将来改工厂 (末尾斜杠策略 / 响应解包 / 重试) 只会覆盖到 scene。
+  listImageProviders: imageProviderResource.list,
+  createImageProvider: imageProviderResource.create,
+  updateImageProvider: imageProviderResource.update,
+  deleteImageProvider: imageProviderResource.remove,
+  /** 真发一次最小生成。ok=false 也是 200 —— 测试本身成功了, 失败的是被测对象。
+   *  会产生一次真实的生成消耗。 */
+  testImageProvider: (id: string, imageModelId?: string) =>
+    request.post<CanvasImageProviderTestResult>(`${IMAGE_PROVIDERS}${id}/test/`, {
+      image_model: imageModelId,
+    }),
+  /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
+  getImageProviderSchema: () =>
+    request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),
+  /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
+  importImageProviderCurl: (curl: string) =>
+    request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),
+  /** 工具栏选择器的列表 —— 不含凭据。 */
+  listImageModels: () => request.get<CanvasImageModelChoice[]>(IMAGE_MODELS),
+
   listImageEditJobs: (sceneId: string, limit = 20) =>
     request.get<CanvasImageEditJob[]>(`${SCENES}${sceneId}/image-edit-jobs/`, {
       params: { limit },
@@ -358,13 +409,15 @@ export const canvasService = {
   // 后端原子 split: 一次 POST 创两条 leg (bg inpaint + cutout subject), 互填
   // split_partner. Canvex 免费无钱包, 两条 leg 都 0 计费; 任一失败时 backend
   // task 收口逻辑保持. 不再走 createImageEdit 两次 (那样没 partner FK)。
-  createSplit: (sceneId: string, image: File, region = "", resolution = "") => {
+  createSplit: (sceneId: string, image: File, region = "", resolution = "", imageModelId = "") => {
     const form = new FormData();
     form.append("image", image);
     // Plan B: subject region (box → coordinates) folded into the split prompts;
     // empty when nothing was drawn → backend falls back to "most prominent subject".
     if (region) form.append("region", region);
     if (resolution) form.append("resolution", resolution);
+    // 两条 leg 共用这一个选择 —— 跟 createImageEdit 一样落到 job 行上, worker 再解析。
+    if (imageModelId) form.append("image_model", imageModelId);
     return request.post<{
       background: { job_id: string; status: string };
       cutout: { job_id: string; status: string };
@@ -379,14 +432,16 @@ export const canvasService = {
       if (payload.prompt) form.append("prompt", payload.prompt);
       if (payload.duration) form.append("duration", String(payload.duration));
       if (payload.aspect_ratio) form.append("aspect_ratio", payload.aspect_ratio);
+      if (payload.imageModelId) form.append("image_model", payload.imageModelId);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/video/`,
         form,
       );
     }
+    const { imageModelId, ...rest } = payload;
     return request.post<{ job_id: string; status: string }>(
       `${SCENES}${sceneId}/video/`,
-      payload,
+      imageModelId ? { ...rest, image_model: imageModelId } : rest,
     );
   },
   listVideoJobs: (sceneId: string, limit = 20) =>
@@ -404,6 +459,7 @@ export const canvasService = {
       form.append("horizontal_angle", String(payload.horizontal_angle));
       form.append("vertical_angle", String(payload.vertical_angle));
       form.append("zoom", String(payload.zoom));
+      if (payload.image_model) form.append("image_model", payload.image_model);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/angle/`,
         form,

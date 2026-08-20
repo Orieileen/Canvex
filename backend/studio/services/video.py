@@ -58,6 +58,9 @@ def create_video_job(*, scene, validated, image_file=None):
             image_urls=image_urls,
             duration=validated["duration"],
             aspect_ratio=aspect_ratio,
+            # Video tab 选的通道。异步路径 —— 请求早就返回了, worker 之后才捞这行去长轮询,
+            # 所以选择必须落在行上而不是留在请求里。None = 没选 → 退到库里第一条 video 通道。
+            image_model=validated.get("image_model"),
             status=VideoJob.Status.QUEUED,
         )
         reserve_canvas_credit(job)

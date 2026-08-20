@@ -6,8 +6,10 @@ import { SmartImage } from "@/components/SmartImage";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
 import type { CanvasSkill, ChatAttachment } from "@/types/canvex";
+import type { ChannelPicker } from "@/hooks/use-channel-pickers";
 
 import { SkillSelector } from "./SkillSelector";
+import { ImageModelSelector } from "./ImageModelSelector";
 
 /**
  * Floating chat overlay — canvex-style bottom-center input.
@@ -49,6 +51,10 @@ interface ChatOverlayProps {
   placeholder?: string;
   /** All skills the agent has loaded. Empty / undefined = hide selector. */
   skills?: CanvasSkill[];
+  /** 生图通道选择器的全套 props (由页面那一层持有, 见 useChannelPickers)。models 为空
+   *  数组时仍然渲染选择器 —— popover 里会引导去配置页, 这比"按钮根本不出现"更容易被
+   *  发现。省略即不渲染。 */
+  imageModel?: ChannelPicker;
   /** Canvas attachments queued for this message (added via ImageEditBar's
    *  "Send to chat"). Parent owns the list because it's seeded from canvas
    *  events; this component just renders chips + supports remove. */
@@ -65,6 +71,7 @@ export function ChatOverlay({
   skillBadges,
   placeholder,
   skills,
+  imageModel,
   attachments,
   onRemoveAttachment,
 }: ChatOverlayProps) {
@@ -195,24 +202,28 @@ export function ChatOverlay({
             rows={1}
             disabled={isStreaming}
             className={cn(
-              // pl-11 reserves room for SkillSelector when skills are present;
+              // pl-[76px] 给左侧那组按钮留位 (SkillSelector + 生图模型选择器);
               // when absent, the icon doesn't render so the gap is just dead
               // space but visually it looks the same as the right padding.
-              "min-h-[42px] w-full resize-none rounded-xl border bg-frost py-2.5 pl-11 pr-11 text-sm shadow-lg ring-1 ring-black/8 backdrop-blur-xl outline-none",
+              "min-h-[42px] w-full resize-none rounded-xl border bg-frost py-2.5 pl-[76px] pr-11 text-sm shadow-lg ring-1 ring-black/8 backdrop-blur-xl outline-none",
               "transition-all duration-200 placeholder:text-muted-foreground/60",
               "hover:border-border focus:border-ember/40",
               "disabled:cursor-not-allowed disabled:opacity-60",
             )}
           />
-          {skills && skills.length > 0 && (
-            <SkillSelector
-              skills={skills}
-              disabledSkills={disabledSkills}
-              onChange={setDisabledSkills}
-              buttonDisabled={isStreaming}
-              className="absolute left-1.5 top-1/2 -translate-y-1/2"
-            />
-          )}
+          <div className="absolute left-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+            {skills && skills.length > 0 && (
+              <SkillSelector
+                skills={skills}
+                disabledSkills={disabledSkills}
+                onChange={setDisabledSkills}
+                buttonDisabled={isStreaming}
+              />
+            )}
+            {imageModel && (
+              <ImageModelSelector {...imageModel} buttonDisabled={isStreaming} />
+            )}
+          </div>
           <Button
             // While streaming, the button becomes a Stop control: type=button +
             // onClick aborts the reply (instead of submitting a new one).

@@ -3,8 +3,8 @@
 One code path: OpenAI-compat HTTP (POST to submit, GET to poll). Does NOT
 download the MP4; stores the provider's URL directly on VideoJob.
 
-Config lives in settings.py under CANVAS_VIDEO_*. See .env.example for the
-required vars (BASE_URL / API_KEY / MODEL) and the poll knobs.
+配置来自库里用户在前端配的 `kind=video` 供应商 (见 resolve_video_channel) —— 原来那一路
+`CANVAS_VIDEO_*` env 已经去掉, 老部署的值由迁移 0013 一次性导进库。
 
 解耦自 meired apps/canvas/services/agent/tools/video.py:
 - 计费 import 路径改 studio.services.billing(stub no-op,调用全保留)。
@@ -14,17 +14,18 @@ required vars (BASE_URL / API_KEY / MODEL) and the poll knobs.
 """
 import logging
 import time
-from typing import Any, NamedTuple
+from typing import Any
 from urllib.parse import quote
 
 import requests
-from django.conf import settings
 from django.db import transaction
 from langchain.tools import ToolRuntime, tool
 
-from studio.models import VideoJob
+from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
+from studio.services.image_channels import require_channel, resolve_model_id
+from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
 from ..context import CanvasAgentContext
@@ -50,10 +51,15 @@ _DONE_STATUSES = DONE_STATUSES | {"done"}
 _FAILED_STATUSES = FAILED_STATUSES
 
 
-class _Config(NamedTuple):
-    base_url: str
-    api_key: str
-    model: str
+def resolve_video_channel(job: VideoJob) -> ImageChannel:
+    """这条任务该用哪个视频通道: job 行上选的那条, 没选/已失效就退到库里第一条。
+
+    配置只有库一个来源 —— `CANVAS_VIDEO_*` 那一路 env 已经去掉, 老部署的值由迁移 0013
+    一次性导进库。复用 ImageChannel 而不是给视频单开一个 dataclass: 它用得上的正好是
+    base_url / api_key / model / timeout + 那套轮询参数, 全是现成字段; 请求体的差异在
+    `_submit` 里, 不在配置形状里。
+    """
+    return require_channel(job.image_model_id, ImageProvider.Kind.VIDEO, noun="视频生成")
 
 
 def run_video_job(job: VideoJob) -> None:
@@ -63,15 +69,15 @@ def run_video_job(job: VideoJob) -> None:
     Blocks the caller for up to sum of all poll intervals — Celery worker only.
     """
     with job_lifecycle(job, success_extra_fields=("result_url", "thumbnail_url")):
-        # Read settings inside the with block so a missing value goes down the
-        # FAILED path (same shape as image.py client init).
-        cfg = _require_config()
+        # 在 with 里解析通道, 这样"没配供应商"会走 FAILED 分支落到 job.error 上,
+        # 而不是变成一个只有日志里能看到的异常 (跟 image.py 的 client 初始化同款)。
+        channel = resolve_video_channel(job)
 
-        task_id = _submit(job, cfg)
+        task_id = _submit(job, channel)
         job.task_id = task_id
         job.save(update_fields=["task_id", "updated_at"])
 
-        result = _poll_until_done(task_id, cfg)
+        result = _poll_until_done(task_id, channel)
         job.result_url = result["url"]
         job.thumbnail_url = result.get("thumbnail_url", "")
 
@@ -88,6 +94,7 @@ def enqueue_video_generation(
     aspect_ratio: str,
     reference_image_urls: list[str] | None,
     scene_id: str,
+    image_model_id: str | None = None,
 ) -> str:
     """Pure-args helper: create VideoJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -112,6 +119,11 @@ def enqueue_video_generation(
             image_urls=urls,
             duration=duration_clamped,
             aspect_ratio=aspect_ratio or "16:9",
+            # 先过 resolve_model_id 再进 FK 列: 前端的选择是粘的 (localStorage), 一个被删掉
+            # 的 id 会一直跟着每轮聊天发过来 —— 直接塞进外键的话, 合法 UUID 撞约束抛
+            # IntegrityError, 不合法字符串抛 ValidationError, 两种都是把"选择已失效"变成
+            # 整轮聊天 500。kind 也要筛: 一个生图模型 id 送到这里必须当作没选。
+            image_model_id=resolve_model_id(image_model_id, ImageProvider.Kind.VIDEO),
             status=VideoJob.Status.QUEUED,
         )
         reserve_error = reserve_or_friendly_message(job, action_label="video generation")
@@ -160,6 +172,7 @@ def generate_video(
         aspect_ratio=aspect_ratio,
         reference_image_urls=reference_image_urls,
         scene_id=ctx.scene_id,
+        image_model_id=ctx.video_model_id,
     )
 
 
@@ -167,7 +180,7 @@ def generate_video(
 # Submit + poll internals
 # ---------------------------------------------------------------------------
 
-def _submit(job: VideoJob, cfg: _Config) -> str:
+def _submit(job: VideoJob, cfg: ImageChannel) -> str:
     endpoint = f"{cfg.base_url.rstrip('/')}/videos/generations"
 
     body: dict[str, Any] = {
@@ -193,7 +206,7 @@ def _submit(job: VideoJob, cfg: _Config) -> str:
         endpoint,
         headers=_auth_headers(cfg.api_key),
         json=body,
-        timeout=settings.CANVAS_VIDEO_SUBMIT_TIMEOUT,
+        timeout=cfg.timeout,
     )
     data = _parse_json_or_raise(resp, "submit")
     task_id = _extract_task_id(data)
@@ -202,13 +215,15 @@ def _submit(job: VideoJob, cfg: _Config) -> str:
     return task_id
 
 
-def _poll_until_done(task_id: str, cfg: _Config) -> dict[str, Any]:
+def _poll_until_done(task_id: str, cfg: ImageChannel) -> dict[str, Any]:
     """Exponential backoff poll. Raises TimeoutError if not done within the cap."""
     # quote(safe="") 防被劫持的 provider 回一个 "../admin" 把 GET 拐到别处
-    status_url = f"{cfg.base_url.rstrip('/')}/videos/{quote(task_id, safe='')}"
-    attempts = max(1, settings.CANVAS_VIDEO_POLL_MAX_ATTEMPTS)
-    initial = max(1, settings.CANVAS_VIDEO_POLL_INITIAL_SECONDS)
-    max_wait = max(initial, settings.CANVAS_VIDEO_POLL_MAX_SECONDS)
+    base = (cfg.poll_url or cfg.base_url).rstrip("/")
+    status_url = f"{base}/videos/{quote(task_id, safe='')}"
+    attempts = max(1, cfg.poll_max_attempts)
+    initial = max(1, cfg.poll_interval)
+    # poll_max_interval ≤ poll_interval (含默认的 0) = 不退避, 固定间隔。
+    max_wait = max(initial, cfg.poll_max_interval)
 
     wait = initial
     for attempt in range(1, attempts + 1):
@@ -216,7 +231,7 @@ def _poll_until_done(task_id: str, cfg: _Config) -> dict[str, Any]:
         resp = _session.get(
             status_url,
             headers=_auth_headers(cfg.api_key),
-            timeout=settings.CANVAS_VIDEO_POLL_HTTP_TIMEOUT,
+            timeout=cfg.poll_timeout,
         )
         data = _parse_json_or_raise(resp, "poll")
         status = _extract_status(data)
@@ -249,23 +264,6 @@ def _poll_until_done(task_id: str, cfg: _Config) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Env + HTTP helpers
 # ---------------------------------------------------------------------------
-
-def _require_config() -> _Config:
-    """Read and validate settings.CANVAS_VIDEO_*. Raises RuntimeError if any missing."""
-    base_url = (settings.CANVAS_VIDEO_BASE_URL or "").strip()
-    api_key = (settings.CANVAS_VIDEO_API_KEY or "").strip()
-    model = (settings.CANVAS_VIDEO_MODEL or "").strip()
-    missing = [
-        name for name, val in (
-            ("CANVAS_VIDEO_BASE_URL", base_url),
-            ("CANVAS_VIDEO_API_KEY", api_key),
-            ("CANVAS_VIDEO_MODEL", model),
-        ) if not val
-    ]
-    if missing:
-        raise RuntimeError(f"missing env: {', '.join(missing)}")
-    return _Config(base_url=base_url, api_key=api_key, model=model)
-
 
 def _auth_headers(api_key: str) -> dict[str, str]:
     return {

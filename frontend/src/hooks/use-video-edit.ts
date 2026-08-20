@@ -32,11 +32,14 @@ export function useVideoEdit({
   excalidrawApiRef,
   pinning,
   sceneAbortRef,
+  videoModelIdRef,
 }: {
   sceneId: string | null;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   pinning: CanvasEditPinning;
   sceneAbortRef: RefObject<AbortController | null>;
+  /** Video tab 选的通道。用 ref 而不是值: 提交那一刻读最新的, 不用把它塞进依赖数组。 */
+  videoModelIdRef: RefObject<string>;
 }): {
   isSubmitting: boolean;
   error: string | null;
@@ -67,7 +70,10 @@ export function useVideoEdit({
         anchor: selection.bounds,
         createJob: async () => {
           const api = excalidrawApiRef.current!;
-          const base = { prompt, duration, aspect_ratio: aspectRatio };
+          const base = {
+            prompt, duration, aspect_ratio: aspectRatio,
+            imageModelId: videoModelIdRef.current || undefined,
+          };
           if (sourceUrl) {
             return canvasService.createVideo(sceneId!, { ...base, image_urls: [sourceUrl] });
           }
@@ -76,7 +82,7 @@ export function useVideoEdit({
         },
       });
     },
-    [sceneId, excalidrawApiRef, sceneAbortRef, pinning],
+    [sceneId, excalidrawApiRef, sceneAbortRef, pinning, videoModelIdRef],
   );
 
   const dismissError = useCallback(() => setError(null), []);

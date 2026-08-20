@@ -101,11 +101,15 @@ export function useImageEdit({
   excalidrawApiRef,
   pinning,
   sceneAbortRef,
+  imageModelIdRef,
 }: {
   sceneId: string | null;
   excalidrawApiRef: RefObject<ExcalidrawImperativeAPI | null>;
   pinning: CanvasEditPinning;
   sceneAbortRef: RefObject<AbortController | null>;
+  /** 工具栏选中的生图模型。用 ref 而不是值: 提交那一刻读最新的, 不用把它塞进
+   *  每个 callback 的依赖数组里。 */
+  imageModelIdRef: RefObject<string>;
 }): {
   isSubmitting: boolean;
   error: string | null;
@@ -150,11 +154,12 @@ export function useImageEdit({
             : await selectionToCleanSourceFile(selection, api);
           return canvasService.createImageEdit(sceneId!, {
             image, prompt, cutout, size, resolution, n,
+            imageModelId: imageModelIdRef.current || undefined,
           });
         },
       });
     },
-    [sceneId, excalidrawApiRef, sceneAbortRef, pinning],
+    [sceneId, excalidrawApiRef, sceneAbortRef, pinning, imageModelIdRef],
   );
 
   const dismissError = useCallback(() => setError(null), []);

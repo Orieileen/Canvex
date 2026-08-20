@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -29,6 +30,36 @@ def canvas_edit_intermediate_upload_to(instance, filename: str) -> str:
     ext = Path(filename).suffix.lower()
     now = datetime.utcnow()
     return f"canvas/edits/intermediate/{now:%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
+
+
+# ─────────────────────────── 供应商端点校验 ───────────────────────────
+
+def validate_endpoint_url(value: str) -> None:
+    """供应商 base_url 的校验: 只要求是一个能发出请求的 http(s) 地址。
+
+    刻意**不用** django 的 URLValidator —— 它只特例了 `localhost`, 别的单段主机名一律
+    判非法, 而 compose 里另一个容器的地址正好是单段的 (`http://ollama:11434`)。这个项目
+    是自部署工具, 接本机 / 同网段的推理服务是主线场景, 不是要防的东西。
+
+    空串直接放行: 聊天通道留空 = 走 OpenAI 官方端点 (builder 里
+    `channel.base_url or None` 就是这个语义, 迁移 0015 导进来的那条存的也是空串)。
+    「哪些 kind 允许留空」是 ImageProviderSerializer.validate 的事, 不是这里 ——
+    这个校验器只回答"填了的话是不是一个能发出请求的地址"。
+    """
+    if not (value or "").strip():
+        return
+    try:
+        # 两处都会抛 ValueError, 都得接住, 否则一个手滑的输入变成 500:
+        #   - urlsplit 本身 —— 方括号不配对的 IPv6 (`http://[::1`)
+        #   - .port —— 端口非数字 / 越界, 要到取值时才验
+        # 顺带用 hostname 而不是 netloc: `http://:8080` 的 netloc 非空但 hostname 是
+        # None, 只看 netloc 会放它进库, 直到发请求时才炸成 requests.InvalidURL。
+        parts = urlsplit((value or "").strip())
+        host, _port = parts.hostname, parts.port
+    except ValueError as exc:
+        raise ValidationError("这个地址解析不了, 检查一下主机名和端口") from exc
+    if parts.scheme not in ("http", "https") or not host:
+        raise ValidationError("请填一个 http:// 或 https:// 开头的地址")
 
 
 # ─────────────────────────── 素材库(Canvex 自有,保留)───────────────────────────
@@ -142,6 +173,103 @@ class ChatMessage(models.Model):
         return f"{self.role}: {self.content[:40]}"
 
 
+class ImageProvider(models.Model):
+    """一个生图供应商端点 —— 用户在前端配的「一把 key + 一个 base_url + 一套请求参数」。
+
+    存在的理由: 生图参数以前只能写在后端 env 里, 固定两条通道 (PRIMARY / FALLBACK),
+    只有部署者能改。用户想这张图用 Google、下张用豆包就做不到。现在通道进库、由前端配。
+
+    `defaults` 是那 16 个请求参数的默认值; 具体某个模型可以在 ImageModel.overrides 里
+    覆盖任意一项 —— 同一把聚合商 key 下面挂的豆包和 Google 就需要不同的 size_mode。
+    键名与 ImageChannel 的字段名一致 (image_field / poll_enabled / …), 解析时直接展开。
+
+    api_key 明文存储: 这是本地单机开源项目, 加密密钥只能放 env、和库在同一台机器同一个
+    人手里, 加了等于没加, 却要付一个"加密密钥必须存在"的 env 依赖。只要求它不要进日志
+    和错误响应 —— 用户会把报错贴到 GitHub issue 求助。
+    """
+
+    class Kind(models.TextChoices):
+        # 通用生图接口 ({base_url}/images/generations, Bearer 认证)。Image / Split 用。
+        IMAGE = "image", "Image generation"
+        # fal.run 的视角重渲染 —— 模型名在 URL 路径里、认证是 `Key`、请求体是相机
+        # 坐标而不是自由 prompt。Angle tab 用。
+        ANGLE = "angle", "Camera angle re-render"
+        # 文/图生视频 ({base_url}/videos/generations 提交 → 拿 task_id → 长轮询)。
+        # 请求体由 video.py 自己拼, 所以它只读连接超时 + 那套轮询参数。Video tab 用。
+        VIDEO = "video", "Video generation"
+        # 聊天 agent 的 LLM (OpenAI 兼容 chat completions)。**必须支持 tools 参数** ——
+        # 不支持的代理会静默忽略 tools、回一段 markdown 而不是 tool_call, 于是画布上
+        # 什么都不会发生。所以它跟生图那把 key 刻意分开, 别指同一个聚合商端点。
+        CHAT = "chat", "Chat agent LLM"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    label = models.CharField(max_length=100)
+    # 供应商的接口形状。同一张表装两种形状而不是各开一张: 两边真正需要的字段
+    # (label / base_url / api_key + 挂在下面的模型行) 完全重合, 差别只在请求怎么拼,
+    # 那是 kind 一个字段能表达的事。前端据此决定显不显示那 13 个生图参数。
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.IMAGE, db_index=True,
+    )
+    # 允许私有地址 (http://host.docker.internal:11434 这类本机推理服务) —— 不做 SSRF
+    # 公网校验, 那会把"接本地模型"这个自部署项目最有价值的场景整个砍掉。
+    #
+    # CharField + 自己的校验器而不是 URLField: django 的 URLValidator 只特例了
+    # `localhost`, 任何**单段主机名**都被判非法 —— 而 compose 里另一个容器的地址正是
+    # 单段的 (`http://ollama:11434` / `http://comfyui:8188`)。用 URLField 会把这次改造
+    # 最想支持的那个场景挡在"请输入合法的 URL"后面。
+    #
+    # blank=True 只是为了聊天通道: 留空 = 走 OpenAI 官方端点 (builder 里
+    # `channel.base_url or None`, 迁移 0015 存的就是空串)。其余 kind 必填 ——
+    # 那一条在 ImageProviderSerializer.validate 里按 kind 判, 因为字段级校验看不到 kind。
+    base_url = models.CharField(max_length=500, blank=True, validators=[validate_endpoint_url])
+    api_key = models.CharField(max_length=500, blank=True)
+    defaults = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_image_providers"
+        verbose_name = "Canvas Image Provider"
+        verbose_name_plural = "Canvas Image Providers"
+        ordering = ["label"]
+
+    def __str__(self):
+        return f"ImageProvider({self.label})"
+
+
+class ImageModel(models.Model):
+    """供应商下面的一个可选模型 —— 工具栏模型选择器里的一项。
+
+    `model` 是那家供应商要的模型字符串原文。**刻意不建别名映射表**
+    (`gemini-2.5 → 各家叫什么`): 穷举「所有供应商 × 所有模型」的命名差异是无底洞,
+    每条记录自己声明它那家的写法就够了。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(
+        ImageProvider, on_delete=models.CASCADE, related_name="models",
+    )
+    label = models.CharField(max_length=100)
+    model = models.CharField(max_length=200)
+    # 只存与 provider.defaults 不同的项; 解析 = {**provider.defaults, **overrides}
+    overrides = models.JSONField(default=dict, blank=True)
+    enabled = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_image_models"
+        verbose_name = "Canvas Image Model"
+        verbose_name_plural = "Canvas Image Models"
+        ordering = ["sort_order", "label"]
+
+    def __str__(self):
+        return f"ImageModel({self.label} @ {self.provider_id})"
+
+
 class ImageEditJob(models.Model):
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -166,6 +294,13 @@ class ImageEditJob(models.Model):
         max_length=4, choices=Resolution.choices, default=Resolution.TWO_K,
     )
     num_images = models.PositiveSmallIntegerField(default=1)
+    # 用户在工具栏选中的模型。**必须落在 job 行上**, 因为这条路径是异步的 —— 请求早就
+    # 返回了, celery worker 之后才捞这条记录去跑, 光靠请求参数传不到那时候。
+    # 空 = 没选 / 老任务 → 退到库里第一条启用的通道。SET_NULL: 用户删了一个
+    # 模型配置不该把历史任务一起删掉。
+    image_model = models.ForeignKey(
+        "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
     # cutout=True 切到 rembg(去背景);否则是 refine/edit
     is_cutout = models.BooleanField(default=False)
     # Split: 一次 split 起两条 leg(background inpaint + cutout subject),互填 split_partner.
@@ -247,6 +382,14 @@ class VideoJob(models.Model):
     duration = models.PositiveSmallIntegerField(default=10)  # seconds
     aspect_ratio = models.CharField(max_length=16, default="16:9")
 
+    # 用户在 Video tab 选的通道。这条路径是异步的 (提交完就返回, worker 之后才捞这行去
+    # 长轮询), 所以选择必须落在行上而不是留在请求里。空 = 退到库里第一条 video 通道。
+    # SET_NULL: 删一个模型配置不该把历史任务一起删掉。
+    image_model = models.ForeignKey(
+        "ImageModel", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="video_jobs",
+    )
+
     # 外部 provider 的 task id,用于 long-poll
     task_id = models.CharField(max_length=128, blank=True)
     result_url = models.TextField(blank=True)
@@ -299,6 +442,12 @@ class AngleJob(models.Model):
     # 可选提示词附加到 LoRA 默认 prompt 之后
     additional_prompt = models.TextField(blank=True)
     num_images = models.PositiveSmallIntegerField(default=1)
+
+    # 用户在 Angle tab 选的通道 (kind=angle 的那些)。同 ImageEditJob.image_model:
+    # 这条路径是异步的, 选择必须落在行上, worker 之后才捞。空 = 退到库里第一条。
+    image_model = models.ForeignKey(
+        "ImageModel", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
 
     # provider 返的 seed,存下来用户要复现同一角度时可传回
     seed = models.BigIntegerField(null=True, blank=True)

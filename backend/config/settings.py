@@ -155,31 +155,17 @@ INTERNAL_MEDIA_BASE = os.getenv("INTERNAL_MEDIA_BASE", "http://backend:8000")
 # worker_canvas / worker_canvas_cpu)。
 CANVAS_CELERY_QUEUE = os.getenv("CANVAS_CELERY_QUEUE", "canvas")
 
-# Chat router (deepagents) —— 独立 slot, 不复用 OPENAI_*. agent 必须走支持 `tools`
-# 参数的 provider; 混用会让 agent 拿到 inline markdown 而不是 tool_call。不显式设
-# CANVAS_CHAT_API_KEY 则 build_canvas_agent 会炸 (比静默接错 provider 好调试)。
-CANVAS_CHAT_API_KEY = os.getenv("CANVAS_CHAT_API_KEY", "")
-CANVAS_CHAT_BASE_URL = os.getenv("CANVAS_CHAT_BASE_URL", "")  # 空则走 OpenAI 默认
-CANVAS_CHAT_MODEL = os.getenv("CANVAS_CHAT_MODEL", "gpt-4o-mini")
+# 聊天模型的端点 / key / 模型名现在住在库里 (侧栏「配置供应商」里的 kind=chat 一条),
+# 原来的 CANVAS_CHAT_* 由迁移 0015 一次性导入。它仍然刻意跟生图那把 key 分开 —— agent
+# 必须走支持 `tools` 参数的 provider, 接错了会拿到 inline markdown 而不是 tool_call。
 
 # deepagents /memories/ 后端. "memory" (默认) = InMemoryStore (单进程, 重启丢);
 # "postgres" 跨 web/worker 可见 + 持久, 需 langgraph-checkpoint-postgres 包 + DSN。
 CANVAS_AGENT_STORE_BACKEND = os.getenv("CANVAS_AGENT_STORE_BACKEND", "memory")
 CANVAS_AGENT_STORE_DSN = os.getenv("CANVAS_AGENT_STORE_DSN", "")
 
-# 视频生成 provider 凭据 (OpenAI 兼容 /videos/generations HTTP). 缺任一项 worker
-# 跑到就 raise 把 job 标 FAILED。
-CANVAS_VIDEO_BASE_URL = os.getenv("CANVAS_VIDEO_BASE_URL", "")
-CANVAS_VIDEO_API_KEY = os.getenv("CANVAS_VIDEO_API_KEY", "")
-CANVAS_VIDEO_MODEL = os.getenv("CANVAS_VIDEO_MODEL", "")
-
-# 视频长轮询: 20s 起指数退避, 单次封顶 180s, 上限 9 轮 (累计 ~24 分钟)。
-CANVAS_VIDEO_POLL_MAX_ATTEMPTS = int(os.getenv("CANVAS_VIDEO_POLL_MAX_ATTEMPTS", "9") or 9)
-CANVAS_VIDEO_POLL_INITIAL_SECONDS = int(os.getenv("CANVAS_VIDEO_POLL_INITIAL_SECONDS", "20") or 20)
-CANVAS_VIDEO_POLL_MAX_SECONDS = int(os.getenv("CANVAS_VIDEO_POLL_MAX_SECONDS", "180") or 180)
-# 视频 HTTP 调用本身的 timeout (和 poll 间隔无关)。
-CANVAS_VIDEO_SUBMIT_TIMEOUT = int(os.getenv("CANVAS_VIDEO_SUBMIT_TIMEOUT", "60") or 60)
-CANVAS_VIDEO_POLL_HTTP_TIMEOUT = int(os.getenv("CANVAS_VIDEO_POLL_HTTP_TIMEOUT", "30") or 30)
+# 视频通道的配置(端点 / key / 模型 / 轮询参数)现在住在库里, 由用户在侧栏「配置供应商」
+# 里配一条 kind=video 的记录。原来的 CANVAS_VIDEO_* 由迁移 0013 一次性导入。
 
 # Credit cost (Canvex 独立版 billing 为 no-op stub, 实际成本见 studio.constants;
 # 这几项保留对齐 meired 契约)。
@@ -187,15 +173,7 @@ CANVAS_CREDIT_COST_IMAGE = int(os.getenv("CANVAS_CREDIT_COST_IMAGE", "1") or 1)
 CANVAS_CREDIT_COST_VIDEO = int(os.getenv("CANVAS_CREDIT_COST_VIDEO", "10") or 10)
 CANVAS_CREDIT_COST_ANGLE = int(os.getenv("CANVAS_CREDIT_COST_ANGLE", "1") or 1)
 
-# fal.ai angle provider (Qwen-Image-Edit Multiple-Angles LoRA). sync endpoint
-# `fal.run/{model}` 单次 POST 阻塞返图。BASE_URL / MODEL 出厂默认即可; API_KEY 必填。
-CANVAS_ANGLE_FAL_BASE_URL = os.getenv("CANVAS_ANGLE_FAL_BASE_URL", "https://fal.run")
-CANVAS_ANGLE_FAL_API_KEY = os.getenv("CANVAS_ANGLE_FAL_API_KEY", "")
-CANVAS_ANGLE_FAL_MODEL = os.getenv(
-    "CANVAS_ANGLE_FAL_MODEL", "fal-ai/qwen-image-edit-2511-multiple-angles"
-)
-CANVAS_ANGLE_FAL_TIMEOUT = int(os.getenv("CANVAS_ANGLE_FAL_TIMEOUT", "180") or 180)
-
-# 图片生成通道复用 studio.services.image_client.ImageClient。环境变量走
-# CANVAS_IMAGE_PRIMARY_* / CANVAS_IMAGE_FALLBACK_* 前缀, 由 build_image_client(prefix)
-# 直接从 os.environ 读取 (回落 OPENAI_API_KEY / OPENAI_BASE_URL), settings 不映射。
+# 生图 / angle 的供应商配置**不在这里** —— 端点、密钥、模型名、请求参数全部存库
+# (ImageProvider / ImageModel), 由前端「配置供应商」面板增删改。老部署 env 里的
+# CANVAS_IMAGE_PRIMARY_* / CANVAS_IMAGE_FALLBACK_* / CANVAS_ANGLE_FAL_* 由迁移
+# 0008 / 0010 一次性导进库, 之后这些变量不再被读取。

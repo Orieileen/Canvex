@@ -1,3 +1,6 @@
+import logging
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
@@ -6,9 +9,14 @@ from .models import (
     ChatMessage,
     ImageEditJob,
     ImageEditResult,
+    ImageModel,
+    ImageProvider,
     Scene,
     VideoJob,
 )
+from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +86,16 @@ class ChatMessageCreateSerializer(serializers.Serializer):
         default=list,
         max_length=20,
     )
+    # 用户在工具栏选中的生图模型 (ImageModel.id)。跟 attachments 一样是每轮透传:
+    # 生成是异步的, 这个值最终会落到 ImageEditJob 行上。空/未知 id → 退到库里第一条,
+    # 所以这里不校验存在性 (校验会让"刚删掉一个配置"变成整轮聊天失败)。
+    image_model_id = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=64,
+    )
+    # 同上, Video tab 选的通道 (kind=video)。generate_video 建 job 时写到行上。
+    video_model_id = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=64,
+    )
     # Per-message canvas image attachments (user clicked "Send to chat" on
     # selected canvas image(s)). Each item: {url, width, height}. URLs come
     # from canvas → known CDN host; we don't re-validate beyond shape +
@@ -108,6 +126,23 @@ class ImageEditJobSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+def _channel_choice_field(kind: str):
+    """工具栏模型选择器写回来的那一项。
+
+    两件事都不是可选的:
+    - **queryset 按 kind 限死** —— 两种接口形状同住一张表, 把 angle 通道送进生图路径
+      (或反过来) 发出去必然失败, 且失败得莫名其妙。在这里筛掉。
+    - **用 PrimaryKeyRelatedField 而不是 CharField** —— 要它当场报"配置不存在", 而不是
+      等到 worker 里静默回退成别的模型。显式选择失败该显式说。
+
+    可空 = 用户没选 → 退到库里第一条启用的通道。
+    """
+    return serializers.PrimaryKeyRelatedField(
+        queryset=ImageModel.objects.filter(enabled=True, provider__kind=kind),
+        required=False, allow_null=True, default=None,
+    )
+
+
 class ImageEditJobCreateSerializer(serializers.Serializer):
     """POST /scenes/<id>/image-edit/ — the `image` file is pulled from request.FILES."""
 
@@ -119,6 +154,7 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
         default=ImageEditJob.Resolution.TWO_K,
     )
     n = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
+    image_model = _channel_choice_field(ImageProvider.Kind.IMAGE)
 
     def validate(self, data):
         # cutout 算法 (rembg / LLM 同) 都是单图操作, n>1 没有"多个抠图变体"语义.
@@ -128,6 +164,22 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
                 "n": ["Cutout mode produces exactly 1 image; n must be 1."],
             })
         return data
+
+
+class SplitJobCreateSerializer(serializers.Serializer):
+    """POST /scenes/<id>/split/ — the `image` file is pulled from request.FILES.
+
+    只校验 image_model —— split 的两条 leg 跟 image-edit 走同一个 runner, 所以工具栏
+    选的模型必须同样送达, 也必须同样在这里就报"配置不存在"。
+
+    region / resolution 保持宽松 (CharField + create_split_jobs 里的档位兜底) 而不是
+    收成 ChoiceField: 它们本来就接受任意字符串并各自有兜底, 收紧会把原先能生成的请求
+    变成 400, 那是这次改动之外的行为变化。
+    """
+
+    region = serializers.CharField(required=False, allow_blank=True, default="")
+    resolution = serializers.CharField(required=False, allow_blank=True, default="")
+    image_model = _channel_choice_field(ImageProvider.Kind.IMAGE)
 
 
 def result_asset_url(obj) -> str:
@@ -195,6 +247,7 @@ class VideoJobCreateSerializer(serializers.Serializer):
     )
     duration = serializers.IntegerField(required=False, min_value=1, max_value=60, default=10)
     aspect_ratio = serializers.CharField(required=False, default="16:9")
+    image_model = _channel_choice_field(ImageProvider.Kind.VIDEO)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +280,7 @@ class AngleJobCreateSerializer(serializers.Serializer):
         required=False, allow_blank=True, default="", max_length=2000,
     )
     num_images = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
+    image_model = _channel_choice_field(ImageProvider.Kind.ANGLE)
 
 
 class AngleResultSerializer(_AssetResultSerializerBase):
@@ -288,3 +342,221 @@ class MediaLibraryFolderSerializer(serializers.Serializer):
     video_count = serializers.IntegerField(read_only=True)
     cover_url = serializers.CharField(read_only=True, allow_blank=True)
     latest_at = serializers.DateTimeField(read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# 生图供应商配置 (用户在前端配, 取代 env 里写死的 PRIMARY/FALLBACK)
+# ---------------------------------------------------------------------------
+
+# defaults / overrides 里允许出现的值类型。ImageChannel 是 frozen dataclass 且被当作
+# build_image_client 的 lru_cache 键, 一个 list/dict 值会让它 unhashable —— 炸点在几
+# 分钟后的 worker 里 (TypeError: unhashable type), 而不是用户按下保存的这一刻。
+_TUNABLE_VALUE_TYPES = (str, bool, int, float)
+
+_TRUE_WORDS = {"true", "1", "yes", "on"}
+_FALSE_WORDS = {"false", "0", "no", "off"}
+
+
+def _coerce_tunable(key: str, raw):
+    """把一个旋钮的值归一成它声明的标量类型, 归一不了就抛。
+
+    「是标量」不够: 每个旋钮的类型也得对上。JSON 里一个 `"poll_enabled": "false"` 是非空
+    字符串 = 真值, 会**静默打开**轮询; `"size_mode": 123` 会在几分钟后的 worker 里炸
+    `AttributeError: 'int' object has no attribute 'lower'`; 一个 `2.5` 的
+    poll_max_attempts 会让 `range()` 抛 TypeError。全都是保存时看不见、生成时才炸的。
+    """
+    expected = TUNABLE_TYPES.get(key)
+    if expected is None:
+        return raw  # 不认识的键: channel_for_model 会丢掉并记 warning, 这里不拦
+    if expected is bool:
+        if isinstance(raw, bool):
+            return raw
+        token = str(raw).strip().lower()
+        if token in _TRUE_WORDS:
+            return True
+        if token in _FALSE_WORDS:
+            return False
+        raise serializers.ValidationError(f"{key}: 需要 true / false")
+    if expected is int:
+        if isinstance(raw, bool):
+            raise serializers.ValidationError(f"{key}: 需要一个整数")
+        try:
+            number = int(str(raw).strip())
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError(f"{key}: 需要一个整数") from exc
+        # 负数跟类型错一样是"保存时看不见、生成时才炸": urllib3 见到 timeout=-1 直接抛
+        # ValueError (整个 job FAILED, 报错跟这个输入框毫无关系), poll_max_attempts<0
+        # 则让 range() 一轮都不转、静默当成"轮询完了没结果"。
+        if number < 0:
+            raise serializers.ValidationError(f"{key}: 不能是负数")
+        # 0 对超时/间隔/轮数这几项跟负数是同一类错误 —— urllib3 拒的是 <= 0 而不是 < 0,
+        # sleep(0) 会把轮询变成锤供应商的死循环。名单在 image_channels 里, 跟"哪些旋钮
+        # 存在"同住一处 (见 POSITIVE_TUNABLES)。poll_max_interval 的 0 是有定义的, 不在内。
+        if number == 0 and key in POSITIVE_TUNABLES:
+            raise serializers.ValidationError(f"{key}: 必须大于 0(留空 = 用默认值)")
+        return number
+    if expected is str:
+        if isinstance(raw, str):
+            return raw
+        raise serializers.ValidationError(f"{key}: 需要一个字符串")
+    return raw
+
+
+def _validate_tunables(value):
+    """校验并归一 defaults / overrides 这类自由 JSON。
+
+    键名不校验 —— channel_for_model 会把不认识的键丢掉并记 warning, 一个拼错的键不该
+    让保存失败。但值必须是标量 (理由见 _TUNABLE_VALUE_TYPES), 且**认识的键**的值还要
+    能归一成它声明的类型 (理由见 _coerce_tunable)。null = 没设这一项, 直接丢掉 ——
+    留着会变成 `timeout=None` 这种"永不超时"。
+    """
+    if not isinstance(value, dict):
+        raise serializers.ValidationError("必须是一个 JSON 对象")
+    bad = sorted(
+        k for k, v in value.items()
+        if v is not None and not isinstance(v, _TUNABLE_VALUE_TYPES)
+    )
+    if bad:
+        raise serializers.ValidationError(
+            f"这些项的值必须是字符串 / 数字 / 布尔: {', '.join(bad)}"
+        )
+    return {k: _coerce_tunable(k, v) for k, v in value.items() if v is not None}
+
+
+class ImageModelSerializer(serializers.ModelSerializer):
+    # 显式声明成可写。ModelSerializer 默认把主键做成 read_only (id 是
+    # UUIDField(primary_key=True, editable=False)), 那样嵌套写时 id 根本进不到
+    # validated_data, _sync_models 就永远走"新建"分支 —— 每次保存都把模型行删掉重建,
+    # 换一批新 id: 历史 ImageEditJob.image_model 被 SET_NULL 抹掉, 前端存在
+    # localStorage 里的粘性选择也变成一个死 id。
+    id = serializers.UUIDField(required=False)
+
+    class Meta:
+        model = ImageModel
+        fields = ("id", "label", "model", "overrides", "enabled", "sort_order")
+
+    def validate_overrides(self, value):
+        return _validate_tunables(value)
+
+
+class ImageProviderSerializer(serializers.ModelSerializer):
+    """供应商 + 它下面的模型, 一次读写。
+
+    模型嵌在里面而不是单独一套 CRUD: 前端配置页就是"一个供应商一张卡片, 里面几行模型",
+    一次 PUT 带全量 models 数组比让前端管两套增删改简单得多。
+
+    api_key 明文返回 —— 本地单机项目, 配置页要能回显用户填过什么、直接改。见设计文档
+    「key 的处理」。
+    """
+
+    models = ImageModelSerializer(many=True, required=False)
+
+    class Meta:
+        model = ImageProvider
+        fields = ("id", "label", "kind", "base_url", "api_key", "defaults", "models",
+                  "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate_defaults(self, value):
+        return _validate_tunables(value)
+
+    def validate(self, data):
+        """按 kind 判两件事: base_url 是不是必填, 以及丢掉这种 kind 读不到的旋钮。
+
+        对象级而不是字段级: 两个判定都要同时看 `kind` 和另一个字段
+        (`base_url` / `defaults` / `models[].overrides`), 字段校验器拿不到 kind。
+
+        旋钮**丢弃而不是报错**是刻意的: 把一个已有的 image 供应商改成 angle 是正常操作,
+        那 12 个 image 旋钮此刻全都作废 —— 报错会把用户卡在"改不了 kind"上, 而留着它们则
+        会存进库、被 channel_for_model 合进通道、然后被 submit_angle 完全忽略, 静默无痕。
+        跟 channel_for_model 处理不认识的键同一个态度: 记一条 warning, 当没配过。
+        """
+        # **通道类型建完就不能改。** 它不是一个设置, 是"这个端点说哪种协议"。放开改的
+        # 后果实测过: 下面那段裁剪会把不适用的参数**整组丢掉** (生图的请求形状 + 轮询配置
+        # 一次全没, 不可撤销), 而 base_url 原样留着指向旧端点 —— 于是一条本来好好的通道
+        # 变成一条必然 404 的通道, 还从它原来那个选择器里消失了。前端也把下拉禁掉了, 但
+        # 拦截必须在这里: 界面不是唯一的客户端。
+        if self.instance is not None and "kind" in data and data["kind"] != self.instance.kind:
+            raise serializers.ValidationError({"kind": [
+                "通道类型建好之后不能改 —— 换协议会丢掉这条通道的请求配置。"
+                "请新建一条, 确认无误后再删掉旧的。"
+            ]})
+        kind = data.get("kind") or getattr(self.instance, "kind", ImageProvider.Kind.IMAGE)
+
+        # base_url 留空只对聊天通道合法 (= 走 OpenAI 官方端点, builder 里
+        # `channel.base_url or None`; 迁移 0015 导进来的那条存的就是空串)。其余三种
+        # 都要靠它拼出端点, 空的话要到几分钟后的 worker 里才炸成 requests.MissingSchema。
+        base_url = data.get("base_url", getattr(self.instance, "base_url", ""))
+        if not (base_url or "").strip() and KIND_SPECS[kind].requires_base_url:
+            raise serializers.ValidationError(
+                {"base_url": ["这种通道必须填 Base URL(只有聊天通道可以留空 = 用 OpenAI 官方端点)"]}
+            )
+
+        allowed = KIND_SPECS[kind].tunables
+
+        def prune(values, where):
+            dropped = sorted(set(values) - allowed)
+            if dropped:
+                logger.warning(
+                    "image provider (%s): %s 里的 %s 不适用于这种通道, 已丢弃",
+                    kind, where, ", ".join(dropped),
+                )
+            return {k: v for k, v in values.items() if k in allowed}
+
+        if "defaults" in data:
+            data["defaults"] = prune(data["defaults"], "defaults")
+        for m in data.get("models") or []:
+            if "overrides" in m:
+                m["overrides"] = prune(m["overrides"], f"model {m.get('label', '?')} overrides")
+        return data
+
+    def _sync_models(self, provider, models_data):
+        """全量替换: 请求里没出现的模型行删掉, 带 id 的更新, 不带 id 的新建。
+
+        保留 id 而不是"删光重建"是为了 ImageEditJob.image_model 的外键 —— 重建会把历史
+        任务的关联 SET_NULL 抹掉。
+        """
+        # 成员判定一次查完, 别在循环里每行一次 exists()
+        existing = set(provider.models.values_list("id", flat=True))
+        keep_ids = []
+        for order, item in enumerate(models_data):
+            model_id = item.pop("id", None)
+            item.setdefault("sort_order", order)
+            if model_id in existing:
+                # queryset.update() 不走 save(), 所以 auto_now 的 updated_at 不会动 ——
+                # 不显式带上的话, 一条被改过十次的模型行时间戳永远停在创建那一刻。
+                ImageModel.objects.filter(id=model_id).update(
+                    updated_at=timezone.now(), **item,
+                )
+                keep_ids.append(model_id)
+            else:
+                keep_ids.append(ImageModel.objects.create(provider=provider, **item).id)
+        provider.models.exclude(id__in=keep_ids).delete()
+
+    def create(self, validated_data):
+        models_data = validated_data.pop("models", [])
+        provider = ImageProvider.objects.create(**validated_data)
+        self._sync_models(provider, models_data)
+        return provider
+
+    def update(self, instance, validated_data):
+        models_data = validated_data.pop("models", None)
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+        if models_data is not None:
+            self._sync_models(instance, models_data)
+        return instance
+
+
+class ImageModelChoiceSerializer(serializers.ModelSerializer):
+    """工具栏模型选择器拉的列表 —— 只有展示需要的字段, 不含 key/base_url。"""
+
+    provider_label = serializers.CharField(source="provider.label", read_only=True)
+    # 前端按它分流: Image / Split 面板只列 image, Angle 面板只列 angle。带在每一项上
+    # (而不是让前端按 kind 各拉一次) —— 一次请求、一份 state, 两个选择器各自 filter。
+    kind = serializers.CharField(source="provider.kind", read_only=True)
+
+    class Meta:
+        model = ImageModel
+        fields = ("id", "label", "provider_label", "kind", "sort_order")

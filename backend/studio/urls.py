@@ -2,6 +2,11 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    ImageModelChoiceListView,
+    ImageProviderCurlImportView,
+    ImageProviderSchemaView,
+    ImageProviderTestView,
+    ImageProviderViewSet,
     AngleJobRetrieveView,
     ImageEditJobRetrieveView,
     MediaLibraryFolderItemsView,
@@ -23,8 +28,29 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r"scenes", SceneViewSet, basename="canvas-scene")
+router.register(r"image-providers", ImageProviderViewSet, basename="canvas-image-provider")
 
-urlpatterns = router.urls + [
+urlpatterns = [
+    path(
+        "image-providers/<uuid:pk>/test/",
+        ImageProviderTestView.as_view(),
+        name="canvas-image-provider-test",
+    ),
+    path(
+        "image-providers/import-curl/",
+        ImageProviderCurlImportView.as_view(),
+        name="canvas-image-provider-import-curl",
+    ),
+    path(
+        "image-providers/schema/",
+        ImageProviderSchemaView.as_view(),
+        name="canvas-image-provider-schema",
+    ),
+    path(
+        "image-models/",
+        ImageModelChoiceListView.as_view(),
+        name="canvas-image-models",
+    ),
     path(
         "media-library/folders/",
         MediaLibraryFoldersView.as_view(),
@@ -105,4 +131,6 @@ urlpatterns = router.urls + [
         SceneAttachmentUploadView.as_view(),
         name="canvas-scene-upload-attachment",
     ),
-]
+] + router.urls
+# router 的 detail 路由是 `image-providers/<pk>/`, 会把 `image-providers/import-curl/`
+# 当成 pk="import-curl" 吃掉 —— 所以显式路径必须排在 router.urls 前面。

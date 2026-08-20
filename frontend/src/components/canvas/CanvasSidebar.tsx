@@ -15,6 +15,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  SlidersHorizontal,
   Trash2,
   Twitter,
 } from "lucide-react";
@@ -92,6 +93,65 @@ const SIDEBAR_PINNED_KEY = "canvex:canvas-pinned-scenes";
 const SIDEBAR_SECTION_LABEL =
   "mb-1.5 px-2.5 text-xs font-semibold text-stone-500";
 
+/** 侧栏底部那几个固定入口 (生图设置 / 语言 / 帮助) 共用的一行。
+ *
+ *  抽出来是因为三份是逐字相同的: 加第三个入口时为了插进去, 连带把另外两份的 `mt-2`
+ *  改成 `mt-1` —— 它们本来就是绑在一起动的。再抄一份, 或者改一次样式, 必然漏一个。 */
+function FooterButton({
+  collapsed,
+  first,
+  label,
+  title,
+  onClick,
+  icon,
+  collapsedContent,
+}: {
+  collapsed: boolean;
+  /** 底部这一组的第一个 —— 跟上面的 nav 之间要多一点间距。 */
+  first?: boolean;
+  label: string;
+  /** 悬停提示。省略即用 label (语言那个例外: 按钮上写的是目标语言, 提示要说"切换语言")。 */
+  title?: string;
+  onClick: () => void;
+  icon: React.ReactNode;
+  /** 折叠态改显别的东西 (语言用两个字, 没有合适图标)。省略即用 icon。 */
+  collapsedContent?: React.ReactNode;
+}) {
+  const gap = first ? "mt-2" : "mt-1";
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          gap,
+          "mx-auto flex size-9 items-center justify-center rounded-md text-stone-500",
+          "transition-colors hover:bg-stone-100 hover:text-stone-700",
+        )}
+        aria-label={title ?? label}
+        title={title ?? label}
+      >
+        {collapsedContent ?? icon}
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        gap,
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px]",
+        "font-medium text-stone-700 transition-colors hover:bg-stone-100",
+      )}
+      title={title}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 function loadPinned(): string[] {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_PINNED_KEY);
@@ -111,6 +171,9 @@ interface CanvasSidebarProps {
   onSceneCreated?: (id: string) => void;
   /** The active scene was deleted — workspace clears / picks another. */
   onSceneDeleted?: (id: string) => void;
+  /** 打开生图供应商配置面板。直接回调而不是像素材库那样发 window 事件 —— 那个面板挂在
+   *  CanvasArea 里(隔着一层 key), 这个跟侧栏同属 CanvexWorkspacePage 的直接子节点。 */
+  onOpenImageSettings: () => void;
 }
 
 export function CanvasSidebar({
@@ -118,6 +181,7 @@ export function CanvasSidebar({
   onSelectScene,
   onSceneCreated,
   onSceneDeleted,
+  onOpenImageSettings,
 }: CanvasSidebarProps) {
   const { t } = useTranslation("canvasUi");
   const { lang, toggle: toggleLanguage } = useLanguageToggle();
@@ -567,50 +631,31 @@ export function CanvasSidebar({
         )}
       </nav>
 
-      {/* 中英文切换: 展开 = 行(显示目标语言); 折叠 = 图标。切换并持久化到 localStorage。 */}
-      {collapsed ? (
-        <button
-          type="button"
-          onClick={toggleLanguage}
-          className="mx-auto mt-2 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
-          aria-label={t("sidebar.toggleLanguage")}
-          title={t("sidebar.toggleLanguage")}
-        >
+      {/* 底部固定入口。生图设置不依赖当前画布, 所以不像素材库那样在无激活画布时禁用。 */}
+      <FooterButton
+        collapsed={collapsed}
+        first
+        label={t("sidebar.imageSettings")}
+        onClick={onOpenImageSettings}
+        icon={<SlidersHorizontal className="size-4 shrink-0" strokeWidth={2} />}
+      />
+      {/* 中英文切换: 折叠态没有图标可用, 直接显示目标语言的两个字。 */}
+      <FooterButton
+        collapsed={collapsed}
+        label={lang === "en" ? "中文" : "English"}
+        title={t("sidebar.toggleLanguage")}
+        onClick={toggleLanguage}
+        icon={<Languages className="size-4 shrink-0" strokeWidth={2} />}
+        collapsedContent={
           <span className="text-[11px] font-bold">{lang === "en" ? "EN" : "中"}</span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={toggleLanguage}
-          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
-          title={t("sidebar.toggleLanguage")}
-        >
-          <Languages className="size-4 shrink-0" strokeWidth={2} />
-          {lang === "en" ? "中文" : "English"}
-        </button>
-      )}
-
-      {/* 帮助入口: 展开 = 行; 折叠 = 图标。打开教程弹层。 */}
-      {collapsed ? (
-        <button
-          type="button"
-          onClick={() => setHelpOpen(true)}
-          className="mx-auto mt-1 flex size-9 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
-          aria-label={t("sidebar.helpTips")}
-          title={t("sidebar.helpTips")}
-        >
-          <HelpCircle className="size-4" strokeWidth={2} />
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setHelpOpen(true)}
-          className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
-        >
-          <HelpCircle className="size-4 shrink-0" strokeWidth={2} />
-          {t("sidebar.helpTips")}
-        </button>
-      )}
+        }
+      />
+      <FooterButton
+        collapsed={collapsed}
+        label={t("sidebar.helpTips")}
+        onClick={() => setHelpOpen(true)}
+        icon={<HelpCircle className="size-4 shrink-0" strokeWidth={2} />}
+      />
 
       {/* 作者社交链接: 展开=一排图标, 折叠=纵向堆叠。外链新标签页打开。 */}
       <div

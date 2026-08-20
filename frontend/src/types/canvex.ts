@@ -184,3 +184,113 @@ export type CanvasChatStreamEvent =
   | { event: "canvas_asset"; url: string }
   | { event: "error"; detail: string }
   | { event: "done" };
+
+
+// ─── 生图供应商配置 ─────────────────────────────────────────────────────────
+
+/** 供应商下的一个可选模型。`overrides` 只存与 provider defaults 不同的项。 */
+export interface CanvasImageModel {
+  id: string;
+  label: string;
+  /** 供应商要的模型字符串原文(各家写法不同,不做别名映射)。 */
+  model: string;
+  overrides: Record<string, unknown>;
+  enabled: boolean;
+  sort_order: number;
+}
+
+/** 供应商的接口形状:
+ *  - `image` 通用生图接口 ({base_url}/images/generations, Bearer)。Image / Split 用。
+ *  - `angle` fal.run 的视角重渲染 (模型名在 URL 路径里, 认证是 `Key`, 请求体是相机坐标)。
+ *  - `video` 文/图生视频 (提交拿 task_id 再长轮询)。
+ *  - `chat` 聊天 agent 的 LLM。必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具。
+ *  决定每个选择器列哪些模型, 以及配置表单显示哪些参数(后者由后端下发的 schema 说)。 */
+export type CanvasImageProviderKind = "image" | "angle" | "video" | "chat";
+
+/** 一个生图供应商端点 —— 一把 key + 一个 base_url + 一套请求参数默认值。
+ *  api_key 明文返回:本地单机项目,配置页要能回显用户填过什么、直接改。 */
+export interface CanvasImageProvider {
+  id: string;
+  label: string;
+  kind: CanvasImageProviderKind;
+  base_url: string;
+  api_key: string;
+  defaults: Record<string, unknown>;
+  models: CanvasImageModel[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** 后端下发的、关于一种通道类型的全部表单规则 (GET /image-providers/schema/)。
+ *
+ *  这些以前是前端自己写死的 —— `kind !== "chat"`、`kind === "image" || kind === "angle"`、
+ *  一个 base_url 占位符三元表达式、四个硬编码的 <option>。也就是把后端规则手抄了一份,
+ *  而抄的那份还会**抢先**生效: 某个 kind 的 base_url 改成可选之后, 前端的 toast 会在
+ *  请求发出去之前就拦下来, 后端改了等于没改。 */
+export interface CanvasKindSpec {
+  tunables: CanvasTunableSpec[];
+  /** false = 这种通道的 base_url 可以留空 (chat 留空 = OpenAI 官方端点)。 */
+  requires_base_url: boolean;
+  base_url_example: string;
+  /** 有没有一键测试的探针。没有时 ⚡ 按钮不显示, 后端也会拒绝。 */
+  testable: boolean;
+}
+
+/**
+ * 配置表单里一个可调参数的描述 —— **由后端下发** (GET /image-providers/schema/)。
+ *
+ * 不在前端写死这张表: 它的唯一来源是后端 `ImageChannel` 的字段声明。手抄一份的下场是
+ * 加了旋钮界面上不出现、或者界面上配了后端不认, 两种都没有报错。文案不在里面 —— label
+ * 走 i18n 按 key 查, 查不到就退回显示 key 本身。
+ */
+export interface CanvasTunableSpec {
+  key: string;
+  /** 渲染成什么控件。由字段的标量类型决定。 */
+  control: "text" | "bool" | "number";
+  /** 输入框的灰字提示。通常就是 Canvex 自己的默认值。 */
+  placeholder: string;
+  /** 下拉里"不填"那一项的语义: 用我们的默认, 还是根本不下发这个字段。 */
+  empty_label: "unset" | "dont_send";
+}
+
+/** 写回后端时的供应商形状。跟读取形状只差嵌套模型行的 id —— 前端刚加的那行还没
+ *  落库, 省掉 id 让后端走 create;发个本地假 id 过去会被当成"更新一条不存在的行"。 */
+export type CanvasImageProviderWrite = Omit<CanvasImageProvider, "models"> & {
+  models: (Omit<CanvasImageModel, "id"> & { id?: string })[];
+};
+
+/** 工具栏模型选择器拉的列表项 —— 不含 base_url / api_key。 */
+export interface CanvasImageModelChoice {
+  id: string;
+  label: string;
+  provider_label: string;
+  /** 来自所属 provider。一次请求拿回全部, 两个选择器各自按它筛。 */
+  kind: CanvasImageProviderKind;
+  sort_order: number;
+}
+
+/** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——
+ *  「测试成功了,失败的是被测对象」。`error` 是供应商返回的原始错误。 */
+export interface CanvasImageProviderTestResult {
+  ok: boolean;
+  elapsed: number;
+  bytes?: number;
+  error?: string;
+}
+
+/** POST /image-providers/import-curl/ 从示例 curl 推断出的预填字段。
+ *  只包含推断出来的项;`_unrecognized` 是示例里出现但我们不认识的请求体键。 */
+export interface CanvasCurlImportResult {
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  image_field?: string;
+  image_as_single?: boolean;
+  response_format?: string;
+  quality?: string;
+  watermark?: boolean;
+  _unrecognized?: string[];
+  /** 这段 curl 打的不是 /images/generations —— base_url 里留着端点路径, 直接保存会拼出
+   *  一个多一截的地址。整句话由后端给, 因为"我们会打哪个端点"是后端的事。 */
+  _path_note?: string;
+}

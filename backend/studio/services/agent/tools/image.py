@@ -23,7 +23,6 @@ Branches on `job.is_cutout`:
   租户面。
 """
 import logging
-import os
 import re
 import time
 import uuid
@@ -38,8 +37,18 @@ from langchain.tools import ToolRuntime, tool
 from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
-from studio.services.image_client import build_image_client
-from studio.services.listings_utils import env, env_bool, handle_poll_if_needed
+from studio.services.image_channels import (
+    channel_or_default,
+    no_channel_error,
+    resolve_model_id,
+)
+from studio.services.image_client import (
+    ImageChannel,
+    ImageClient,
+    build_image_client,
+    build_probe_client,
+)
+from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
 from .common import (
@@ -54,9 +63,6 @@ from .common import (
 )
 
 logger = logging.getLogger(__name__)
-
-_PRIMARY_PREFIX = "CANVAS_IMAGE_PRIMARY"
-_FALLBACK_PREFIX = "CANVAS_IMAGE_FALLBACK"
 
 # Tool refusal protocol: tool returns a string starting with REFUSED_PREFIX
 # when it actively blocks a call (no source / wrong shape / SKILL bypass).
@@ -141,43 +147,64 @@ def _volc_size(size: str, resolution: str) -> str:
 
 
 def _single_generation(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
+    client: ImageClient | None = None,
 ) -> bytes:
     """单次 provider 调用, n=1 固定, 返单张 image bytes.
 
-    POLL_ENABLED=true (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
+    poll_enabled (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
     其他 (tu-zi / 火山 同步) 走 extract_images_from_response 取 data[0].
     任何错误冒泡到调用方 (_generate 的 fan-out 会 catch + 计入失败数).
 
-    size 适配按 {prefix}_SIZE_MODE: "pixel" → 火山合法像素 (_volc_size); 否则沿用旧
+    size 适配按 channel.size_mode: "pixel" → 火山合法像素 (_volc_size); 否则沿用旧
     行为 —— 异步 poll provider (apimart) 把像素归一成比例串喂过去.
+
+    `client` 留给调用方换重试策略 (worker 要重试, 同步的测试按钮不要 ——
+    见 probe_image_channel), 默认走缓存的那个带 retry 的。
     """
-    client = build_image_client(prefix)
-    poll_enabled = env_bool(f"{prefix}_POLL_ENABLED")
-    if env(f"{prefix}_SIZE_MODE").lower() == "pixel":
+    client = client or build_image_client(channel)
+    if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
-    elif poll_enabled:
+    elif channel.poll_enabled:
         size = _canvas_size_to_ratio(size)
 
     response = client.generate(
         prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
     )
-    if not poll_enabled:
+    if not channel.poll_enabled:
         return extract_images_from_response(response)[0]
 
     return handle_poll_if_needed(
         response=response, poll_enabled=True,
         api_key=client.api_key,
-        poll_url=os.getenv(f"{prefix}_POLL_URL") or client.base_url,
-        max_attempts=int(os.getenv(f"{prefix}_POLL_MAX_ATTEMPTS", "60")),
-        interval=int(os.getenv(f"{prefix}_POLL_INTERVAL", "5")),
-        req_timeout=int(os.getenv(f"{prefix}_POLL_TIMEOUT", "30")),
+        poll_url=channel.poll_url or client.base_url,
+        max_attempts=channel.poll_max_attempts,
+        interval=channel.poll_interval,
+        req_timeout=channel.poll_timeout,
     )
 
 
+def probe_image_channel(channel: ImageChannel) -> int:
+    """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
+
+    公开一个函数而不是让 views 直接 import `_single_generation`: angle 那边已经有
+    `probe_angle_channel` 了, 两条探针一边公有、一边从外面伸手拿私有函数, 会让"探针住在
+    哪"这件事没有答案。顺带把"探针不重试"钉死在这里 (见 build_probe_client), 而不是指望
+    每个调用方自己记得 —— 忘掉的下场是 view 那个 60s 预算被静静乘成四倍。
+
+    尺寸取一个所有实现都合法的中庸值; 这里问的是"端点/密钥/模型名对不对", 不是构图。
+    """
+    return len(_single_generation(
+        channel,
+        client=build_probe_client(channel),
+        prompt="a small red circle on a white background",
+        image_urls=[], size="1024x1024", resolution="1K",
+    ))
+
+
 def _generate(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
 ) -> list[bytes]:
     """Provider 生成 n 张图. 不论 sync (tu-zi) 还是 async poll (apimart), 底层
     `client.generate(n=1)` 始终, 多张通过 fan-out (N 个并发 1-shot) 实现.
@@ -194,7 +221,7 @@ def _generate(
     """
     if n == 1:
         return [_single_generation(
-            prefix, prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
+            channel, prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
         )]
 
     # 兜底: serializer 允许 1/2/4 但万一上层放开 num_images, 不让 thread 数无界涨
@@ -202,7 +229,7 @@ def _generate(
     with ThreadPoolExecutor(max_workers=min(n, 8)) as pool:
         futures = [
             pool.submit(
-                _single_generation, prefix,
+                _single_generation, channel,
                 prompt=prompt, image_urls=image_urls, size=size, resolution=resolution,
             )
             for _ in range(n)
@@ -211,9 +238,9 @@ def _generate(
             try:
                 results.append(f.result())
             except Exception:
-                logger.exception("image_gen fan-out: single call failed: prefix=%s", prefix)
+                logger.exception("image_gen fan-out: single call failed: channel=%s", channel.label)
     if not results:
-        raise RuntimeError(f"image_gen fan-out: all {n} parallel calls failed: prefix={prefix}")
+        raise RuntimeError(f"image_gen fan-out: all {n} parallel calls failed: channel={channel.label}")
     return results
 
 
@@ -227,7 +254,7 @@ _RETRY_BACKOFF_SECONDS = (0, 3)
 
 
 def _call_with_retries(
-    prefix: str, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
 ) -> list[bytes]:
     """Wrap _generate with attempt-level retry. ValueError/TypeError 不重试 (编码 bug).
     HTTP 4xx (除 408/425/429) 不 retry —— schema/quota/auth 类错误重发同 payload 永远
@@ -238,7 +265,7 @@ def _call_with_retries(
             time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
         try:
             return _generate(
-                prefix, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
             )
         except (ValueError, TypeError):
             raise
@@ -249,49 +276,58 @@ def _call_with_retries(
             status = exc.response.status_code if exc.response is not None else None
             if status is not None and 400 <= status < 500 and status not in (408, 425, 429):
                 logger.warning(
-                    "image_gen attempt %d/%d hit %d (deterministic 4xx): prefix=%s err=%s",
-                    attempt + 1, _RETRY_ATTEMPTS, status, prefix, exc,
+                    "image_gen attempt %d/%d hit %d (deterministic 4xx): channel=%s err=%s",
+                    attempt + 1, _RETRY_ATTEMPTS, status, channel.label, exc,
                 )
                 raise
             last_exc = exc
             logger.warning(
-                "image_gen attempt %d/%d failed: prefix=%s err=%s",
-                attempt + 1, _RETRY_ATTEMPTS, prefix, exc,
+                "image_gen attempt %d/%d failed: channel=%s err=%s",
+                attempt + 1, _RETRY_ATTEMPTS, channel.label, exc,
             )
         except Exception as exc:
             last_exc = exc
             logger.warning(
-                "image_gen attempt %d/%d failed: prefix=%s err=%s",
-                attempt + 1, _RETRY_ATTEMPTS, prefix, exc,
+                "image_gen attempt %d/%d failed: channel=%s err=%s",
+                attempt + 1, _RETRY_ATTEMPTS, channel.label, exc,
             )
     assert last_exc is not None  # _RETRY_ATTEMPTS >= 1 保证至少 1 次 except 命中
     raise last_exc
 
 
-def _generate_with_fallback(
+def _generate_on_channel(
     *, prompt: str, image_urls: list[str], size: str, n: int, resolution: str = "",
+    channel: ImageChannel | None = None,
 ) -> list[bytes]:
-    """Primary (with retries) 抛 → 切 fallback (with retries). 同 task 内 try/except,
-    credit_event 保 PENDING 不被 _load_or_skip rollback (Stage 4 commit/rollback 终态
-    不可逆, 跨 task 重试会撞 InvalidUsageEventState; 同 task 内 fallback 安全).
+    """生成 n 张图, 带重试。**不会替用户换通道**。
 
-    Fallback 配置可选: CANVAS_IMAGE_FALLBACK_MODEL 未设时不切换, primary 错误冒泡
-    → _load_or_skip rollback 退 credit. 这让 dev 环境无 fallback 配也行得通.
+    `channel` 已经是解析完的那条 —— 「选中的那条, 没选/已失效就退到库里第一条」这级阶梯
+    由调用方的 `channel_or_default` 走完 (angle 路径的 resolve_angle_channel 走的是同一
+    个函数)。到这里还是 None 就只剩一种情况: 库里一条启用的模型都没有。
+
+    一个通道失败**不切另一个**: 换供应商会换出完全不同的画风, 而用户并不知道发生了什么。
+    明确告诉他"这个通道失败了、换一个再试"才是对的。(早先这里有一条 env 的
+    primary → fallback 自动切换链, 连同「后端默认」一起去掉了 —— 生图配置现在只有库
+    一个来源。)
     """
+    if channel is None:
+        raise no_channel_error("生图")
     try:
         return _call_with_retries(
-            _PRIMARY_PREFIX, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
         )
-    except Exception:
-        if not os.getenv(f"{_FALLBACK_PREFIX}_MODEL"):
-            raise
-        logger.exception(
-            "canvas image_gen: primary failed after retries, trying fallback: prefix=%s",
-            _FALLBACK_PREFIX,
-        )
-        return _call_with_retries(
-            _FALLBACK_PREFIX, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-        )
+    except Exception as exc:
+        # 这里就是终点 —— 这条消息会原样变成 job.error, 再原样变成画布上那行红字。所以
+        # 它必须自己说清楚两件事: 挂的是**哪个**通道, 以及我们**没有**替他换一个。否则
+        # 用户看到的只是一句通用失败, 会以为产品坏了, 而不是"这个供应商不行, 换一个"。
+        #
+        # 顺序是刻意的: job.error 会被截到 5000 字, 而供应商可能吐一整页 HTML。把"哪个
+        # 通道 + 该怎么办"放在原始报文**之前**, 截断就只可能吃掉报文尾巴, 永远吃不掉那
+        # 句能让用户行动的话。
+        raise RuntimeError(
+            f"[{channel.label}] 生成失败, 未自动切换其他通道 —— "
+            f"可在工具栏换一个再试。供应商返回: {exc}"
+        ) from exc
 
 
 def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
@@ -311,12 +347,14 @@ def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
         if url.startswith(("http://", "https://")):
             assert_source_url_reachable(url)
 
-    image_bytes_list = _generate_with_fallback(
+    image_bytes_list = _generate_on_channel(
         prompt=job.prompt,
         image_urls=image_urls,
         size=job.size or "1024x1024",
         n=job.num_images,
         resolution=job.resolution or "",
+        # 用户选的通道(工具栏选择器 / agent 参数); 没选 / 排队期间被删 → 库里第一条。
+        channel=channel_or_default(job.image_model_id),
     )
     return _persist_results(job, image_bytes_list)
 
@@ -438,12 +476,13 @@ def run_cutout_llm_step(job: ImageEditJob) -> None:
     extra = (job.prompt or "").strip()
     cutout_prompt = f"{CUTOUT_LLM_PROMPT}\n\n{extra}" if extra else CUTOUT_LLM_PROMPT
 
-    image_bytes_list = _generate_with_fallback(
+    image_bytes_list = _generate_on_channel(
         prompt=cutout_prompt,
         image_urls=[source_url],
         size=job.size or "1024x1024",
         n=1,  # cutout 永远 1 张, num_images 上层 serializer 已 enforce
         resolution=job.resolution or "",
+        channel=channel_or_default(job.image_model_id),
     )
     if not image_bytes_list:
         raise RuntimeError("cutout LLM stage returned no images")
@@ -471,6 +510,7 @@ def enqueue_image_generation(
     n: int,
     scene_id: str,
     image_urls: list[str] | None = None,
+    image_model_id: str | None = None,
 ) -> str:
     """Pure-args helper: create ImageEditJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -502,6 +542,10 @@ def enqueue_image_generation(
             source_image=None,
             source_images=clean_urls,  # absolute URLs from chat attachments
             status=ImageEditJob.Status.QUEUED,
+            # 这条路是异步的 —— worker 之后才捞这行, 所以选择必须落在行上。
+            # 先 resolve: 前端的选择是粘的, 一个已被删掉的 id 会一直跟着每次请求发来,
+            # 直接写进 FK 列会撞约束把整轮聊天变成 500。失效 → None → 回退默认通道。
+            image_model_id=resolve_model_id(image_model_id),
         )
         reserve_error = reserve_or_friendly_message(job, action_label="image generation")
         if reserve_error:
@@ -667,6 +711,8 @@ def generate_image(
     return enqueue_image_generation(
         prompt=prompt, size=size, n=n, image_urls=image_urls,
         scene_id=ctx.scene_id,
+        # 用户在工具栏选的模型, 每轮从前端透传进来 (和 attachment_urls 同一条路)。
+        image_model_id=ctx.image_model_id,
     )
 
 
