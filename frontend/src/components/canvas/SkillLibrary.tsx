@@ -20,6 +20,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { MAX_SKILL_BYTES } from "@/lib/upload-limits";
 import { cn } from "@/lib/utils";
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError, parseApiErrors } from "@/services/errors";
@@ -55,6 +56,9 @@ interface Conflict {
   id: string;
   name: string;
   content: string;
+  /** 这篇正文是不是编辑器里那份。只有它为 true 时, 覆盖成功后才该清空编辑器 ——
+   *  一次拖了三个文件的话, 清掉的会是用户另外写到一半的东西。 */
+  fromComposer: boolean;
 }
 
 export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProps) {
@@ -63,11 +67,15 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
-  /** 正在编辑的那一行的正文。null = 只是展开查看, 没在改。 */
-  const [editing, setEditing] = useState<{ id: string; content: string } | null>(null);
   /** 「直接写一个」/「复制为我的」共用的新建编辑器。null = 没打开。 */
   const [composing, setComposing] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<Conflict | null>(null);
+  /** 待确认的重名, **队列**而不是单个。一次拖进来的几个文件可能个个重名, 而 `install`
+   *  是"弹框之后立刻返回"的 —— 存单个的话第二个会把第一个顶掉, 用户只看得见最后一个,
+   *  前面几个既没装上也没有任何提示。排队逐个问。 */
+  const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const conflict = conflicts[0] ?? null;
+  /** 关掉当前这条(取消 / 已处理), 露出队列里的下一条。 */
+  const shiftConflict = useCallback(() => setConflicts((prev) => prev.slice(1)), []);
   const [deleteTarget, setDeleteTarget] = useState<CanvasSkillRow | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -85,30 +93,48 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
   }, []);
 
   useEffect(() => {
-    if (open) void reload();
+    if (!open) return;
+    // 跟某一行绑定的状态每次打开都清掉。**编辑中的正文不在这里** —— 它归 SkillCard 自己,
+    // 而 SkillCard 挂在 SheetContent (Radix 的 portal, 没有 forceMount) 里面, 关面板就
+    // 卸载, 草稿跟着没, 不需要在这儿补一刀。`composing` 刻意不清: 它是一篇跟任何行都无关
+    // 的草稿, 手滑关掉面板不该丢。
+    setExpanded(null);
+    setDeleteTarget(null);
+    void reload();
   }, [open, reload]);
 
   /** 每一次改动之后都要做的两件事: 重拉自己的列表, 通知 popover 重拉 agent 视角的。
    *  漏掉后者的表现是"面板里删掉了, popover 里还在", 而两者就挨着。 */
   const afterChange = useCallback(async () => {
-    await reload();
+    // 两个请求互不读对方的结果, 排队跑等于白等一个来回。await 只挂在 reload 上, 因为
+    // `busy` 要跟着列表刷新走。
+    const listed = reload();
     onChanged();
+    await listed;
   }, [reload, onChanged]);
 
   /** 装一篇。重名时后端回 400 + conflict_id, 我们把它变成一句「要覆盖吗」而不是报错 ——
    *  重装/更新自己的 SOP 是最高频的操作, 让用户先去删一遍太蠢。 */
   const install = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (
+      content: string,
+      { fromComposer, refresh = true }: { fromComposer: boolean; refresh?: boolean },
+    ): Promise<boolean> => {
       setBusy(true);
       try {
         const { data } = await canvasService.skillLibrary.create({ content });
         toast.success(t("skills.installed_toast", { name: data.name }));
-        await afterChange();
+        // `refresh: false` 是给批量拖入用的: 一次拖 5 个文件就是 5 次全量重拉 (每次都带
+        // 全部 SKILL.md 正文), 而前 4 次的结果下一秒就被作废。循环跑完再拉一次。
+        if (refresh) await afterChange();
         return true;
       } catch (err) {
         const { fields, summary } = parseApiErrors(err, "install failed");
         if (fields.conflict_id && fields.conflict_name) {
-          setConflict({ id: fields.conflict_id, name: fields.conflict_name, content });
+          setConflicts((prev) => [
+            ...prev,
+            { id: fields.conflict_id, name: fields.conflict_name, content, fromComposer },
+          ]);
           return false;
         }
         toast.error(summary);
@@ -144,17 +170,34 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
   const readFiles = useCallback(
     async (files: FileList | null) => {
       if (!files?.length) return;
+      let installed = false;
       for (const file of Array.from(files)) {
         if (!/\.(md|markdown)$/i.test(file.name)) {
           toast.error(t("skills.notMarkdown", { file: file.name }));
           continue;
         }
-        // 串行而不是 Promise.all: 装第二篇时可能弹重名确认框, 并行的话几个确认框会
-        // 互相覆盖, 用户只看得见最后一个。
-        await install(await file.text());
+        if (file.size > MAX_SKILL_BYTES) {
+          // 粗筛, 见 MAX_SKILL_BYTES: 太大的连后端那句具体报错都换不来。
+          toast.error(t("skills.tooBig", { file: file.name, limit: MAX_SKILL_BYTES / 1024 }));
+          continue;
+        }
+        let content: string;
+        try {
+          // `install` 自己把所有网络错误都收了, 但读文件在它外面 —— 不接住的话
+          // (`readFiles` 是 `void` 调的) 就是一条没人看得见的 unhandled rejection,
+          // 用户那边表现为"拖进去了, 什么都没发生"。
+          content = await file.text();
+        } catch {
+          toast.error(t("skills.readFailed", { file: file.name }));
+          continue;
+        }
+        // 串行而不是 Promise.all: 重名确认框排队逐个弹 (见 `conflicts`), 并行的话
+        // 连"哪个文件对应哪个框"都说不清。刷新推迟到循环外。
+        installed = (await install(content, { fromComposer: false, refresh: false })) || installed;
       }
+      if (installed) await afterChange();
     },
-    [install, t],
+    [install, afterChange, t],
   );
 
   return (
@@ -188,7 +231,14 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
               e.preventDefault();
               setDragging(true);
             }}
-            onDragLeave={() => setDragging(false)}
+            // 只有真的离开了整个投放区才熄灭。dragleave 在光标从按钮移到它自己的图标 /
+            // 文字上时也会触发 (那是子元素的 enter), 不判 relatedTarget 的话高亮会在
+            // 用户还悬在上面时一闪一闪。
+            onDragLeave={(e) => {
+              const next = e.relatedTarget;
+              if (next instanceof Node && e.currentTarget.contains(next)) return;
+              setDragging(false);
+            }}
             onDrop={(e) => {
               e.preventDefault();
               setDragging(false);
@@ -206,7 +256,9 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
             <span className="text-[13px] font-medium">
               {dragging ? t("skills.dropActive") : t("skills.dropTitle")}
             </span>
-            <span className="text-[11px]">{t("skills.dropHint")}</span>
+            <span className="text-[11px]">
+              {t("skills.dropHint", { limit: MAX_SKILL_BYTES / 1024 })}
+            </span>
           </button>
 
           {composing === null ? (
@@ -220,34 +272,19 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
             </button>
           ) : (
             <div className="rounded-md border border-border p-3">
-              <textarea
+              <SkillEditor
                 value={composing}
-                onChange={(e) => setComposing(e.target.value)}
+                onChange={setComposing}
                 rows={12}
+                busy={busy}
                 placeholder={t("skills.newPlaceholder")}
-                className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px] outline-none focus:border-foreground/30"
+                onSave={() => {
+                  void install(composing, { fromComposer: true }).then((ok) => {
+                    if (ok) setComposing(null);
+                  });
+                }}
+                onCancel={() => setComposing(null)}
               />
-              <div className="mt-2 flex gap-2">
-                <button
-                  type="button"
-                  disabled={busy || !composing.trim()}
-                  onClick={() => {
-                    void install(composing).then((ok) => {
-                      if (ok) setComposing(null);
-                    });
-                  }}
-                  className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
-                >
-                  {busy ? t("skills.saving") : t("skills.save")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setComposing(null)}
-                  className="rounded-md px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-                >
-                  {t("skills.cancel")}
-                </button>
-              </div>
             </div>
           )}
 
@@ -269,21 +306,10 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
               row={row}
               busy={busy}
               expanded={expanded === row.id}
-              editing={editing?.id === row.id ? editing.content : null}
-              onToggleExpand={() => {
-                setExpanded(expanded === row.id ? null : row.id);
-                setEditing(null);
-              }}
-              onStartEdit={() => setEditing({ id: row.id, content: row.content })}
-              onEditChange={(content) => setEditing({ id: row.id, content })}
-              onCancelEdit={() => setEditing(null)}
-              onSaveEdit={(content) => {
-                void patch(row.id, { content }, t("skills.updated", { name: row.name })).then(
-                  (ok) => {
-                    if (ok) setEditing(null);
-                  },
-                );
-              }}
+              onToggleExpand={() => setExpanded(expanded === row.id ? null : row.id)}
+              onSave={(content) =>
+                patch(row.id, { content }, t("skills.updated", { name: row.name }))
+              }
               onToggleEnabled={() => {
                 void patch(
                   row.id,
@@ -305,7 +331,7 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
       </SheetContent>
 
       {/* 重名确认。后端已经查过了并回了要覆盖哪一条的 id —— 前端只负责问一句。 */}
-      <AlertDialog open={!!conflict} onOpenChange={(next) => { if (!next) setConflict(null); }}>
+      <AlertDialog open={!!conflict} onOpenChange={(next) => { if (!next) shiftConflict(); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -316,14 +342,18 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{t("skills.cancel")}</AlertDialogCancel>
+            <AlertDialogCancel>{t("sidebar.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 if (!conflict) return;
-                const { id, name, content } = conflict;
-                setConflict(null);
+                const { id, name, content, fromComposer } = conflict;
+                // **不在这里出队**: AlertDialogAction 本身就是一个 Close, 点完 Radix
+                // 会走上面那个 onOpenChange(false), 队列在那里出队。两处都出队会把
+                // 下一条重名连带吞掉 —— 那正是这个队列要修的毛病。
                 void patch(id, { content }, t("skills.updated", { name })).then((ok) => {
-                  if (ok) setComposing(null);
+                  // 只有这篇正文本来就来自编辑器时才清它 —— 拖文件撞的名, 清掉的会是
+                  // 用户另外写到一半的草稿。
+                  if (ok && fromComposer) setComposing(null);
                 });
               }}
             >
@@ -345,8 +375,9 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
             <AlertDialogDescription>{t("skills.deleteBody")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>{t("skills.cancel")}</AlertDialogCancel>
+            <AlertDialogCancel disabled={busy}>{t("sidebar.cancel")}</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               disabled={busy}
               onClick={async () => {
                 const target = deleteTarget;
@@ -377,25 +408,26 @@ interface SkillCardProps {
   row: CanvasSkillRow;
   busy: boolean;
   expanded: boolean;
-  /** 非 null = 这一行正在编辑, 值是编辑器里的正文。 */
-  editing: string | null;
   onToggleExpand: () => void;
-  onStartEdit: () => void;
-  onEditChange: (content: string) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: (content: string) => void;
+  /** 存这一行的新正文。resolve 成 true = 存住了, 卡片自己把草稿清掉。 */
+  onSave: (content: string) => Promise<boolean>;
   onToggleEnabled: () => void;
   onCopy: () => void;
   onDelete: () => void;
 }
 
 function SkillCard({
-  row, busy, expanded, editing,
-  onToggleExpand, onStartEdit, onEditChange, onCancelEdit, onSaveEdit,
-  onToggleEnabled, onCopy, onDelete,
+  row, busy, expanded, onToggleExpand, onSave, onToggleEnabled, onCopy, onDelete,
 }: SkillCardProps) {
   const { t } = useTranslation("canvasUi");
   const isBuiltin = row.source === "builtin";
+  /** 编辑中的正文。**归卡片自己**, 不上提到面板 —— 上提的话"这份草稿属于哪一行"就成了
+   *  一条要手工维护的不变量 (父组件得按 id 存、按 id 取、在若干处按 id 清), 而它天然就
+   *  是这一行的局部状态。同目录的 ProviderCard / ModelRow 也是这么放的。
+   *
+   *  卡片挂在 SheetContent (Radix portal, 没 forceMount) 里, 关面板即卸载, 草稿自然丢弃;
+   *  折叠只是不渲染下半部分, 卡片还在, 所以收起来再展开草稿还在。 */
+  const [draft, setDraft] = useState<string | null>(null);
 
   return (
     <div className={cn("rounded-md border border-border", !row.enabled && "opacity-60")}>
@@ -438,39 +470,29 @@ function SkillCard({
 
       {expanded && (
         <div className="border-t border-border p-3">
-          {editing === null ? (
+          {draft === null ? (
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-2 font-mono text-[11px] leading-relaxed">
               {row.content}
             </pre>
           ) : (
-            <textarea
-              value={editing}
-              onChange={(e) => onEditChange(e.target.value)}
+            <SkillEditor
+              value={draft}
+              onChange={setDraft}
               rows={16}
-              className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px] outline-none focus:border-foreground/30"
+              busy={busy}
+              onSave={() => {
+                void onSave(draft).then((ok) => {
+                  if (ok) setDraft(null);
+                });
+              }}
+              onCancel={() => setDraft(null)}
             />
           )}
 
+          {/* 编辑中时整排按钮都不出现 —— SkillEditor 自带 保存 / 取消。 */}
+          {draft === null && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            {editing !== null ? (
-              <>
-                <button
-                  type="button"
-                  disabled={busy || !editing.trim()}
-                  onClick={() => onSaveEdit(editing)}
-                  className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
-                >
-                  {busy ? t("skills.saving") : t("skills.save")}
-                </button>
-                <button
-                  type="button"
-                  onClick={onCancelEdit}
-                  className="rounded-md px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-                >
-                  {t("skills.cancel")}
-                </button>
-              </>
-            ) : isBuiltin ? (
+            {isBuiltin ? (
               // 内置的正文是只读的 —— 出厂那份在镜像里, 改坏了没有回退路径。
               // 想改就复制一份成自己的。
               <button
@@ -485,7 +507,7 @@ function SkillCard({
               <>
                 <button
                   type="button"
-                  onClick={onStartEdit}
+                  onClick={() => setDraft(row.content)}
                   className="rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
                 >
                   {t("skills.edit")}
@@ -502,8 +524,56 @@ function SkillCard({
               </>
             )}
           </div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+/** 「直接写一个」和卡片的编辑态共用的编辑器: mono 文本域 + 保存 / 取消。
+ *
+ *  抽出来是因为这两处一模一样 —— 同一串 class、同一条 `busy || 空白` 禁用规则、同一个
+ *  「保存中…」文案。抄两份的下场同目录已经写过一次 (canvas-toolbar-styles.ts 的注释):
+ *  抄的那份会独自漂移, 变成同一件事的两种长相。 */
+function SkillEditor({
+  value, onChange, onSave, onCancel, busy, rows, placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  busy: boolean;
+  rows: number;
+  placeholder?: string;
+}) {
+  const { t } = useTranslation("canvasUi");
+  return (
+    <>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        placeholder={placeholder}
+        className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px] outline-none focus:border-foreground/30"
+      />
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={busy || !value.trim()}
+          onClick={onSave}
+          className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
+        >
+          {busy ? t("skills.saving") : t("skills.save")}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+        >
+          {t("sidebar.cancel")}
+        </button>
+      </div>
+    </>
   );
 }

@@ -50,9 +50,8 @@ from typing import Any, Iterator
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from deepagents.backends.utils import create_file_data
 from django.conf import settings
-from django.db import DatabaseError
+from django.db import DatabaseError, transaction
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -66,7 +65,7 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
-from studio.models import ImageProvider, Skill
+from studio.models import ImageProvider
 from studio.services.image_channels import require_channel
 
 from .context import CanvasAgentContext
@@ -199,40 +198,39 @@ def get_store() -> BaseStore:
 
 
 def _seed_skills_into_store(store: BaseStore) -> None:
-    """把库里所有 enabled 的 skill 放进共享的 SKILLS_NAMESPACE。
+    """进程启动时把库里的 skill 推进 store。**只是 `skills.resync_skills` 的一层容错
+    包装** —— "store 里该装哪些 skill"这条规则只在那一个函数里定义。
 
     Store 里的 key 是 backend 内部路径, **不带 `/skills/` 前缀** (例如
     `/image-prompt-sop/SKILL.md`)。`CompositeBackend` 把 `/skills/` 前缀路由到这个
     StoreBackend 时会先把前缀剥掉再转发 —— 所以一个叫 `/skills/foo` 的 key 对中间件
-    是不可见的 (它剥完之后查的是 `/foo`)。key 必须是 backend 相对的。
+    是不可见的 (它剥完之后查的是 `/foo`)。key 的格式由 `skills.skill_key` 定义。
 
     **真相在库里, 不在磁盘上。** `services/agent/skills/` 那个目录现在只是出厂种子,
-    由迁移 0017 导进 Skill 表, 此后运行时再不读它 —— 改那些文件不会生效。这么改是因为
+    由迁移 0018 导进 Skill 表, 此后运行时再不读它 —— 改那些文件不会生效。这么改是因为
     前端要能装/卸 skill, 而磁盘在容器里, 用户碰不到也不该碰。
 
-    进程级只跑一次 (跟 `_store` 一起 lazy)。运行时的装/卸由 `skills.sync_skill` /
-    `skills.unsync_skill` 直接改 store, 不经过这里 —— deepagents 的 SkillsMiddleware
-    每一轮 `before_agent` 都重新列一遍 store (Canvex 没有 checkpointer, state 里
-    永远没有 skills_metadata), 所以改完下一轮就生效, 不需要重启也不需要作废 graph。
-
-    幂等 —— `store.put` 按 key 覆盖, 重跑安全。
+    进程级只跑一次 (跟 `_store` 一起 lazy)。运行时的装/卸由 SkillViewSet 直接调
+    `resync_skills`, 不经过这里 —— deepagents 的 SkillsMiddleware 每一轮
+    `before_agent` 都重新列一遍 store (Canvex 没有 checkpointer, state 里永远没有
+    skills_metadata), 所以改完下一轮就生效, 不需要重启也不需要作废 graph。
     """
+    # 函数内 import: skills.py 在模块级 import 了本模块 (要 SKILLS_NAMESPACE /
+    # _skills_namespace / get_store), 反向在模块级 import 就成环了。builder 里
+    # PostgresStore 也是同一个写法。
+    from .skills import resync_skills
     try:
-        rows = list(Skill.objects.filter(enabled=True).values_list("name", "content"))
+        # 套一层 atomic 是为了拿 savepoint, 不是为了原子性: 这个函数会在**别人的事务里**
+        # 被调到 (SkillViewSet 的三个写路径都是 @transaction.atomic, 里面第一次 get_store()
+        # 就会走到这儿)。在事务里吞掉一个 DatabaseError 而不回滚到 savepoint, 连接就废了,
+        # 之后任何一条查询都会炸 TransactionManagementError —— 本来想优雅降级, 结果换来
+        # 一个更难查的 500。有 savepoint 的话回滚它就行, 外层事务完好。
+        with transaction.atomic():
+            resync_skills(store)
     except DatabaseError:
         # 表还没建 (全新容器里 migrate 之前有人碰了 agent) —— 退化成"一个 skill 都没有"
         # 而不是让整个进程起不来。migrate 跑完重启就有了。
         logger.warning("canvas agent: skills table unavailable, none loaded", exc_info=True)
-        return
-    for name, content in rows:
-        store.put(SKILLS_NAMESPACE, _skill_key(name), create_file_data(content))
-    logger.info("canvas agent: skills seeded from db: loaded=%d", len(rows))
-
-
-def _skill_key(name: str) -> str:
-    """某个 skill 在 store 里的 key。装 / 卸 / seed 三处必须用同一个式子 —— 拼错的
-    表现是"装上了但 agent 看不见", 没有任何报错。"""
-    return f"/{name}/SKILL.md"
 
 
 def _build_postgres_store() -> BaseStore:

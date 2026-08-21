@@ -50,8 +50,8 @@ class SkillMdError(ValueError):
     """SKILL.md 不合格。message 直接给用户看, 所以必须说清楚哪一行哪个字段。"""
 
 
-def normalize(raw: str) -> str:
-    """去掉 BOM、统一换行。存库前必须过这一道。
+def _normalize(raw: str) -> str:
+    """去掉 BOM、统一换行。`parse_skill_md` 自己会调, 外面不用管。
 
     BOM: Windows 上另存的 .md 常带 `\\ufeff` 开头, 于是 `^---` 匹配不上, 用户收到的
     是"没找到 frontmatter" —— 而他明明看见文件第一行就是 `---`。这是上传路径上最容易
@@ -63,12 +63,17 @@ def normalize(raw: str) -> str:
     return raw.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def parse_skill_md(content: str) -> tuple[str, str]:
-    """校验一篇 SKILL.md, 返回 `(name, description)`。
+def parse_skill_md(raw: str) -> tuple[str, str, str]:
+    """校验一篇 SKILL.md, 返回 `(要存的正文, name, description)`。
 
-    入参应当已经过 `normalize()`。不合格一律抛 `SkillMdError`, message 是给用户看的
-    中文说明。
+    **一个入口, 归一化在里面做。** 以前这是 `normalize()` + `parse_skill_md()` 两步,
+    契约("入参必须先 normalize 过")只写在 docstring 里 —— 漏掉第一步的人会撞上这个模块
+    专门为之存在的那个坑: 带 BOM 的文件被报成"没有 frontmatter", 而他明明看见第一行就是
+    `---`。类型签名管不住的前提条件, 迟早有人不满足。
+
+    不合格一律抛 `SkillMdError`, message 是给用户看的中文说明。
     """
+    content = _normalize(raw)
     if not content.strip():
         raise SkillMdError("文件是空的。")
 
@@ -127,4 +132,4 @@ def parse_skill_md(content: str) -> tuple[str, str]:
             "description 之外的字段 (allowed-tools / metadata / license) 写法。"
         )
 
-    return name, description
+    return content, name, description

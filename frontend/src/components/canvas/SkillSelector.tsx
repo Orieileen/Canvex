@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
+  PopoverClose,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -129,13 +130,18 @@ export function SkillSelector({
           {t("skills.hint")}
         </div>
         {onManage && (
-          <button
-            type="button"
-            onClick={onManage}
-            className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            {t("skills.manage")}
-          </button>
+          // PopoverClose 而不是自己拿 state 受控: 点它会打开一个 modal Sheet, 而这次
+          // 点击落在 popover **内部**, Radix 的"点外面才关"不会触发 —— 不显式关掉的话
+          // popover 会一直挂在 Sheet 底下, 关掉 Sheet 之后还赫然开着。
+          <PopoverClose asChild>
+            <button
+              type="button"
+              onClick={onManage}
+              className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              {t("skills.manage")}
+            </button>
+          </PopoverClose>
         )}
       </PopoverContent>
     </Popover>

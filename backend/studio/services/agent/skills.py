@@ -8,11 +8,17 @@
 - **`GET /skill-library/`** (SkillViewSet, 读 `Skill` 表) —— "库里装了什么?"
   含停用的行和 SKILL.md 全文, 管理面板用它。
 
-两者理论上会不一致的唯一情形是**多进程 + InMemoryStore**: 装 skill 的那个请求只改到
-自己进程的 store, 别的 web 进程要等重启才 seed 到。默认部署是单进程 (runserver),
-真要多进程就得把 `CANVAS_AGENT_STORE_BACKEND` 换成 postgres —— 那时 store 本身共享,
-问题不存在。让 `/skills/` 读 store 而不是读库, 正是为了在那种情况下**说实话**: 报的
-是这个进程的 agent 真实看得见的东西, 而不是库里应该有的东西。
+**别把 `/skills/` 改成读库。** 它读 store 是唯一能暴露**同步代码自己出错**的地方 ——
+`skill_key` 拼错了、`resync_skills` 漏删了一个 key, 库那边永远是对的, 只有去问 store
+才看得出来。而这两个面板就挨着(popover 和技能库), 对不上用户一眼能看见。改成读库之后
+这两个端点就成了同一条查询的两种拼法, 同步坏了没有任何人会知道。
+
+(这里以前写的理由是"多进程时说实话"。那条站不住: 多 worker 时 GET 落在哪个进程是随机
+的, 报的是"负载均衡碰巧选中的那个 worker", 也预测不了下一条聊天 POST 会落到谁身上。
+真正的理由是上面那条。)
+
+**这里也不能有进程级缓存。** 验证的前提是每次都去问 store; 缓存一加, 读到的就既不是
+store 也不是库, 而是"这个进程上次碰巧读到的东西"。见 `list_skills` 的注释。
 
 ## Design heuristic: subtraction, not addition
 
@@ -44,11 +50,15 @@ to be a workflow step instead of a skill?" with yes.
 """
 import logging
 
+from langgraph.store.base import BaseStore
+
 from deepagents.backends import StoreBackend
 from deepagents.backends.utils import create_file_data
 from deepagents.middleware.skills import _list_skills
 
-from .builder import SKILLS_NAMESPACE, _skill_key, _skills_namespace, get_store
+from studio.models import Skill
+
+from .builder import SKILLS_NAMESPACE, _skills_namespace, get_store
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +68,31 @@ logger = logging.getLogger(__name__)
 # (see builder._seed_skills_into_store docstring).
 _PUBLIC_PREFIX = "/skills"
 
-# 进程内缓存。store 只由本模块的 sync/unsync 和一次性的 seed 改动, 两个写入口都会
-# 调 `_invalidate()` —— 所以缓存不会比 store 旧。
-_cached: list[dict] | None = None
-
 
 def list_skills() -> list[dict]:
     """Return one dict per loaded skill: {name, description, path}.
 
     Delegates parsing to deepagents' own `_list_skills` so any SKILL.md the
     agent accepts is also visible to the UI, and vice versa.
+
+    **每次都重新读 store, 不缓存。** 以前这里有个进程级 cache, 前提是"skill 是进程内
+    常量"; 现在 skill 随时能装/卸, 那个前提没了。一个靠"每个写入口都记得调 invalidate"
+    维系的缓存, 在多进程下必然错: 进程 A 装的 skill 只清得掉 A 自己那份, B 手里的会一直
+    旧到重启 —— 而把 store 换成 postgres 做多进程部署恰恰是推荐路径, store 共享救不了
+    这个缓存。
+
+    代价实测过: 4 篇 skill / 23 KB 时一次 1.3 ms, 24 篇 / 184 KB 时 4 ms (九成花在
+    frontmatter 的 yaml.safe_load 上, 跟 store 后端无关)。而这个函数只在开页面和改完
+    skill 之后调 —— SkillSelector 拿的是 props, 开 popover 不发请求。省这几毫秒不值得
+    换一类查不出来的 bug。
     """
-    global _cached
-    if _cached is not None:
-        return _cached
     # Explicit `store=` because this runs outside graph execution (HTTP view)
     # — StoreBackend's default `get_store()` only works inside langgraph.
     backend = StoreBackend(store=get_store(), namespace=_skills_namespace)
     # source_path="/" because store-internal keys have no /skills/ prefix
     # (CompositeBackend strips it before forwarding; see builder docstring).
     metas = _list_skills(backend, "/")
-    _cached = sorted(
+    return sorted(
         (
             {
                 "name": m["name"],
@@ -89,31 +103,60 @@ def list_skills() -> list[dict]:
         ),
         key=lambda s: s["name"],
     )
-    return _cached
 
 
-def sync_skill(name: str, content: str) -> None:
-    """把一个 skill 放进 store —— 下一轮聊天 agent 就看得见, 不用重启。
+def skill_key(name: str) -> str:
+    """某个 skill 在 store 里的 key。**只有这一个地方定义它** —— 拼错的表现是"装上了但
+    agent 看不见", 没有任何报错。"""
+    return f"/{name}/SKILL.md"
 
-    为什么下一轮就生效: SkillsMiddleware 的 `before_agent` 只在 state 里已有
-    `skills_metadata` 时才跳过重扫, 而 Canvex 没有 checkpointer、每轮传的 state 只有
-    messages —— 于是它**每一轮都重新列一遍 store**。编译好的 graph 不缓存 skill 列表,
-    所以这里不需要动 `_agent_for_channel` 的 lru_cache。
+
+# `BaseStore.search` 的 limit 默认是 **10**, 不传就静默截断。分页翻完。
+_STORE_PAGE = 100
+
+
+def _store_keys(store: BaseStore) -> set[str]:
+    """store 里当前有哪些 key。"""
+    keys: set[str] = set()
+    offset = 0
+    while True:
+        page = store.search(SKILLS_NAMESPACE, limit=_STORE_PAGE, offset=offset)
+        keys.update(item.key for item in page)
+        if len(page) < _STORE_PAGE:
+            return keys
+        offset += _STORE_PAGE
+
+
+def resync_skills(store: BaseStore | None = None) -> None:
+    """把 store 里的 skill 集合**整个从库里重新推导一遍**: enabled 的行全 put 进去,
+    不在这个集合里的 key 全删掉。
+
+    为什么是重新推导而不是打增量补丁: "store 里装着哪些 skill"这条规则以前写了两遍 ——
+    一遍是进程启动时的 seed, 一遍是 SkillViewSet.perform_update 里那段
+    「改名了就删旧 key / 停用了也删 / 启用着就写」的三分支。两遍就会有分叉, 而分叉的
+    表现是 agent 看见一个面板上不存在的 skill, 用户删都删不掉。
+
+    重新推导还顺带解决了三件事:
+    - **自愈**: 任何来源造成的漂移(半失败的写、别的 worker 动过的 postgres store、
+      迁移 0018 直接写库没同步)都会在下一次写操作时被抹平。
+    - **改名不再需要顺序技巧**: 旧 key 不在 wanted 里, 自然会被删, 不用先记住旧名字。
+    - seed 和 sync 变成同一个函数, `_seed_skills_into_store` 只剩下一层容错包装。
+
+    N 是个位数, 一次全量推导是一条 values_list 加一次 namespace 列举 —— 比维护一份
+    正确的增量便宜得多。
+
+    **不吞异常**: SkillViewSet 的三个写路径都是 `@transaction.atomic`, 这里抛出去正好
+    让库写一起回滚, 结果是"什么都没发生"。要优雅降级的只有进程启动那一次, 那一层的
+    try/except 在 `builder.get_store` 里。
     """
-    get_store().put(SKILLS_NAMESPACE, _skill_key(name), create_file_data(content))
-    _invalidate()
-    logger.info("canvas agent: skill synced to store: name=%s", name)
-
-
-def unsync_skill(name: str) -> None:
-    """把一个 skill 从 store 里拿掉 (停用 / 删除 / 改名后的旧名字)。"""
-    get_store().delete(SKILLS_NAMESPACE, _skill_key(name))
-    _invalidate()
-    logger.info("canvas agent: skill removed from store: name=%s", name)
-
-
-def _invalidate() -> None:
-    """丢掉 `list_skills` 的缓存。**每一个改 store 的地方都必须调**, 漏掉的表现是
-    面板里装上了、popover 里不出现, 而且刷新页面也不会变 (缓存是进程级的)。"""
-    global _cached
-    _cached = None
+    store = store or get_store()
+    rows = dict(Skill.objects.filter(enabled=True).values_list("name", "content"))
+    wanted = {skill_key(name) for name in rows}
+    for name, content in rows.items():
+        store.put(SKILLS_NAMESPACE, skill_key(name), create_file_data(content))
+    stale = _store_keys(store) - wanted
+    for key in stale:
+        store.delete(SKILLS_NAMESPACE, key)
+    logger.info(
+        "canvas agent: skills resynced: enabled=%d, removed=%d", len(rows), len(stale),
+    )

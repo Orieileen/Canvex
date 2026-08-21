@@ -15,7 +15,7 @@ from .models import (
     Skill,
     VideoJob,
 )
-from .services.agent.skill_md import SkillMdError, normalize, parse_skill_md
+from .services.agent.skill_md import SkillMdError, parse_skill_md
 from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
 
 logger = logging.getLogger(__name__)
@@ -598,9 +598,8 @@ class SkillSerializer(serializers.ModelSerializer):
         raw = data.get("content")
         if raw is None:
             return data
-        content = normalize(raw)
         try:
-            name, description = parse_skill_md(content)
+            content, name, description = parse_skill_md(raw)
         except SkillMdError as exc:
             raise serializers.ValidationError({"content": str(exc)}) from exc
 

@@ -325,7 +325,8 @@ export const canvasService = {
   postChatStream,
 
   // ── Skills ────────────────────────────────────────────────────────────────
-  // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜
+  // agent 当前**看得见**哪些 skill (后端每次重读 store, 没有缓存 —— 为什么不能有,
+  // 见 backend/studio/services/agent/skills.py)。跟下面的 skillLibrary 问的不是同一件事。
   listSkills: () => request.get<CanvasSkill[]>(SKILLS),
   // 装好的 SKILL.md 的增删改查。跟 listSkills 问的是两件事, 见 CanvasSkillRow 的注释。
   skillLibrary: createResource<CanvasSkillRow, CanvasSkillWrite>(SKILL_LIBRARY),

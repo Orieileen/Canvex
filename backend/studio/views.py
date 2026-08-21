@@ -59,7 +59,7 @@ from .services.agent.builder import (
     StreamEvent,
     stream_canvas_agent,
 )
-from .services.agent.skills import list_skills, sync_skill, unsync_skill
+from .services.agent.skills import list_skills, resync_skills
 from .services.agent.tools.common import enqueue_on_commit
 from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
@@ -229,11 +229,13 @@ class SceneAttachmentUploadView(APIView):
 class SkillListView(APIView):
     """GET /skills/  列出当前 agent 加载的所有 skill (name + description + path).
 
-    供前端 ChatOverlay 渲染 skill 选择 popover 用。Skills 是进程级缓存
-    (跟 `get_store()` 一起 lazy seed), 所以这里不涉及 DB / 网络;
-    返回 list 是 SkillsMiddleware 同源, 不会跟 agent 看到的飘移。
+    供前端 ChatOverlay 渲染 skill 选择 popover 用。**每次都重新读 store**, 没有缓存
+    (为什么不能有, 见 services/agent/skills.py) —— 读一次 store 是几毫秒的量级, 而这个
+    端点只在开页面和改完 skill 之后调。返回的 list 跟 SkillsMiddleware 同源, 不会跟
+    agent 看到的飘移。
 
-    没分页 — skill 数量是个位数 (canvas 当前 1 个), 前端一次拉完。
+    没分页: 这里只回 name / description / path, 一条一两百字节, 而 skill 是人一篇一篇
+    装的, 不会到需要翻页的量级。
     """
     permission_classes = [permissions.AllowAny]
 
@@ -263,27 +265,19 @@ class SkillViewSet(viewsets.ModelViewSet):
     # agent 却看不见, 而且刷新页面也不会变 —— 用户完全没有线索。让它一起失败, 用户重试
     # 就行。store 的 put/delete 本身不参与事务, 但它排在库写之后, 它抛异常 → 库回滚 →
     # 结果是"什么都没发生", 这正是我们要的。
+    #
+    # 三个都是"改完库, 再把 store 整个推导一遍"。**刻意不在这里算增量** (改名了删哪个
+    # key、停用了删不删): 那等于把"store 里该有什么"这条规则在 seed 之外再写一遍, 而
+    # 两遍必然分叉。见 skills.resync_skills。
     @transaction.atomic
     def perform_create(self, serializer):
-        skill = serializer.save()
-        if skill.enabled:
-            sync_skill(skill.name, skill.content)
+        serializer.save()
+        resync_skills()
 
     @transaction.atomic
     def perform_update(self, serializer):
-        # 改之前的名字和启用状态, save() 之后就拿不到了。改 frontmatter 里的 name 等于
-        # 换了 store 的 key —— 不删旧的那条, agent 会同时看见新旧两个版本, 而库里只有
-        # 一条, 面板上完全看不出来。
-        was_name = serializer.instance.name
-        was_enabled = serializer.instance.enabled
-        skill = serializer.save()
-        # 先删旧 key 再写新的。反过来 (先写新的) 万一第二步炸了, store 里会同时留着新旧
-        # 两条, 而库已回滚到旧名字 —— 多出来的那条在面板上根本不存在, 用户删不掉。
-        # 这个顺序下同样的失败只会让这个 skill 暂时从 agent 视野里消失, 重启就回来。
-        if was_enabled and (was_name != skill.name or not skill.enabled):
-            unsync_skill(was_name)
-        if skill.enabled:
-            sync_skill(skill.name, skill.content)
+        serializer.save()
+        resync_skills()
 
     @transaction.atomic
     def perform_destroy(self, instance):
@@ -296,11 +290,8 @@ class SkillViewSet(viewsets.ModelViewSet):
                     "重建容器又会回来。停用它就行, 效果一样。"
                 ),
             })
-        was_enabled = instance.enabled
-        name = instance.name
         instance.delete()
-        if was_enabled:
-            unsync_skill(name)
+        resync_skills()
 
 
 class SceneChatView(APIView):
