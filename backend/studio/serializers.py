@@ -12,8 +12,10 @@ from .models import (
     ImageModel,
     ImageProvider,
     Scene,
+    Skill,
     VideoJob,
 )
+from .services.agent.skill_md import SkillMdError, normalize, parse_skill_md
 from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
 
 logger = logging.getLogger(__name__)
@@ -560,3 +562,80 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ImageModel
         fields = ("id", "label", "provider_label", "kind", "sort_order")
+
+
+class SkillSerializer(serializers.ModelSerializer):
+    """装好的 SKILL.md 的增删改查。
+
+    写入面只有两个字段: `content` (SKILL.md 全文) 和 `enabled`。**`name` /
+    `description` 都是只读的** —— 它们从 content 的 frontmatter 里解析出来, 让前端
+    也能传一份意味着两份可以对不上, 而对不上的那份会成为 store 的 key。想改名就改
+    frontmatter 里的 `name`, 这是 skill 唯一的身份来源。
+
+    store 同步不在这里做, 在 SkillViewSet 里 —— 序列化器只管"这篇 SKILL.md 合不合
+    格、库里怎么存", 是否推给 agent 是视图那一层的事 (删除也要推, 而删除根本不经过
+    序列化器)。
+    """
+
+    class Meta:
+        model = Skill
+        fields = (
+            "id", "name", "description", "content", "source", "enabled",
+            "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "name", "description", "source", "created_at", "updated_at")
+
+    def validate(self, data):
+        """解析 + 准入 + 把派生列写回。
+
+        整篇只解析一次, 而且刻意**不用** `validate_content` —— 那样得解析两遍 (字段级
+        一遍拿报错, `validate` 里再一遍拿 name), 而第二遍能不能成立完全依赖"字段级先跑
+        过了"这个隐含前提。哪天字段被设成 `required=False` 或者调用顺序变了, 第二遍就
+        会抛 SkillMdError 穿过 DRF 变成 500。一次解析没有这个雷。
+
+        PATCH 只改 enabled 时 content 不在 data 里, 那种情况没有什么要查的。
+        """
+        raw = data.get("content")
+        if raw is None:
+            return data
+        content = normalize(raw)
+        try:
+            name, description = parse_skill_md(content)
+        except SkillMdError as exc:
+            raise serializers.ValidationError({"content": str(exc)}) from exc
+
+        if self.instance is not None and self.instance.source == Skill.Source.BUILTIN:
+            # 内置 skill 的正文只读, 只能停用/启用。允许改的话没有回退路径 —— 出厂那份
+            # 在镜像里的 `services/agent/skills/` 下, docker 部署的用户根本够不着, 改坏
+            # 了就永久坏了。想要自己的版本就复制一份新装 (面板上有「复制为我的」)。
+            raise serializers.ValidationError({
+                "content": (
+                    f"`{self.instance.name}` 是内置 skill, 正文改不了 —— 改坏了没法还原。"
+                    "用「复制为我的」拷一份出来改, 再把内置这条停用。"
+                ),
+            })
+
+        conflict = Skill.objects.filter(name=name)
+        if self.instance is not None:
+            conflict = conflict.exclude(pk=self.instance.pk)
+        existing = conflict.first()
+        if existing is not None:
+            if existing.source == Skill.Source.BUILTIN:
+                raise serializers.ValidationError({
+                    "content": (
+                        f"`{name}` 是内置 skill 的名字, 占用了。给你这篇换个 `name` 吧。"
+                    ),
+                })
+            # 带上 id: 前端据此把这个 400 变成一句"这会覆盖已装的 X, 确定吗", 确定之后
+            # 直接 PATCH 那一条。**名字必须由后端解析出来** —— 前端自己从 frontmatter 里
+            # 抠 name 就是把规则手抄了一份, 抄的那份迟早跟这边分叉。
+            raise serializers.ValidationError({
+                "content": f"已经装了一个叫 `{name}` 的 skill。",
+                "conflict_id": str(existing.pk),
+                "conflict_name": name,
+            })
+
+        data["content"] = content
+        data["name"] = name
+        data["description"] = description
+        return data

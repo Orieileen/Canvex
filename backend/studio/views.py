@@ -6,6 +6,7 @@ from dataclasses import replace
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db import transaction
 from django.db.models import Count, Max
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -26,6 +27,7 @@ from .models import (
     ImageEditJob,
     ImageEditResult,
     Scene,
+    Skill,
     VideoJob,
 )
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
@@ -46,6 +48,7 @@ from .serializers import (
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
+    SkillSerializer,
     SplitJobCreateSerializer,
     VideoJobCreateSerializer,
     VideoJobSerializer,
@@ -56,7 +59,7 @@ from .services.agent.builder import (
     StreamEvent,
     stream_canvas_agent,
 )
-from .services.agent.skills import list_skills
+from .services.agent.skills import list_skills, sync_skill, unsync_skill
 from .services.agent.tools.common import enqueue_on_commit
 from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
@@ -236,6 +239,68 @@ class SkillListView(APIView):
 
     def get(self, request):
         return Response(list_skills())
+
+
+class SkillViewSet(viewsets.ModelViewSet):
+    """`/skill-library/` —— 装好的 SKILL.md 的增删改查 + 往 store 里推。
+
+    跟 `SkillListView` (`/skills/`) 的分工见 `services.agent.skills` 的模块文档:
+    那个回答"agent 现在看得见什么", 这个回答"库里装了什么"(含停用的行和全文)。
+
+    **store 同步是这一层的事, 不是序列化器的事。** 删除根本不经过序列化器, 而删除
+    恰恰必须推 —— 放在序列化器里就会漏掉最需要它的那条路径。
+
+    没有鉴权门: 本地单机开源项目, 只有屏幕前的人能访问。但这里比别处多一句 ——
+    装一篇 SKILL.md 等于给一个握着你 API key、能调 generate_image / generate_video
+    的 agent 塞一段指令。自己写的 SOP 无所谓; 从别处拷来的正文, 装之前自己看一遍。
+    """
+
+    queryset = Skill.objects.all()
+    serializer_class = SkillSerializer
+    permission_classes = [permissions.AllowAny]
+
+    # 三个写路径都套 atomic: 库写成了而 store 没写成 (或反过来) 的话, 面板上显示装好了、
+    # agent 却看不见, 而且刷新页面也不会变 —— 用户完全没有线索。让它一起失败, 用户重试
+    # 就行。store 的 put/delete 本身不参与事务, 但它排在库写之后, 它抛异常 → 库回滚 →
+    # 结果是"什么都没发生", 这正是我们要的。
+    @transaction.atomic
+    def perform_create(self, serializer):
+        skill = serializer.save()
+        if skill.enabled:
+            sync_skill(skill.name, skill.content)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        # 改之前的名字和启用状态, save() 之后就拿不到了。改 frontmatter 里的 name 等于
+        # 换了 store 的 key —— 不删旧的那条, agent 会同时看见新旧两个版本, 而库里只有
+        # 一条, 面板上完全看不出来。
+        was_name = serializer.instance.name
+        was_enabled = serializer.instance.enabled
+        skill = serializer.save()
+        # 先删旧 key 再写新的。反过来 (先写新的) 万一第二步炸了, store 里会同时留着新旧
+        # 两条, 而库已回滚到旧名字 —— 多出来的那条在面板上根本不存在, 用户删不掉。
+        # 这个顺序下同样的失败只会让这个 skill 暂时从 agent 视野里消失, 重启就回来。
+        if was_enabled and (was_name != skill.name or not skill.enabled):
+            unsync_skill(was_name)
+        if skill.enabled:
+            sync_skill(skill.name, skill.content)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        if instance.source == Skill.Source.BUILTIN:
+            # 删了磁盘上还在, 重建容器 migrate 又长回来 —— 那种"删不掉"最难解释。
+            # 内置的只提供停用。
+            raise ValidationError({
+                "detail": (
+                    f"`{instance.name}` 是内置 skill, 删不掉 —— 它随代码库发, "
+                    "重建容器又会回来。停用它就行, 效果一样。"
+                ),
+            })
+        was_enabled = instance.enabled
+        name = instance.name
+        instance.delete()
+        if was_enabled:
+            unsync_skill(name)
 
 
 class SceneChatView(APIView):

@@ -24,7 +24,7 @@ Language: [中文](./README.zh-CN.md)
   - **Mockup** — wrap a design image onto another image using depth, with Depth / Mask / Opacity controls.
   - **Merge / Adjust / Download / Send to chat** — flatten a selection locally, a Lightroom-style color panel, export the canvas, or attach an image as a reference for the LLM agent.
 - **Box & arrow annotations** — fine-grained image editing: draw a box, arrow, or text label over an image to point the AI at a region.
-- **Skills** — built-in playbooks the agent follows (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). Toggle any skill off per message from the chat box. You can add or remove skills yourself.
+- **Skills** — playbooks the agent loads on its own when they match your request (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). **Skills** in the sidebar installs your own: drop in a `SKILL.md` (or write one in the browser), and the agent picks it up on the next message — no restart. Disable or delete them there too; from the chat box you can also skip one for a single message.
 - **Scenes** — multiple independent canvases in the sidebar: create, rename, delete, **pin to top**, quick switching; edits autosave.
 - **Media library** — saves every image / video you generate, grouped per canvas; click a thumbnail to drop it back onto the current board.
 - **Resolution tiers** — 1K / 2K / 4K for image generation and editing (subject to provider and model support).
@@ -134,7 +134,8 @@ All routes are under `/api/v1/canvas/`.
 | Active jobs (resume polling) | `GET /scenes/{id}/active-jobs/` |
 | Send-to-chat upload | `POST /scenes/{id}/upload-attachment/` |
 | Media library | `GET /media-library/folders/`, `GET /media-library/folders/{scene_id}/items/` |
-| Skills | `GET /skills/` |
+| Skills the agent can see | `GET /skills/` |
+| Install / uninstall skills | `GET` / `POST /skill-library/`, `PATCH` / `DELETE /skill-library/{id}/` |
 
 The chat endpoint streams **NDJSON** (one JSON object per line; event types: `user_created`, `tool_call`, `tool_result`, `assistant_final`, `assistant`, `error`, `done`), not SSE.
 
@@ -159,7 +160,8 @@ backend/
             ├── builder.py        # create_deep_agent (model, tools, skills, memory, store)
             ├── skills.py  context.py
             ├── tools/            # common.py, image.py (generate_image), video.py (generate_video)
-            └── skills/           # image-prompt-sop/SKILL.md, amazon-listing-pack-sop/SKILL.md
+            └── skills/           # factory seed only — migration 0018 imports these into the DB,
+                                  #   which is the runtime source of truth (editing these files does nothing)
 ```
 
 ### Async job pipeline

@@ -16,6 +16,7 @@ import { ChatFrameOverlay } from "@/components/canvas/ChatFrameOverlay";
 import { CanvasSidebar, CANVAS_OPEN_MEDIA_LIBRARY_EVENT } from "@/components/canvas/CanvasSidebar";
 import { MediaLibrary } from "@/components/canvas/MediaLibrary";
 import { ImageProviderSettings } from "@/components/canvas/ImageProviderSettings";
+import { SkillLibrary } from "@/components/canvas/SkillLibrary";
 import { Button } from "@/components/ui/button";
 import { cn, clearIfNonEmpty } from "@/lib/utils";
 import { canvasService, waitForCanvasJob } from "@/services/canvas.service";
@@ -39,6 +40,7 @@ import { useSelectionPreview } from "@/hooks/use-selection-preview";
 import { useMergeLayer } from "@/hooks/use-merge-layer";
 import { useSplit } from "@/hooks/use-split";
 import { useChannelPickers, type ChannelPickers } from "@/hooks/use-channel-pickers";
+import { useSkills, type SkillList } from "@/hooks/use-skills";
 import { useVideoEdit } from "@/hooks/use-video-edit";
 import { getMockupBinding, worldPointToBaseUv } from "@/lib/canvas-mockup";
 import { DEFAULT_ADJUST_BINDING, getAdjustBinding } from "@/lib/canvas-adjust";
@@ -56,7 +58,6 @@ import type {
   CanvasMediaVideo,
   CanvasScene,
   CanvasSceneData,
-  CanvasSkill,
   ChatAttachment,
 } from "@/types/canvex";
 
@@ -229,9 +230,13 @@ export default function CanvexWorkspacePage() {
   // 时(EmptyState)也得能打开, 否则新用户开箱就配不了 key。
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
   const openImageSettings = useCallback(() => setImageSettingsOpen(true), []);
+  const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
+  const openSkillLibrary = useCallback(() => setSkillLibraryOpen(true), []);
   // 通道选择器的状态同样挂这一层 —— 它跟画布无关, 挂进 CanvasArea 会随每次换画布
   // 重新 GET 一遍并闪回"未配置"。
   const channels = useChannelPickers(openImageSettings);
+  // skill 列表同理: 它是全局的, 跟当前打开哪张画布没关系。
+  const skills = useSkills();
   return (
     <div className="flex h-screen min-h-0">
       <CanvasSidebar
@@ -240,12 +245,19 @@ export default function CanvexWorkspacePage() {
         onSceneCreated={setActiveSceneId}
         onSceneDeleted={() => setActiveSceneId(null)}
         onOpenImageSettings={openImageSettings}
+        onOpenSkillLibrary={openSkillLibrary}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeSceneId ? (
           // key 强制 scene 切换时整棵 CanvasArea 重挂载, 干净重置所有 ref /
           // Excalidraw 实例 —— 比手动收口每个 ref 可靠。
-          <CanvasArea key={activeSceneId} sceneId={activeSceneId} channels={channels} />
+          <CanvasArea
+            key={activeSceneId}
+            sceneId={activeSceneId}
+            channels={channels}
+            skills={skills}
+            onManageSkills={openSkillLibrary}
+          />
         ) : (
           <EmptyState />
         )}
@@ -255,6 +267,11 @@ export default function CanvexWorkspacePage() {
         onOpenChange={setImageSettingsOpen}
         onChanged={channels.reload}
       />
+      <SkillLibrary
+        open={skillLibraryOpen}
+        onOpenChange={setSkillLibraryOpen}
+        onChanged={skills.reload}
+      />
     </div>
   );
 }
@@ -262,9 +279,12 @@ export default function CanvexWorkspacePage() {
 interface CanvasAreaProps {
   sceneId: string;
   channels: ChannelPickers;
+  /** agent 视角的 skill 列表 + 重拉。跟 channels 一样由页面那一层持有。 */
+  skills: SkillList;
+  onManageSkills: () => void;
 }
 
-function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
+function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaProps) {
   const { t } = useTranslation("canvasUi");
   // Always-current `t` for use inside effects that must NOT re-run on language
   // change (react-i18next returns a new `t` ref each `languageChanged`). Without
@@ -339,11 +359,6 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
   // Skills loaded this turn — sniffed from read_file tool_calls via
   // skillSlugFromToolCall, surfaced as pills next to the Thinking indicator.
   const [skillBadges, setSkillBadges] = useState<string[]>([]);
-  // 全局 skill list — agent 当前加载了哪些 skill, 让 ChatOverlay 渲染选择 popover.
-  // 拉一次就 cache (skills 是后端进程级常量, 改 SKILL.md 要重启 web service);
-  // 失败时静默吞错误 + skills 留空 → SkillSelector 不渲染, UI 等价于关闭该特性,
-  // 不阻塞 chat 主流程
-  const [skills, setSkills] = useState<CanvasSkill[]>([]);
   // Per-message canvas image attachments queued for the next chat turn.
   // Filled by ImageEditBar's "Send to chat" button; rendered as chips above
   // the textarea; cleared after every successful send. Per-message ephemeral
@@ -391,26 +406,6 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
   // Container ref for pointer → world coord conversion (need the canvas
   // pane's bounding rect to subtract page offset).
   const canvasPaneRef = useRef<HTMLDivElement>(null);
-
-  // Load skill registry once. Skills are process-level constants on the
-  // backend; refetching per scene would be wasted bandwidth. Failure path:
-  // log + empty list → SkillSelector renders nothing (feature gracefully
-  // hides instead of breaking chat).
-  useEffect(() => {
-    let cancelled = false;
-    canvasService
-      .listSkills()
-      .then((resp) => {
-        if (!cancelled) setSkills(resp.data);
-      })
-      .catch((err) => {
-        // 静默 — 拉 skill 失败不阻塞 chat 主流程, 只是没法用 SkillSelector
-        console.warn("[canvas] failed to load skill list", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
@@ -1181,7 +1176,8 @@ function CanvasArea({ sceneId, channels }: CanvasAreaProps) {
         status={chatStatus}
         toolBadge={toolBadge}
         skillBadges={skillBadges}
-        skills={skills}
+        skills={skills.skills}
+        onManageSkills={onManageSkills}
         attachments={attachments}
         onRemoveAttachment={handleRemoveAttachment}
       />

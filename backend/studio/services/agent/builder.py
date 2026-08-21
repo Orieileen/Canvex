@@ -24,9 +24,11 @@ Design notes:
   ("canvas_skills",) namespace because SKILL.md files are read-only SOPs
   shared across all scenes. `/memories/` stays scoped to (canvas, scene_id)
   so scene-specific notes never leak.
-- **Skills are seeded once per process** from disk into the store at agent
-  build time. Editing a SKILL.md requires a process restart — that matches
-  how skill discovery works (frontmatter scanned on agent init).
+- **Skills live in the DB** (`studio.models.Skill`), seeded into the store once
+  per process. Installing / uninstalling at runtime writes the store directly
+  (`services.agent.skills`), no restart and no graph invalidation: deepagents'
+  SkillsMiddleware re-lists the store in `before_agent` on **every** run, and
+  Canvex has no checkpointer, so `skills_metadata` is never carried in state.
 
 解耦自 meired apps/canvas/services/agent/builder.py:
 - 多租户 org_id / user_id 已删 —— /memories/ namespace 只按 scene 切;
@@ -44,13 +46,13 @@ import functools
 import logging
 import queue
 import threading
-from pathlib import Path
 from typing import Any, Iterator
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.utils import create_file_data
 from django.conf import settings
+from django.db import DatabaseError
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -64,16 +66,13 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
-from studio.models import ImageProvider
+from studio.models import ImageProvider, Skill
 from studio.services.image_channels import require_channel
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
 from .tools.video import generate_video
 
-# All SKILL.md files live under this dir, one subdir per skill. Layout matches
-# the agentskills.io spec: `<root>/<skill-name>/SKILL.md` (+ optional assets).
-SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 # Fixed store namespace for skill files. Skills are read-only SOPs shared
 # across all tenants — no scene split. Keep separate from /memories/'s
 # per-scene namespace so listing one never reveals the other.
@@ -200,39 +199,40 @@ def get_store() -> BaseStore:
 
 
 def _seed_skills_into_store(store: BaseStore) -> None:
-    """Walk SKILLS_DIR and put every file into the shared SKILLS_NAMESPACE.
+    """把库里所有 enabled 的 skill 放进共享的 SKILLS_NAMESPACE。
 
-    Store keys are backend-internal paths WITHOUT the `/skills/` route prefix
-    (e.g. `/image-prompt-sop/SKILL.md`). When `CompositeBackend` routes the
-    `/skills/` prefix to this StoreBackend, it strips the prefix before
-    forwarding — so a store key like `/skills/foo` would be invisible to the
-    middleware (it looks up `/foo` after the strip). Keep keys backend-relative.
+    Store 里的 key 是 backend 内部路径, **不带 `/skills/` 前缀** (例如
+    `/image-prompt-sop/SKILL.md`)。`CompositeBackend` 把 `/skills/` 前缀路由到这个
+    StoreBackend 时会先把前缀剥掉再转发 —— 所以一个叫 `/skills/foo` 的 key 对中间件
+    是不可见的 (它剥完之后查的是 `/foo`)。key 必须是 backend 相对的。
 
-    Idempotent — `store.put` overwrites by key, so re-running is safe. Files
-    too large for the spec (>10MB SKILL.md) are skipped with a warning rather
-    than crashing the agent.
+    **真相在库里, 不在磁盘上。** `services/agent/skills/` 那个目录现在只是出厂种子,
+    由迁移 0017 导进 Skill 表, 此后运行时再不读它 —— 改那些文件不会生效。这么改是因为
+    前端要能装/卸 skill, 而磁盘在容器里, 用户碰不到也不该碰。
+
+    进程级只跑一次 (跟 `_store` 一起 lazy)。运行时的装/卸由 `skills.sync_skill` /
+    `skills.unsync_skill` 直接改 store, 不经过这里 —— deepagents 的 SkillsMiddleware
+    每一轮 `before_agent` 都重新列一遍 store (Canvex 没有 checkpointer, state 里
+    永远没有 skills_metadata), 所以改完下一轮就生效, 不需要重启也不需要作废 graph。
+
+    幂等 —— `store.put` 按 key 覆盖, 重跑安全。
     """
-    if not SKILLS_DIR.is_dir():
-        logger.warning("canvas agent: skills dir missing, none loaded: path=%s", SKILLS_DIR)
+    try:
+        rows = list(Skill.objects.filter(enabled=True).values_list("name", "content"))
+    except DatabaseError:
+        # 表还没建 (全新容器里 migrate 之前有人碰了 agent) —— 退化成"一个 skill 都没有"
+        # 而不是让整个进程起不来。migrate 跑完重启就有了。
+        logger.warning("canvas agent: skills table unavailable, none loaded", exc_info=True)
         return
-    loaded = 0
-    skipped = 0
-    for path in sorted(p for p in SKILLS_DIR.rglob("*") if p.is_file()):
-        rel = path.relative_to(SKILLS_DIR).as_posix()
-        # Backend-internal key — no /skills/ prefix, see docstring above.
-        key = f"/{rel}"
-        try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            # Binary asset in a skill dir (image / pdf template). The agent
-            # can still reference it by path; skipping the put just means it
-            # won't appear in store-backed listings, which is OK for now.
-            logger.warning("canvas agent: skipped binary skill asset: path=%s", path)
-            skipped += 1
-            continue
-        store.put(SKILLS_NAMESPACE, key, create_file_data(content))
-        loaded += 1
-    logger.info("canvas agent: skills seeded: loaded=%d, skipped=%d", loaded, skipped)
+    for name, content in rows:
+        store.put(SKILLS_NAMESPACE, _skill_key(name), create_file_data(content))
+    logger.info("canvas agent: skills seeded from db: loaded=%d", len(rows))
+
+
+def _skill_key(name: str) -> str:
+    """某个 skill 在 store 里的 key。装 / 卸 / seed 三处必须用同一个式子 —— 拼错的
+    表现是"装上了但 agent 看不见", 没有任何报错。"""
+    return f"/{name}/SKILL.md"
 
 
 def _build_postgres_store() -> BaseStore:

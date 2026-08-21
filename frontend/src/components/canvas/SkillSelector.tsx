@@ -30,6 +30,8 @@ interface SkillSelectorProps {
   /** Names currently OPTED OUT for the next message. */
   disabledSkills: string[];
   onChange: (next: string[]) => void;
+  /** 打开技能库面板。省略即不渲染底部那条 —— 组件在别处复用时不该硬绑一个入口。 */
+  onManage?: () => void;
   /** Disable trigger button while streaming so user can't toggle mid-flight. */
   buttonDisabled?: boolean;
   /** Outer wrapper className for caller-controlled positioning. */
@@ -44,6 +46,7 @@ export function SkillSelector({
   // semantically "nothing disabled" which matches the default UX anyway.
   disabledSkills = [],
   onChange,
+  onManage,
   buttonDisabled = false,
   className,
 }: SkillSelectorProps) {
@@ -125,6 +128,15 @@ export function SkillSelector({
         <div className="mt-1 border-t px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
           {t("skills.hint")}
         </div>
+        {onManage && (
+          <button
+            type="button"
+            onClick={onManage}
+            className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          >
+            {t("skills.manage")}
+          </button>
+        )}
       </PopoverContent>
     </Popover>
   );

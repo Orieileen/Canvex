@@ -150,6 +150,35 @@ export interface CanvasSkill {
   path: string;
 }
 
+/** 库里装着的一篇 SKILL.md (GET /api/v1/canvas/skill-library/)。
+ *
+ *  跟上面的 `CanvasSkill` 是**两个不同的问题**, 别合并:
+ *   - `CanvasSkill` (`/skills/`)  = "agent 现在看得见什么" —— 读的是 agent 的 store,
+ *     所以 SkillSelector 里列的和系统提示里的不会飘。
+ *   - `CanvasSkillRow` (这个)     = "库里装了什么" —— 含停用的行和 SKILL.md 全文,
+ *     管理面板用。
+ *
+ *  `name` / `description` 是**只读的派生列**: 后端从 content 的 frontmatter 里解析出来。
+ *  前端不去解析 frontmatter —— 那等于把后端的准入规则抄一份, 抄的那份迟早分叉。
+ */
+export interface CanvasSkillRow {
+  id: string;
+  name: string;
+  description: string;
+  /** SKILL.md 全文, 含 frontmatter。唯一真相。 */
+  content: string;
+  /** `builtin` = 随代码库发的出厂 SOP: 能停用, 不能删也不能改正文。 */
+  source: "builtin" | "user";
+  /** false = 不进 store = agent 完全看不见。跟 SkillSelector 的单条消息跳过是两回事。 */
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 装一篇新的 SKILL.md 时只发正文;`enabled` 后端默认 true。 */
+export type CanvasSkillWrite = Pick<CanvasSkillRow, "content"> &
+  Partial<Pick<CanvasSkillRow, "enabled">>;
+
 /** Canvas image attached to a chat message via "Send to chat" on ImageEditBar.
  *
  * Per-turn ephemeral — sent as `attachments` field in the chat POST body, the

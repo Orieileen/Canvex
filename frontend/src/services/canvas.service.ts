@@ -19,6 +19,8 @@ import type {
   CanvasScene,
   CanvasSceneListItem,
   CanvasSkill,
+  CanvasSkillRow,
+  CanvasSkillWrite,
   CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
@@ -33,6 +35,7 @@ const IMAGE_EDIT_JOBS = "/api/v1/canvas/image-edit-jobs/";
 const VIDEO_JOBS = "/api/v1/canvas/video-jobs/";
 const ANGLE_JOBS = "/api/v1/canvas/angle-jobs/";
 const SKILLS = "/api/v1/canvas/skills/";
+const SKILL_LIBRARY = "/api/v1/canvas/skill-library/";
 const IMAGE_PROVIDERS = "/api/v1/canvas/image-providers/";
 const IMAGE_MODELS = "/api/v1/canvas/image-models/";
 const MEDIA_LIBRARY_FOLDERS = "/api/v1/canvas/media-library/folders/";
@@ -324,6 +327,8 @@ export const canvasService = {
   // ── Skills ────────────────────────────────────────────────────────────────
   // 全局 skill 注册表 (跟租户无关), 进程级 cache, 调用便宜
   listSkills: () => request.get<CanvasSkill[]>(SKILLS),
+  // 装好的 SKILL.md 的增删改查。跟 listSkills 问的是两件事, 见 CanvasSkillRow 的注释。
+  skillLibrary: createResource<CanvasSkillRow, CanvasSkillWrite>(SKILL_LIBRARY),
 
   // ── Media library (按画布分文件夹 + 文件夹内分页) ──────────────────────────
   // 文件夹列表: 每个有过生成的画布一行, 精确计数 + 封面 (一次拉全, 不分页)。
