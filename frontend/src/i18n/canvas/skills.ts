@@ -53,7 +53,7 @@ export const skills = {
     manage: "管理技能…",
 
     // ── SkillLibrary (装 / 卸) ───────────────────────────────────────────────
-    libraryTitle: "技能",
+    libraryTitle: "技能库",
     librarySubtitle: "助手会自己判断要不要用的 SOP。拖一个 SKILL.md 进来就装上了。",
     dropTitle: "把 .md 文件拖到这里",
     dropHint: "或点击选择 —— SKILL.md 文件, 单个不超过 256 KB",
