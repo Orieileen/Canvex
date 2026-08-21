@@ -28,6 +28,7 @@ Language: [中文](./README.zh-CN.md)
 - **Scenes** — multiple independent canvases in the sidebar: create, rename, delete, **pin to top**, quick switching; edits autosave.
 - **Media library** — saves every image / video you generate, grouped per canvas; click a thumbnail to drop it back onto the current board.
 - **Resolution tiers** — 1K / 2K / 4K for image generation and editing (subject to provider and model support).
+- **Bring your own providers** — endpoint, key, model name and per-provider request knobs live in the UI, not in `.env`. Configure as many channels as you like (image, Angle, video, and the chat LLM), then pick which one runs each generation from the toolbar — Google for this image, GPT for the next.
 
 ## Architecture at a glance
 
@@ -69,7 +70,7 @@ cd Canvex
 cp .env.example .env
 ```
 
-Set at least the chat and image-provider keys (see the table below). `.env.example` is the full, commented reference — including the optional fallback provider, async-polling, and field-mapping knobs.
+The defaults work as-is for a local run — **no API keys go in here.** Providers are configured in the app (step 4). `.env` only holds infrastructure settings: ports, database, and `PUBLIC_MEDIA_BASE` (see the table below).
 
 ### 3) Run (Docker)
 
@@ -87,6 +88,17 @@ This starts Postgres, Redis, the backend (which runs migrations on startup), thr
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:28000
 
+### 4) Add your channels
+
+Open http://localhost:5173 and click **Channels** in the left sidebar. Nothing works until there is at least one channel, so start here:
+
+1. **Chat** — required first; the chat box is dead without it. Point it at a provider that supports OpenAI-style **tool calling** — one that doesn't will reply with markdown and quietly do nothing on the canvas, so don't reuse an image-only key. Leave Base URL blank to use OpenAI's own endpoint.
+2. **Image generation** — needed for the Image / Split tools and for images the agent creates.
+3. *(optional)* **Angle** — a [fal.ai](https://fal.ai) key, for the 3D-cube viewpoint tool.
+4. *(optional)* **Video**.
+
+Paste a provider's example `curl` into **Import from a curl example** and Canvex fills in the Base URL, model and request shape for you. The ⚡ button next to a model sends one real minimal generation and shows the provider's raw error if something is off.
+
 ## Environment variables
 
 Minimum to get started (full list and tuning knobs in [.env.example](./.env.example)):
@@ -101,8 +113,8 @@ Minimum to get started (full list and tuning knobs in [.env.example](./.env.exam
 
 Notes:
 
-- **No provider is configured here** — chat, image generation, Angle and video all get their endpoint, API key, model name and per-provider request knobs from the UI, under **Configure providers** in the left sidebar. Add as many providers and models as you like and switch between them from the toolbar when you generate.
-- **Start by adding a Chat channel** — the chat box is dead without one (the agent raises "还没有配置聊天模型"). It must point at a provider that supports OpenAI-style tool calling; one that doesn't will reply with markdown and quietly do nothing on the canvas, so don't reuse your image key for it. Leave its Base URL blank to use OpenAI's own endpoint.
+- **No provider is configured here** — chat, image generation, Angle and video all get their endpoint, API key, model name and per-provider request knobs from the UI, under **Channels** in the left sidebar. Add as many providers and models as you like and switch between them from the toolbar when you generate.
+- **Start by adding a Chat channel** (see step 4) — the chat box is dead without one (the agent raises "还没有配置聊天模型"). It must point at a provider that supports OpenAI-style tool calling; one that doesn't will reply with markdown and quietly do nothing on the canvas, so don't reuse your image key for it. Leave its Base URL blank to use OpenAI's own endpoint.
 - The **Angle** (multi-viewpoint) feature runs on [fal.ai](https://fal.ai): sign up, create an API key, and add it as an Angle provider in that same panel. No fal.ai account is needed for the other features.
 - Upgrading from an older version: your existing `CANVAS_CHAT_*` / `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` / `CANVAS_VIDEO_*` values are imported into the database once by migrations `0008` / `0010` / `0013` / `0015`. After that they are no longer read and can be deleted from `.env`.
 - The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).
@@ -170,6 +182,6 @@ Cutout / Split is a 2-stage chain: stage 1 (LLM, on `canvas`) produces a white-b
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **Image looks wrong or errors** — check the provider's base URL, key and model name under **Configure providers** in the sidebar; the panel has a test button. Video is configured the same way.
+- **Image looks wrong or errors** — check the provider's base URL, key and model name under **Channels** in the sidebar; the panel has a test button. Video is configured the same way.
 - **Image-to-image / video / angle never returns** — the provider must be able to fetch your source image; set `PUBLIC_MEDIA_BASE` to a publicly reachable URL.
 - **Frontend requests blocked by CORS** — keep `CORS_ALLOW_ALL_ORIGINS=true` (default) or list your origin in `CORS_ALLOWED_ORIGINS`.

@@ -69,7 +69,7 @@ cd Canvex
 cp .env.example .env
 ```
 
-至少配好聊天和图像供应商的 key（见下表）。[.env.example](./.env.example) 是完整带注释的参考 —— 含可选的备用供应商、异步轮询、字段映射等旋钮。
+本地跑的话默认值直接可用，**这里不填任何 API key** —— 供应商在应用内配置（第 4 步）。`.env` 只管基础设施：端口、数据库，以及 `PUBLIC_MEDIA_BASE`（见下表）。
 
 ### 3）启动（Docker）
 
@@ -87,6 +87,17 @@ docker compose up -d --build
 - 前端：http://localhost:5173
 - 后端 API：http://localhost:28000
 
+### 4）添加通道
+
+打开 http://localhost:5173，点左侧栏的**「通道配置」**。一条通道都没有时什么都用不了，所以从这里开始：
+
+1. **聊天模型** —— 必须最先配，否则聊天框是死的。它必须支持 OpenAI 风格的 **tool calling** —— 不支持的会回一段 markdown 然后画布上什么都不发生，所以别把只能生图的 key 填进来。Base URL 留空 = 用 OpenAI 官方端点。
+2. **生图** —— Image / Split 工具和 agent 生成的图都要它。
+3. *（可选）* **换视角** —— 一把 [fal.ai](https://fal.ai) 的 key，给那个 3D 立方体用。
+4. *（可选）* **视频**。
+
+把供应商文档里的示例 `curl` 粘进**「从 curl 示例导入」**，Base URL、模型名和请求形状会自动填好。模型行右边的 ⚡ 会真发一次最小生成，配错了直接把供应商的原始报错显示出来。
+
 ## 环境变量
 
 最少需要这些就能跑起来（完整列表 + 调优旋钮见 [.env.example](./.env.example)）：
@@ -101,8 +112,8 @@ docker compose up -d --build
 
 说明：
 
-- **所有供应商都不在这里配** —— 聊天、生图、换视角、视频的端点、API key、模型名、按供应商的请求参数全部在界面上填：左侧栏「配置供应商」。可以配多个供应商、多个模型，生成时在工具栏切换。
-- **先加一条「聊天模型」通道** —— 没有它聊天框直接报错（「还没有配置聊天模型」）。它必须支持 OpenAI 风格的 tool calling，不支持的会回一段 markdown 然后画布上什么都不发生，所以别跟生图共用一把 key。Base URL 留空 = 用 OpenAI 官方端点。
+- **所有供应商都不在这里配** —— 聊天、生图、换视角、视频的端点、API key、模型名、按供应商的请求参数全部在界面上填：左侧栏「通道配置」。可以配多个供应商、多个模型，生成时在工具栏切换。
+- **先加一条「聊天模型」通道**（见第 4 步）—— 没有它聊天框直接报错（「还没有配置聊天模型」）。它必须支持 OpenAI 风格的 tool calling，不支持的会回一段 markdown 然后画布上什么都不发生，所以别跟生图共用一把 key。Base URL 留空 = 用 OpenAI 官方端点。
 - **换视角**（多视角）功能跑在 [fal.ai](https://fal.ai) 上：去 fal.ai 注册账号、创建 API key，在同一个面板里加一条 Angle 通道即可。其它功能不需要 fal.ai 账号。
 - 从旧版本升级：原有的 `CANVAS_CHAT_*` / `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` / `CANVAS_VIDEO_*` 会被迁移 `0008` / `0010` / `0013` / `0015` 自动导进库，导完就不再读取，可以从 `.env` 里删掉。
 - 产品免费、单工作区：没有鉴权，计费是空操作桩（`CANVAS_CREDIT_COST_*` 不起作用）。
@@ -170,6 +181,6 @@ backend/
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **图像结果不对或报错** —— 在侧栏「配置供应商」里核对 base URL、key 和模型名，那个面板带测试按钮。视频也在同一个地方配。
+- **图像结果不对或报错** —— 在侧栏「通道配置」里核对 base URL、key 和模型名，那个面板带测试按钮。视频也在同一个地方配。
 - **图生图/视频/换视角一直不返回** —— 供应商要能拉到你的源图；把 `PUBLIC_MEDIA_BASE` 设成可公网访问的地址。
 - **前端请求被 CORS 拦** —— 保持 `CORS_ALLOW_ALL_ORIGINS=true`（默认），或把你的来源加进 `CORS_ALLOWED_ORIGINS`。
