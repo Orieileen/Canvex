@@ -4,6 +4,7 @@ import { Check, ChevronDown, ImageIcon, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
+  PopoverClose,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -127,14 +128,19 @@ export function ImageModelSelector({
             <p className="text-[12px] leading-relaxed text-muted-foreground">
               {t("imageModels.empty")}
             </p>
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-foreground transition-colors hover:bg-foreground/5"
-            >
-              <Settings2 className="size-3.5" strokeWidth={2} />
-              {t("imageModels.configure")}
-            </button>
+            {/* PopoverClose 而不是自己拿 state 受控: 点它会打开一个 modal Sheet, 而这次
+                点击落在 popover **内部**, Radix 的"点外面才关"不会触发 —— 不显式关掉的话
+                popover 会一直挂在 Sheet 底下, 关掉 Sheet 之后还赫然开着。 */}
+            <PopoverClose asChild>
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-foreground transition-colors hover:bg-foreground/5"
+              >
+                <Settings2 className="size-3.5" strokeWidth={2} />
+                {t("imageModels.configure")}
+              </button>
+            </PopoverClose>
           </div>
         ) : (
           // overscroll-contain: 滚到头之后别把回弹传给外面。画布上其它几个可滚面板
