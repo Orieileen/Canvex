@@ -285,10 +285,9 @@ class SkillViewSet(viewsets.ModelViewSet):
             # 删了磁盘上还在, 重建容器 migrate 又长回来 —— 那种"删不掉"最难解释。
             # 内置的只提供停用。
             raise ValidationError({
-                "detail": (
-                    f"`{instance.name}` 是内置 skill, 删不掉 —— 它随代码库发, "
-                    "重建容器又会回来。停用它就行, 效果一样。"
-                ),
+                "detail": f"`{instance.name}` is a built-in skill and cannot be deleted.",
+                "code": "builtin_undeletable",
+                "name": instance.name,
             })
         instance.delete()
         resync_skills()

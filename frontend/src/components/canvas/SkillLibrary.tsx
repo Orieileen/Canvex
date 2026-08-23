@@ -61,8 +61,29 @@ interface Conflict {
   fromComposer: boolean;
 }
 
+/** 把后端的 400 渲染成用户语言的一句话。
+ *
+ *  后端只回一个 `code` 加几个扁平参数, 完整文案在 `i18n/canvas/skills.ts` 的 `errors.*`
+ *  里 —— 这个面板每个字都有中英两份, 报错却写死一种语言的话, 另一半人就是对着天书。
+ *
+ *  `defaultValue` 兜底: 后端比前端新、出了一个这里还没有的 code 时, 退回后端自带的那句
+ *  英文摘要, 而不是把 `skills.errors.xxx` 这个 key 本身糊到用户脸上 (i18next 查不到就
+ *  返回 key)。 */
+function useSkillError() {
+  const { t } = useTranslation("canvasUi");
+  return useCallback(
+    (err: unknown, fallback: string): string => {
+      const { fields, summary } = parseApiErrors(err, fallback);
+      if (!fields.code) return summary;
+      return t(`skills.errors.${fields.code}`, { ...fields, defaultValue: summary });
+    },
+    [t],
+  );
+}
+
 export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProps) {
   const { t } = useTranslation("canvasUi");
+  const skillError = useSkillError();
   const [rows, setRows] = useState<CanvasSkillRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,7 +150,7 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
         if (refresh) await afterChange();
         return true;
       } catch (err) {
-        const { fields, summary } = parseApiErrors(err, "install failed");
+        const { fields } = parseApiErrors(err, "install failed");
         if (fields.conflict_id && fields.conflict_name) {
           setConflicts((prev) => [
             ...prev,
@@ -137,13 +158,13 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
           ]);
           return false;
         }
-        toast.error(summary);
+        toast.error(skillError(err, "install failed"));
         return false;
       } finally {
         setBusy(false);
       }
     },
-    [afterChange, t],
+    [afterChange, skillError, t],
   );
 
   /** 只吃 id 而不是整行 —— 重名覆盖那条路径上我们手里只有后端回的 conflict_id,
@@ -158,13 +179,13 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
         await afterChange();
         return true;
       } catch (err) {
-        toast.error(extractApiError(err, "save failed"));
+        toast.error(skillError(err, "save failed"));
         return false;
       } finally {
         setBusy(false);
       }
     },
-    [afterChange],
+    [afterChange, skillError],
   );
 
   const readFiles = useCallback(
@@ -389,7 +410,7 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
                   setDeleteTarget(null);
                   await afterChange();
                 } catch (err) {
-                  toast.error(extractApiError(err, "delete failed"));
+                  toast.error(skillError(err, "delete failed"));
                 } finally {
                   setBusy(false);
                 }

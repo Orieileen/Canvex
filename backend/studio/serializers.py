@@ -564,6 +564,27 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
         fields = ("id", "label", "provider_label", "kind", "sort_order")
 
 
+def _skill_error(code: str, message: str, **params: object) -> serializers.ValidationError:
+    """技能库的 400 统一长这个样子: 一句开发者看的英文 + 一个 code + 若干扁平参数。
+
+    `code` 给前端查 i18n 表 (`skills.errors.<code>`), 用户读到的完整解释在那两份文案里 ——
+    面板是中英双语的, 后端写死一种语言等于让另一半人对着天书。`message` 留给 curl / 日志 /
+    别的调用方, 它们没有 i18n 层。
+
+    参数**摊平成顶层键**而不是塞进一个嵌套的 `params` 对象: DRF 会把 ValidationError 的值
+    统一包成列表, 嵌套一层之后前端要写 `params.name[0]` 这种取法; 摊平之后
+    `parseApiErrors` 现成的 `fields` 就是 `{code, name, ...}`, 直接喂给 i18next 插值,
+    多出来的键它自己会忽略。
+    """
+    return serializers.ValidationError({
+        # `content` 排第一: parseApiErrors 的 summary 取第一条, 万一前端不认识这个 code
+        # (后端比前端新), 退回来的至少是一句话而不是一个裸 code。
+        "content": message,
+        "code": code,
+        **{k: str(v) for k, v in params.items()},
+    })
+
+
 class SkillSerializer(serializers.ModelSerializer):
     """装好的 SKILL.md 的增删改查。
 
@@ -601,18 +622,17 @@ class SkillSerializer(serializers.ModelSerializer):
         try:
             content, name, description = parse_skill_md(raw)
         except SkillMdError as exc:
-            raise serializers.ValidationError({"content": str(exc)}) from exc
+            raise _skill_error(exc.code, str(exc), **exc.params) from exc
 
         if self.instance is not None and self.instance.source == Skill.Source.BUILTIN:
             # 内置 skill 的正文只读, 只能停用/启用。允许改的话没有回退路径 —— 出厂那份
             # 在镜像里的 `services/agent/skills/` 下, docker 部署的用户根本够不着, 改坏
             # 了就永久坏了。想要自己的版本就复制一份新装 (面板上有「复制为我的」)。
-            raise serializers.ValidationError({
-                "content": (
-                    f"`{self.instance.name}` 是内置 skill, 正文改不了 —— 改坏了没法还原。"
-                    "用「复制为我的」拷一份出来改, 再把内置这条停用。"
-                ),
-            })
+            raise _skill_error(
+                "builtin_readonly",
+                f"`{self.instance.name}` is a built-in skill; its content is read-only.",
+                name=self.instance.name,
+            )
 
         conflict = Skill.objects.filter(name=name)
         if self.instance is not None:
@@ -620,19 +640,21 @@ class SkillSerializer(serializers.ModelSerializer):
         existing = conflict.first()
         if existing is not None:
             if existing.source == Skill.Source.BUILTIN:
-                raise serializers.ValidationError({
-                    "content": (
-                        f"`{name}` 是内置 skill 的名字, 占用了。给你这篇换个 `name` 吧。"
-                    ),
-                })
-            # 带上 id: 前端据此把这个 400 变成一句"这会覆盖已装的 X, 确定吗", 确定之后
-            # 直接 PATCH 那一条。**名字必须由后端解析出来** —— 前端自己从 frontmatter 里
-            # 抠 name 就是把规则手抄了一份, 抄的那份迟早跟这边分叉。
-            raise serializers.ValidationError({
-                "content": f"已经装了一个叫 `{name}` 的 skill。",
-                "conflict_id": str(existing.pk),
-                "conflict_name": name,
-            })
+                raise _skill_error(
+                    "builtin_name_taken",
+                    f"`{name}` is the name of a built-in skill.",
+                    name=name,
+                )
+            raise _skill_error(
+                "name_conflict",
+                f"A skill named `{name}` is already installed.",
+                name=name,
+                # 前端据此把这个 400 变成一句"这会覆盖已装的 X, 确定吗", 确定之后直接
+                # PATCH 那一条。**名字必须由后端解析出来** —— 前端自己从 frontmatter 里
+                # 抠 name 就是把规则手抄了一份, 抄的那份迟早跟这边分叉。
+                conflict_id=str(existing.pk),
+                conflict_name=name,
+            )
 
         data["content"] = content
         data["name"] = name

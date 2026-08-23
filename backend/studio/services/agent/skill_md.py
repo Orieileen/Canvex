@@ -47,7 +47,22 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 class SkillMdError(ValueError):
-    """SKILL.md 不合格。message 直接给用户看, 所以必须说清楚哪一行哪个字段。"""
+    """SKILL.md 不合格。
+
+    **带 `code` + `params`, 不是只带一句话。** 这里产出的东西会被原样 toast 到技能库
+    面板上, 而那个面板每个字都有中英两份 —— 报错写死一种语言, 等于在一个 README 有英文
+    版、卖点就是"装你自己的 SOP"的功能上, 让看不懂那种语言的人对着一句天书。完整的解释
+    住在 `frontend/src/i18n/canvas/skills.ts` 的 `errors.*` 里, 按 code 查表。
+
+    `str(exc)` 仍然是一句能读的英文: curl、日志、别的调用方拿到的是它, 不能只给一个裸
+    code。但它是**开发者视角**的一句话, 不承担"跟用户解释清楚为什么"的职责 —— 那句话
+    在 i18n 里, 因为那才是用户会读到的地方。
+    """
+
+    def __init__(self, code: str, message: str, **params: object) -> None:
+        super().__init__(message)
+        self.code = code
+        self.params = params
 
 
 def _normalize(raw: str) -> str:
@@ -75,61 +90,64 @@ def parse_skill_md(raw: str) -> tuple[str, str, str]:
     """
     content = _normalize(raw)
     if not content.strip():
-        raise SkillMdError("文件是空的。")
+        raise SkillMdError("empty", "SKILL.md is empty.")
 
     size = len(content.encode("utf-8"))
     if size > MAX_CONTENT_BYTES:
         raise SkillMdError(
-            f"文件 {size // 1024} KB, 超过 {MAX_CONTENT_BYTES // 1024} KB 上限。"
-            "SKILL.md 会被整篇读进 agent 的上下文, 太长会直接撑爆。"
+            "too_big",
+            f"SKILL.md is {size // 1024} KB, over the {MAX_CONTENT_BYTES // 1024} KB limit.",
+            size_kb=size // 1024,
+            limit_kb=MAX_CONTENT_BYTES // 1024,
         )
 
     match = _FRONTMATTER_RE.match(content)
     if not match:
-        raise SkillMdError(
-            "开头没有 YAML frontmatter。SKILL.md 必须以 `---` 单独一行开始, "
-            "写上 name 和 description, 再用 `---` 单独一行结束。"
-        )
+        raise SkillMdError("no_frontmatter", "No YAML frontmatter at the top of the file.")
 
     try:
         front = yaml.safe_load(match.group(1))
     except yaml.YAMLError as exc:
-        raise SkillMdError(f"frontmatter 的 YAML 语法有问题: {exc}") from exc
+        raise SkillMdError(
+            # 参数**不能叫 `detail`**: 前端的 parseApiErrors 把 `detail` 当成 DRF 的顶层
+            # 错误键, 专门把它排除在 fields 之外, 于是 i18n 插值时取不到, 用户看到的是
+            # 一句原样的 `{detail}`。(踩过。)
+            "yaml_error", f"Invalid YAML in frontmatter: {exc}", reason=str(exc),
+        ) from exc
 
     if not isinstance(front, dict):
-        raise SkillMdError("frontmatter 得是 `键: 值` 的形式, 现在解析出来不是。")
+        raise SkillMdError(
+            "frontmatter_not_mapping", "Frontmatter is not a `key: value` mapping.",
+        )
 
     name = str(front.get("name", "") or "").strip()
     if not name:
-        raise SkillMdError("frontmatter 里缺 `name`。它同时是这个 skill 的唯一标识。")
+        raise SkillMdError("name_missing", "Frontmatter is missing `name`.")
     # 第二个参数传 name 自己: 规范要求 name == 所在目录名, 而我们的目录名就是拿 name
     # 生成的 (`/{name}/SKILL.md`), 那一条天然成立。这里真正要的是它的字符集/长度检查。
     ok, err = _validate_skill_name(name, name)
     if not ok:
         raise SkillMdError(
-            f"`name: {name}` 不合规范 —— {err}。只能用小写字母、数字和单个连字符, "
-            "不能以连字符开头或结尾。"
+            "name_invalid", f"Invalid `name` {name!r}: {err}", name=name, reason=err,
         )
 
     description = str(front.get("description", "") or "").strip()
     if not description:
-        raise SkillMdError(
-            "frontmatter 里缺 `description`。agent 全靠这一段判断什么时候该用这个 "
-            "skill, 空着等于装了也不会触发。"
-        )
+        raise SkillMdError("description_missing", "Frontmatter is missing `description`.")
     if len(description) > MAX_SKILL_DESCRIPTION_LENGTH:
         raise SkillMdError(
-            f"`description` {len(description)} 字, 超过规范上限 "
-            f"{MAX_SKILL_DESCRIPTION_LENGTH} 字。超出的部分会被悄悄截掉, "
-            "agent 判断要不要用这个 skill 时就看不到了 —— 请自己先压缩。"
+            "description_too_long",
+            f"`description` is {len(description)} chars, over the "
+            f"{MAX_SKILL_DESCRIPTION_LENGTH} limit.",
+            length=len(description),
+            limit=MAX_SKILL_DESCRIPTION_LENGTH,
         )
 
     # 最后一道门, 见模块文档: 我们上面判过的它都判, 但它还判了别的 (metadata 结构、
     # allowed-tools 形状…), 而且将来还会加。它说不行就是不行。
     if _parse_skill_metadata(content, f"/{name}/SKILL.md", name) is None:
         raise SkillMdError(
-            "deepagents 解析这篇 SKILL.md 失败了。检查 frontmatter 里除 name / "
-            "description 之外的字段 (allowed-tools / metadata / license) 写法。"
+            "rejected_by_deepagents", "deepagents could not parse this SKILL.md.",
         )
 
     return content, name, description
