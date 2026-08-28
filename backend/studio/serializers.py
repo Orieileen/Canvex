@@ -15,6 +15,8 @@ from .models import (
     VideoJob,
 )
 from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
+from .services.request_template import TemplateError
+from .services.request_template import validate as validate_template
 
 logger = logging.getLogger(__name__)
 
@@ -453,8 +455,8 @@ class ImageProviderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ImageProvider
-        fields = ("id", "label", "kind", "base_url", "api_key", "defaults", "models",
-                  "created_at", "updated_at")
+        fields = ("id", "label", "kind", "base_url", "api_key", "defaults",
+                  "request_template", "models", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate_defaults(self, value):
@@ -492,7 +494,43 @@ class ImageProviderSerializer(serializers.ModelSerializer):
                 {"base_url": ["这种通道必须填 Base URL(只有聊天通道可以留空 = 用 OpenAI 官方端点)"]}
             )
 
-        allowed = KIND_SPECS[kind].tunables
+        # ── 请求模板 ────────────────────────────────────────────────────────
+        spec = KIND_SPECS[kind]
+        tpl = data.get("request_template", getattr(self.instance, "request_template", None))
+        if spec.template:
+            if not isinstance(tpl, dict) or not tpl:
+                raise serializers.ValidationError({"request_template": [
+                    "这种通道要填请求模板 —— 先从上面的起点模板里选一个, 再照供应商文档改。"
+                ]})
+            try:
+                validate_template(tpl, set(spec.variables))
+            except TemplateError as exc:
+                raise serializers.ValidationError({"request_template": [str(exc)]}) from exc
+            for required in ("url",):
+                if not str(tpl.get(required) or "").strip():
+                    raise serializers.ValidationError({"request_template": [
+                        f"模板里缺 `{required}`。"
+                    ]})
+            # 有 poll 段就必须说清"什么算完成" —— 不然轮询只会一直转到次数用完, 而那时
+            # 的报错("轮询了 N 次还没完成")会把用户引到调大次数上, 完全找错方向。
+            poll = tpl.get("poll")
+            if poll is not None:
+                if not isinstance(poll, dict):
+                    raise serializers.ValidationError({"request_template": ["`poll` 得是个对象。"]})
+                if not (poll.get("done") or []):
+                    raise serializers.ValidationError({"request_template": [
+                        "模板有 `poll` 段但没写 `done` —— 我们无法知道什么状态算完成了。"
+                    ]})
+                if not str(tpl.get("task_id_path") or "").strip():
+                    raise serializers.ValidationError({"request_template": [
+                        "模板有 `poll` 段但没写 `task_id_path` —— 提交之后不知道去哪拿任务 id。"
+                    ]})
+        elif tpl:
+            # 非模板通道存了模板 = 存得下去、永远不生效。跟旋钮裁剪同一个态度, 但这里
+            # 直接清空而不只是 warning: 它是一整块 JSON, 留着会让人以为在起作用。
+            data["request_template"] = {}
+
+        allowed = spec.tunables
 
         def prune(values, where):
             dropped = sorted(set(values) - allowed)
@@ -556,7 +594,13 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     # 前端按它分流: Image / Split 面板只列 image, Angle 面板只列 angle。带在每一项上
     # (而不是让前端按 kind 各拉一次) —— 一次请求、一份 state, 两个选择器各自 filter。
     kind = serializers.CharField(source="provider.kind", read_only=True)
+    # **前端真正该筛的是这个**, 不是 kind。一个选择器现在对应多种 kind (生图 = 内置
+    # image + 模板 custom_image), 按 kind 名字筛的话新加的那种配好了却不出现, 而且不报错。
+    picker = serializers.SerializerMethodField()
+
+    def get_picker(self, obj) -> str:
+        return KIND_SPECS[obj.provider.kind].picker
 
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "kind", "sort_order")
+        fields = ("id", "label", "provider_label", "kind", "picker", "sort_order")

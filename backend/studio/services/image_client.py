@@ -204,9 +204,13 @@ _D = {f.name: f.default for f in fields(ImageClient)}
 class ImageChannel:
     """一次生图调用需要的全部供应商参数 —— 「用哪个模型、怎么跟它说话」。
 
-    frozen 是刻意的: 它同时是 build_image_client 的**缓存键**, 所以必须可哈希。用户在
-    前端改了任何一个字段 → 新的 ImageChannel → 自然拿到新 client, 不需要任何显式失效
-    逻辑; 没改则命中缓存, 连接池照常复用。
+    frozen 是刻意的 —— 它是不可变的配置快照。用户在前端改了任何一个字段 → 新的
+    ImageChannel → 自然拿到新 client, 不需要任何显式失效逻辑; 没改则命中缓存, 连接池
+    照常复用。
+
+    (这里原来写着"它同时是 build_image_client 的缓存键, 所以必须可哈希"。那句已经不
+    成立: 缓存键后来收窄成了 `_client_kwargs` 的元组, 整个 channel 从来不被 hash。留着
+    那句话会让人以为加一个 dict 字段就会炸。)
 
     字段分三组: 连接 / 请求形状(各家差异都在这里) / 异步轮询。为什么需要这些奇怪的
     旋钮见 ImageClient 上各字段的注释 —— 那些注释就是前端配置表单的字段提示。
@@ -247,6 +251,18 @@ class ImageChannel:
     # 视频是分钟级的, 固定 5 秒去敲一个要跑 3 分钟的任务只是白敲。
     poll_max_interval: int = 0
     poll_timeout: int = 30
+    # ── 模板通道 (kind=custom_*) ──
+    # 这条通道是哪种 kind。生成路径据此分流: 模板通道走 template_client, 其余走
+    # ImageClient 那套写死的形状。
+    kind: str = ""
+    # 一次调用的完整形状 (method/url/headers/body/result_path + 可选的 poll)。
+    # 只有 kind=custom_* 用得上, 其余留空。
+    #
+    # `compare=False` 把它排除在 __eq__ / __hash__ 之外 —— dict 本身不可哈希, 而
+    # frozen dataclass 会生成 __hash__。**将来如果有人重新按整个 channel 做缓存, 这里
+    # 是个坑**: 两条只差模板的通道会被判等、撞同一个缓存格。真要那么做的话, 先把这个
+    # 字段换成一个可哈希的表示 (比如 json.dumps 的结果), 别直接把 compare 改回去。
+    request_template: dict = field(default_factory=dict, compare=False)
     # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
     label: str = ""
 

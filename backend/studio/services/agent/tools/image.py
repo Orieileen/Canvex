@@ -35,7 +35,7 @@ from django.db import transaction
 from langchain.tools import ToolRuntime, tool
 
 from studio.constants import CUTOUT_LLM_PROMPT
-from studio.models import ImageEditJob, ImageEditResult
+from studio.models import ImageEditJob, ImageEditResult, ImageProvider
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.image_channels import (
     channel_or_default,
@@ -48,6 +48,8 @@ from studio.services.image_client import (
     build_image_client,
     build_probe_client,
 )
+from studio.services import template_client
+from studio.services.http_retry import make_retry_session
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -161,7 +163,15 @@ def _single_generation(
 
     `client` 留给调用方换重试策略 (worker 要重试, 同步的测试按钮不要 ——
     见 probe_image_channel), 默认走缓存的那个带 retry 的。
+
+    **模板通道 (kind=custom_image) 在最前面分流出去**: 它的请求形状由用户填的模板决定,
+    下面这些 size_mode / poll_enabled / image_field 的适配一条都不适用。
     """
+    if channel.kind == ImageProvider.Kind.CUSTOM_IMAGE:
+        return _template_generation(
+            channel, prompt=prompt, image_urls=image_urls, size=size,
+            resolution=resolution, session=client.session if client else None,
+        )
     client = client or build_image_client(channel)
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
@@ -185,6 +195,25 @@ def _single_generation(
     )
 
 
+def _template_generation(
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
+    resolution: str, session=None,
+) -> bytes:
+    """模板通道的单次生成。请求怎么拼全在 channel.request_template 里。
+
+    `session` 让调用方换重试策略, 跟 `_single_generation` 的 `client` 参数同一个理由
+    (worker 要重试, 同步的测试按钮不要)。
+    """
+    variables = template_client.image_variables(
+        channel, prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
+    )
+    item = template_client.execute(
+        channel, channel.request_template, variables,
+        session=session or make_retry_session(),
+    )
+    return template_client.item_to_bytes(item)
+
+
 def probe_image_channel(channel: ImageChannel) -> int:
     """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
 
@@ -194,7 +223,16 @@ def probe_image_channel(channel: ImageChannel) -> int:
     每个调用方自己记得 —— 忘掉的下场是 view 那个 60s 预算被静静乘成四倍。
 
     尺寸取一个所有实现都合法的中庸值; 这里问的是"端点/密钥/模型名对不对", 不是构图。
+
+    模板通道也走这里 —— `_single_generation` 会在最前面分流到执行器, 只是探针给的是
+    不重试的 session (跟内置通道同一个理由, 见 build_probe_client)。
     """
+    if channel.kind == ImageProvider.Kind.CUSTOM_IMAGE:
+        return len(_template_generation(
+            channel, prompt="a small red circle on a white background",
+            image_urls=[], size="1024x1024", resolution="1K",
+            session=make_retry_session(total=0),
+        ))
     return len(_single_generation(
         channel,
         client=build_probe_client(channel),

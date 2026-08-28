@@ -89,6 +89,14 @@ class _KindSpec:
     # testable=False 时告诉用户该怎么验。空 = 用通用兜底文案。
     untestable_reason: str = ""
 
+    # 工具栏上的哪个选择器列这种通道。`image` / `angle` / `video`, 空 = 不进任何选择器
+    # (chat 是全局一条, 没有工具栏入口)。
+    #
+    # 存在的理由跟这个类里其它字段一样: 前端原来是按 kind **名字**筛的
+    # (`m.kind === "image"`), 于是新增 custom_image 之后它配好了却不出现在选择器里 ——
+    # 而且不报错。判定收在这里, 随 schema 下发, 前端只认 picker 不认 kind。
+    picker: str = ""
+
     # ── 模板类通道 ────────────────────────────────────────────────────────
     # True = 这种通道由**用户填的请求模板**驱动, 不是上面那些旋钮。表单因此完全不同
     # (一个 JSON 编辑器 + 变量说明, 而不是十四个输入框), 所以前端要靠这个标志分流。
@@ -211,11 +219,12 @@ _STARTER_ASYNC_VIDEO = {
 
 
 KIND_SPECS: dict[str, _KindSpec] = {
-    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True),
+    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True, picker="image"),
     ImageProvider.Kind.ANGLE: _KindSpec(
         tunables=frozenset({"timeout"}),
         base_url_example="https://fal.run",
         testable=True,
+        picker="angle",
     ),
     # 聊天只用得上连接三件套 + 超时。温度之类的旋钮没加: ImageChannel 现在只认
     # str/int/bool, 加 float 要连带扩控件映射, 而且 agent 的行为主要由 system prompt
@@ -236,6 +245,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         tunables=frozenset({"timeout"}),
         template=True,
         variables=_IMAGE_VARS,
+        picker="image",
         starters=(
             ("OpenAI 兼容 · 单张源图", _STARTER_OPENAI_IMAGE),
             ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
@@ -249,6 +259,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         defaults={"timeout": 60, "poll_interval": 20, "poll_max_attempts": 9},
         template=True,
         variables=_VIDEO_VARS,
+        picker="video",
         starters=(("提交 → 轮询 (通用视频)", _STARTER_ASYNC_VIDEO),),
         # 视频要跑几分钟, 一次同步 HTTP 里测不完 —— 跟内置 video 通道同一个理由。
         untestable_reason="视频通道没法一键测: 出片要几分钟, 撑不过一次同步请求。配好之后在画布上真发一条最快。",
@@ -258,6 +269,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
         }),
+        picker="video",
         defaults={
             "timeout": 60,
             "poll_max_attempts": 9,
@@ -340,6 +352,8 @@ def tunable_schema() -> dict[str, dict]:
             # 模板类通道的三件事。前端据此改渲染另一套表单 (一个 JSON 编辑器 + 变量
             # 说明), 而不是那十四个输入框。跟上面几项同一个理由: 判定只此一处, 前端
             # 不再自己按 kind 名字硬编码。
+            # 工具栏哪个选择器列它。前端按这个筛, 不再按 kind 名字硬编码。
+            "picker": spec.picker,
             "template": spec.template,
             "variables": sorted(spec.variables),
             "starters": [{"label": lbl, "template": tpl} for lbl, tpl in spec.starters],
@@ -377,6 +391,8 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
         base_url=provider.base_url,
         api_key=provider.api_key,
         model=model.model,
+        kind=provider.kind,
+        request_template=provider.request_template or {},
         label=f"{provider.label} · {model.label}",
         **known,
     )
@@ -400,20 +416,21 @@ def _parse_model_id(raw) -> uuid_lib.UUID | None:
 
 # 「哪个模型算可用」的唯一判定 —— 存在、启用、且是这种 kind。_enabled_model 和
 # resolve_model_id 都从这里出发, 所以两者不会对"可用"有不同看法。
-def _usable(parsed, kind: str):
-    return ImageModel.objects.filter(id=parsed, enabled=True, provider__kind=kind)
+def _usable(parsed, kinds: list[str]):
+    return ImageModel.objects.filter(id=parsed, enabled=True, provider__kind__in=kinds)
 
 
-def _enabled_model(raw, kind: str) -> ImageModel | None:
+def _enabled_model(raw, kinds: list[str]) -> ImageModel | None:
     """随请求/随任务行传进来的模型 id → 一条**存在且启用**的记录, 否则 None。
 
     「哪个模型算可用」的唯一判定处。刻意不抛: 用户随时可能删掉或停用一个配置, 而这个
     id 可能来自前端 localStorage 里的粘性选择, 也可能来自一条早就排好队的任务行。这两种
     情况下"退回默认通道生成"都比"整件事 500"合理。
 
-    `kind` 不是可选的过滤条件而是正确性的一部分: 两种接口形状同住一张表, 不筛的话一个
+    `kinds` 不是可选的过滤条件而是正确性的一部分: 几种接口形状同住一张表, 不筛的话一个
     angle 通道 (模型名在 URL 路径里、认证是 `Key`) 会被交给生图路径当普通模型用, 请求
-    发出去必然失败, 而且失败得莫名其妙。
+    发出去必然失败, 而且失败得莫名其妙。传的是**一组** kind 而不是一个, 因为一个工具栏
+    选择器现在对应多种 kind (生图 = 内置 image + 模板 custom_image), 见 kinds_for_picker。
 
     UUID 先行解析是必需的而不是防御性的: 不合法的字符串直接进 `.filter(id=...)` 会抛
     django 的 ValidationError, 那就把"选择已失效"变成了一个 500。
@@ -423,10 +440,11 @@ def _enabled_model(raw, kind: str) -> ImageModel | None:
         return None
     # select_related: 调用方一定会 deref model.provider (channel_for_model 要它的
     # base_url / api_key), 不预取就是每条多一次查询。
-    model = _usable(parsed, kind).select_related("provider").first()
+    model = _usable(parsed, kinds).select_related("provider").first()
     if model is None:
         logger.warning(
-            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 回退默认通道", parsed, kind,
+            "image channel: 模型配置 %s 不存在/已禁用/不属于 %s, 回退默认通道",
+            parsed, "/".join(kinds),
         )
     return model
 
@@ -446,10 +464,12 @@ def resolve_model_id(raw, kind: str = ImageProvider.Kind.IMAGE) -> uuid_lib.UUID
     parsed = _parse_model_id(raw)
     if parsed is None:
         return None
-    model_id = _usable(parsed, kind).values_list("id", flat=True).first()
+    kinds = kinds_for_picker(KIND_SPECS[kind].picker) if kind in KIND_SPECS else [kind]
+    model_id = _usable(parsed, kinds).values_list("id", flat=True).first()
     if model_id is None:
         logger.warning(
-            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 退到库里第一条", parsed, kind,
+            "image channel: 模型配置 %s 不存在/已禁用/不属于 %s, 退到库里第一条",
+            parsed, "/".join(kinds),
         )
     return model_id
 
@@ -475,6 +495,12 @@ def require_channel(raw, kind: str, *, noun: str, extra: str = "") -> ImageChann
     return channel
 
 
+def kinds_for_picker(picker: str) -> list[str]:
+    """喂同一个工具栏选择器的全部 kind。`image` 现在有两条 (内置 image + 模板
+    custom_image), 生成路径按这个列表找通道, 选择器按同一个列表列模型 —— 两边同源。"""
+    return [k for k, spec in KIND_SPECS.items() if spec.picker == picker]
+
+
 def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
     """「选中的那条, 没选/已失效就退到库里第一条」—— 生图和 angle 走的是同一条阶梯。
 
@@ -485,8 +511,11 @@ def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChanne
     agent 没传 model 参数)本来就没带选择。前端选择器会自动落位到列表第一项, 所以正常
     使用不依赖它。排序跟选择器一致 (sort_order, label), 两边的"第一条"是同一条。
     """
-    model = _enabled_model(raw, kind) or (
-        ImageModel.objects.filter(enabled=True, provider__kind=kind)
+    # 同一个选择器下的全部 kind 一起找: 生图选择器现在既列内置 image 也列模板
+    # custom_image, 任务行里存的 id 可能是任一种。
+    kinds = kinds_for_picker(KIND_SPECS[kind].picker) if kind in KIND_SPECS else [kind]
+    model = _enabled_model(raw, kinds) or (
+        ImageModel.objects.filter(enabled=True, provider__kind__in=kinds)
         .select_related("provider")
         .first()
     )
