@@ -956,20 +956,32 @@ class ImageProviderTestView(APIView):
     #
     # 逐个钳制每个旋钮是不够的: 轮询的真实耗时是 POST + N×(单次超时 + 间隔), 而 interval
     # 用户可以在界面上自己填。所以这里从**总墙钟预算**倒推出允许几轮, 让整体有个硬上限。
-    TEST_BUDGET_SECONDS = 60
+    # 跟前端 axios 的 `timeout: 600000` (毫秒) 对齐 —— 那才是真正会掐断这次点击的东西,
+    # 而 compose 里没有反代, 是 runserver 直连。原来写 60 是保守估的, 结果是**测试比真实
+    # 调用还严**: 实测图生图 66 秒, 一条配得完全正确的通道会被自己的测试判失败。
+    #
+    # 代价说清楚: 一次点击最长会占住一个同步 worker 十分钟, 而且真的烧一次生成额度。
+    TEST_BUDGET_SECONDS = 600
     TEST_OP_TIMEOUT = 15
     TEST_POLL_INTERVAL = 3
 
     # angle 通道是**一次同步阻塞出图** (fal.run 的 sync endpoint, 实测 15-30s), 没有
     # 轮询可压缩。给它整个预算, 否则一条配得完全正确的通道也会被 15s 掐断、报成"失败"。
+    # 注意这是个**耦合**: 预算从 60 抬到 600 之后, 一个卡死的 fal 请求也会占住 worker
+    # 十分钟。保留耦合是因为理由没变 —— "同步出图, 给它整个预算"; 变的只是预算本身。
     ANGLE_OP_TIMEOUT = TEST_BUDGET_SECONDS
     # 64×64 白色 PNG (132 字节)。angle 的请求体必须带源图, 而这里只是要问供应商
     # "端点/密钥/模型名对不对" —— 用尽量小的图, 别让测试变成一次真实构图。
     #
+    # 生图那条探针**不带源图**, 所以 `image_field` 填错它抓不到 (只发文生图时那个键是空
+    # 数组, 供应商直接忽略)。试过让它也带图: 轮询通道会因为图生图更慢而假失败 —— 不是
+    # 图的问题, 是下面 poll_max_attempts 的推导按"每轮都耗尽超时"估, 600s 预算实际只等
+    # 了 96s。要修得先把轮数换成真正的 deadline。
+    #
     # 不用 1×1: 视觉模型对入参尺寸普遍有下限 (fal 的 Qwen-Image-Edit 这类会直接 422),
     # 那样一条**配得完全正确**的通道也会被报成"测试失败" —— 正是这个按钮要消灭的那种
     # 假信号。64×64 仍然小到不值一提, 但落在所有已知实现的合法范围里。
-    ANGLE_PROBE_IMAGE = (
+    PROBE_IMAGE = (
         "data:image/png;base64,"
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo33UrYvQQc"
         "kD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAYHLAMpT0sIcNbcE"
@@ -1019,7 +1031,7 @@ class ImageProviderTestView(APIView):
         if provider.kind == ImageProvider.Kind.ANGLE:
             return probe_angle_channel(
                 replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
-                image_url=cls.ANGLE_PROBE_IMAGE,
+                image_url=cls.PROBE_IMAGE,
             )
         return probe_image_channel(cls._budgeted(channel))
 
