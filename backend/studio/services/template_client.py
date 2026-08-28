@@ -31,6 +31,7 @@ import requests
 
 from studio.services.image_channels import ImageChannel
 from studio.services.listings_utils import _extract_image_bytes_from_item, resolve_image_bytes
+from studio.services.http_retry import make_retry_session
 from studio.services.request_template import TemplateError, extract, render
 
 logger = logging.getLogger(__name__)
@@ -248,14 +249,38 @@ def _wh(size: str) -> tuple[int | None, int | None]:
     return w, h
 
 
+# 写了这两个变量之一, 才值得为它去下载外部图。
+_INLINE_VARS = frozenset({"image_base64", "images_base64"})
+
+
+def _inlined(image_urls: list[str], session: requests.Session | None) -> list[str]:
+    """外部 http(s) 图 → data URI。已经是 data URI 的原样返回。
+
+    **只在模板真用到 `{{image_base64}}` / `{{images_base64}}` 时才调** —— 每张都是一次
+    下载, 模板没用到还去下就是白花时间。
+    """
+    from studio.services.image_client import _url_to_data_uri  # noqa: PLC0415 — 避免循环 import
+
+    sess = session or make_retry_session()
+    return [_url_to_data_uri(u, sess) for u in image_urls]
+
+
 def image_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
-    n: int = 1, resolution: str = "",
+    n: int = 1, resolution: str = "", wanted: frozenset[str] = frozenset(),
+    session: requests.Session | None = None,
 ) -> dict[str, Any]:
     """喂给 custom_image 模板的变量表。跟 KIND_SPECS[custom_image].variables 必须一致 ——
-    那边是给用户看的清单和存盘校验的依据, 这边是真值。"""
+    那边是给用户看的清单和存盘校验的依据, 这边是真值。
+
+    `wanted` 是模板里实际出现的占位符 (request_template.placeholders 的结果), 只用来
+    决定要不要为 `{{image_base64}}` 去下载外部图。
+    """
     width, height = _wh(size)
+    b64 = _inlined(image_urls, session) if (_INLINE_VARS & wanted) else []
     return {
+        "image_base64": b64[0] if b64 else "",
+        "images_base64": b64,
         "base_url": channel.base_url, "api_key": channel.api_key, "model": channel.model,
         "prompt": prompt, "n": n, "resolution": resolution,
         "size": size, "aspect_ratio": _to_ratio(size), "width": width, "height": height,
@@ -267,10 +292,14 @@ def image_variables(
 
 def video_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str],
-    duration: int, aspect_ratio: str,
+    duration: int, aspect_ratio: str, wanted: frozenset[str] = frozenset(),
+    session: requests.Session | None = None,
 ) -> dict[str, Any]:
-    """喂给 custom_video 模板的变量表。"""
+    """喂给 custom_video 模板的变量表。`wanted` 同 image_variables。"""
+    b64 = _inlined(image_urls, session) if (_INLINE_VARS & wanted) else []
     return {
+        "image_base64": b64[0] if b64 else "",
+        "images_base64": b64,
         "base_url": channel.base_url, "api_key": channel.api_key, "model": channel.model,
         "prompt": prompt, "duration": duration, "aspect_ratio": aspect_ratio,
         "image": image_urls[0] if image_urls else "",

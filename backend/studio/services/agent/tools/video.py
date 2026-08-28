@@ -26,6 +26,7 @@ from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import require_channel, resolve_model_id
 from studio.services import template_client
+from studio.services.request_template import placeholders
 from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -95,13 +96,13 @@ def _template_video(job: VideoJob, channel: ImageChannel) -> str:
     不落字节: 视频跟内置 video 通道一样只存外链 (`job.result_url`)。`task_id` 也不回写
     job 行, 因为那是内置形状的概念 (模板里叫什么、在哪一层, 由用户决定)。
     """
+    sess = make_retry_session()
     variables = template_client.video_variables(
         channel, prompt=job.prompt, image_urls=list(job.image_urls or []),
         duration=job.duration, aspect_ratio=job.aspect_ratio,
+        wanted=placeholders(channel.request_template), session=sess,
     )
-    item = template_client.execute(
-        channel, channel.request_template, variables, session=make_retry_session(),
-    )
+    item = template_client.execute(channel, channel.request_template, variables, session=sess)
     return template_client.item_to_url(item)
 
 

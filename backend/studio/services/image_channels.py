@@ -136,11 +136,20 @@ _COMMON_VARS = frozenset({"base_url", "api_key", "model", "prompt", "task_id"})
 # 供应商是分开的 width / height 两个字段。这就是原来 `size_mode` 那个旋钮 —— 它做的是
 # **换算**而不是"放在哪", 模板表达不了计算, 所以换算在我们这边做完, 把几种现成的形式
 # 都摆出来让用户挑写哪个。跟 {{image}}/{{images}} 是同一招。
+#
+# `image_base64` / `images_base64` 是 `{{image}}` 的**强制内联**版本, 替代原来的
+# `inline_image` 旋钮: 画布上的图本来就已经是 data URI 了 (source_to_inline_uri 在进
+# 通道之前就把本地存储的内容内联掉了), 用不着这一对; 但**外部公网 URL** 是原样传过去
+# 的, 而有的供应商拉不动 (火山在北京拉海外 CDN 会 download timeout, 后端却能直连)。
+# 写这一对就是让我们先下载再转 base64。只有模板真用到了才会去下载。
 _IMAGE_VARS = _COMMON_VARS | {
-    "size", "aspect_ratio", "width", "height", "n", "resolution", "image", "images",
+    "size", "aspect_ratio", "width", "height", "n", "resolution",
+    "image", "images", "image_base64", "images_base64",
 }
 # 视频额外给的: 时长和画幅, 加上参考图。
-_VIDEO_VARS = _COMMON_VARS | {"duration", "aspect_ratio", "image", "images"}
+_VIDEO_VARS = _COMMON_VARS | {
+    "duration", "aspect_ratio", "image", "images", "image_base64", "images_base64",
+}
 
 # OpenAI 兼容的同步生图 —— 兔子、大多数聚合商都是这个形状。
 _STARTER_OPENAI_IMAGE = {

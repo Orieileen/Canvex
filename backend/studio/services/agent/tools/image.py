@@ -49,6 +49,7 @@ from studio.services.image_client import (
     build_probe_client,
 )
 from studio.services import template_client
+from studio.services.request_template import placeholders
 from studio.services.http_retry import make_retry_session
 from studio.services.listings_utils import handle_poll_if_needed
 
@@ -204,13 +205,13 @@ def _template_generation(
     `session` 让调用方换重试策略, 跟 `_single_generation` 的 `client` 参数同一个理由
     (worker 要重试, 同步的测试按钮不要)。
     """
+    sess = session or make_retry_session()
     variables = template_client.image_variables(
         channel, prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
+        # 模板里实际写了哪些占位符 —— 只用来决定要不要为 {{image_base64}} 去下载外部图。
+        wanted=placeholders(channel.request_template), session=sess,
     )
-    item = template_client.execute(
-        channel, channel.request_template, variables,
-        session=session or make_retry_session(),
-    )
+    item = template_client.execute(channel, channel.request_template, variables, session=sess)
     return template_client.item_to_bytes(item)
 
 
