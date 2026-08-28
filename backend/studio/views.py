@@ -981,7 +981,7 @@ class ImageProviderTestView(APIView):
     # 不用 1×1: 视觉模型对入参尺寸普遍有下限 (fal 的 Qwen-Image-Edit 这类会直接 422),
     # 那样一条**配得完全正确**的通道也会被报成"测试失败" —— 正是这个按钮要消灭的那种
     # 假信号。64×64 仍然小到不值一提, 但落在所有已知实现的合法范围里。
-    PROBE_IMAGE = (
+    ANGLE_PROBE_IMAGE = (
         "data:image/png;base64,"
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo33UrYvQQc"
         "kD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAYHLAMpT0sIcNbcE"
@@ -1002,7 +1002,14 @@ class ImageProviderTestView(APIView):
           所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
           interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
         """
-        if not channel.poll_enabled:
+        # 「这条通道会不会轮询」有两种说法, 两种都得看:
+        #   - 内置通道: `poll_enabled` 旋钮
+        #   - 模板通道: 模板里有没有 `poll` 段 —— 它**没有** poll_enabled 这个旋钮, 恒为
+        #     False。只看旋钮的话, 一条异步的自定义生图通道会拿到"整个预算给 POST"的待遇,
+        #     然后再自顾自轮询 60 次 × (30s 超时 + 5s 间隔), 墙钟预算形同虚设: 一次点击能
+        #     占住同步 worker 半小时, 而浏览器那 600s 早就断了。
+        polls = channel.poll_enabled or bool((channel.request_template or {}).get("poll"))
+        if not polls:
             return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
 
         op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
@@ -1014,6 +1021,11 @@ class ImageProviderTestView(APIView):
             timeout=op_timeout,
             poll_timeout=poll_timeout,
             poll_interval=interval,
+            # 退避上限也要钳: 下面那道轮数推导是按"每轮都只等 interval"算的, 而模板通道的
+            # 轮询会把等待翻倍到 poll_max_interval (跟内置 video 同一条式子)。不钳的话一条
+            # poll_max_interval=180 的自定义通道, 推导出的轮数乘上真实等待照样跑到几十分钟。
+            # 钳成 interval = 这次测试里不退避, 固定间隔。
+            poll_max_interval=interval,
             poll_max_attempts=max(
                 1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
             ),
@@ -1031,7 +1043,7 @@ class ImageProviderTestView(APIView):
         if provider.kind == ImageProvider.Kind.ANGLE:
             return probe_angle_channel(
                 replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
-                image_url=cls.PROBE_IMAGE,
+                image_url=cls.ANGLE_PROBE_IMAGE,
             )
         return probe_image_channel(cls._budgeted(channel))
 

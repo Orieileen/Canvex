@@ -18,6 +18,7 @@ import base64
 import functools
 import logging
 from dataclasses import asdict, dataclass, field, fields
+from math import gcd
 from typing import Any
 
 import requests
@@ -51,6 +52,35 @@ def _sniff_image_mime(content: bytes) -> str:
         logger.warning("inline image: PIL could not identify format, defaulting to image/png (bytes=%d)", len(content))
         return "image/png"
     return f"image/{fmt.lower()}" if fmt else "image/png"
+
+
+def size_to_wh(size: str) -> tuple[int, int] | tuple[None, None]:
+    """`WxH` → (宽, 高)。解析不了给 (None, None)。大小写不敏感。"""
+    if "x" not in (size or "").lower():
+        return None, None
+    try:
+        w, h = (int(part) for part in size.lower().split("x", 1))
+    except ValueError:
+        return None, None
+    return w, h
+
+
+def size_to_ratio(size: str) -> str:
+    """`WxH` 像素 → `W:H` 比例 (gcd 化简)。已是比例 / 解析不了时原样返回。
+
+    住在这里而不是 `agent/tools/image.py`: 那个模块把整条生图任务链 (Django 模型、
+    celery、PIL) 都拉进来, 而模板客户端只想要这一段算术 —— 它 import 那个模块会成环
+    (`agent/tools/image.py` 反过来 import template_client)。这个模块是叶子, 两边都能用。
+
+    以前这里有两份实现, 而且**上线当天就分叉了**: 一份判 `"x" not in size`, 一份判
+    `"x" not in size.lower()` —— `"1024X1024"` 在一份里原样返回、在另一份里变成 `1:1`。
+    所以合并的理由不是"少几行", 是那两份已经不是同一个函数了。
+    """
+    w, h = size_to_wh(size)
+    if w is None or h is None:
+        return size
+    g = gcd(w, h) or 1
+    return f"{w // g}:{h // g}"
 
 
 def bytes_to_data_uri(content: bytes) -> str:

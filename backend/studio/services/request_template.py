@@ -110,7 +110,11 @@ def extract(payload: Any, path: str) -> Any:
     报错里带上**走到哪一步断的**和那一层实际有什么键 —— 供应商换个响应形状时, 这句话
     就是用户唯一能拿来改路径的线索。
     """
-    if not (path or "").strip():
+    # 先归一成字符串: 模板是用户手写的 JSON, `"result_path": 0` 这种完全可能出现, 而
+    # 直接拿去 .strip() / findall 抛的是 AttributeError —— 它不是 TemplateError, 逃出
+    # 调用方那层翻译, 变成一个跟模板毫无关系的 500 / celery traceback。
+    path = str(path) if path is not None else ""
+    if not path.strip():
         return payload
     node = payload
     walked: list[str] = []
@@ -140,14 +144,47 @@ def extract(payload: Any, path: str) -> Any:
 
 
 def validate(template: Any, allowed: set[str]) -> None:
-    """存盘前的校验: 用到的变量必须都在这种通道声明的变量表里。
+    """存盘前的校验: 模板的形状 + 用到的变量。不合格抛 `TemplateError`。
 
-    在这里拦而不是等渲染时 —— 渲染发生在生成任务里, 那时报错落在 celery 日志中, 用户
-    看到的是"生成失败"。存盘时拦才能把"你写了 {{iamge}}"这句话放到他眼前。
+    **形状规则住在这里, 不在序列化器里。** 这个模块定义了模板这个格式, 所以"什么样的
+    模板算合法"就该由它回答 —— 放在 DRF 序列化器里意味着任何不走那条路的写入 (fixture、
+    shell、管理命令、以后的批量导入) 都绕过全部检查, 只剩执行器里那几道更弱的兜底。
+
+    在存盘时拦而不是等渲染时: 渲染发生在生成任务里, 那时报错落在 celery 日志中, 用户
+    看到的只是"生成失败"。存盘时拦才能把"你写了 {{iamge}}"这句话放到他眼前。
     """
+    if not isinstance(template, dict) or not template:
+        raise TemplateError("这种通道要填请求模板 —— 先从起点模板里选一个, 再照供应商文档改。")
+
     unknown = sorted(placeholders(template) - allowed)
     if unknown:
         raise TemplateError(
             f"模板里用了这种通道没有的变量: {', '.join('{{%s}}' % u for u in unknown)}。"
             f"可用的有: {', '.join('{{%s}}' % a for a in sorted(allowed))}"
+        )
+
+    if not str(template.get("url") or "").strip():
+        raise TemplateError("模板里缺 `url`。")
+
+    poll = template.get("poll")
+    if poll is None:
+        return
+    if not isinstance(poll, dict):
+        raise TemplateError("`poll` 得是个对象。")
+    # 这三条漏了之后的表现是同一种, 而且最误导: 轮询一直转到次数用完, 然后给一句
+    # "轮询了 N 次还没完成" —— 那会把人引到调大次数上, 方向完全错。
+    #
+    # `status_path` 尤其要拦: 少了它, `extract` 会把**整个回包**当成状态串, 于是永远
+    # 匹配不上 `done`, 表现跟没写 `done` 一模一样。
+    if not (poll.get("done") or []):
+        raise TemplateError("模板有 `poll` 段但没写 `done` —— 我们无法知道什么状态算完成了。")
+    if not str(poll.get("status_path") or "").strip():
+        raise TemplateError(
+            "模板有 `poll` 段但没写 `status_path` —— 不知道去回包的哪一层读状态。"
+        )
+    if not str(poll.get("url") or "").strip():
+        raise TemplateError("模板有 `poll` 段但没写 `url` —— 不知道去哪查任务状态。")
+    if not str(template.get("task_id_path") or "").strip():
+        raise TemplateError(
+            "模板有 `poll` 段但没写 `task_id_path` —— 提交之后不知道去哪拿任务 id。"
         )

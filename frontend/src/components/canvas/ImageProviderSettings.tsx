@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
@@ -66,6 +66,11 @@ type Values = Record<string, unknown>;
 /** kind → 界面上的展示名。徽标和新建时的下拉共用, 免得两处各拼一次 i18n key。 */
 const kindLabel = (t: TFunction, kind: string) =>
   t(`imageProviders.kind${kind[0].toUpperCase()}${kind.slice(1)}`);
+
+/** 等宽多行输入 (curl 导入、请求模板)。跟 `inputCls` 同一个理由: 这串 class 在本文件里
+ *  已经出现过三次, 而改主题/尺寸时漏掉一处不会报错, 只会长得不一样。 */
+const monoTextareaCls =
+  "w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px] outline-none";
 
 const inputCls =
   "w-full rounded-md border border-border bg-background px-2 py-1 text-[12px] outline-none focus:border-foreground/30";
@@ -439,7 +444,7 @@ function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProv
         onChange={(e) => setText(e.target.value)}
         rows={5}
         placeholder={"curl https://api.example.com/v1/images/generations \\\n  -H 'Authorization: Bearer …' \\\n  -d '{\"model\":\"…\",\"image\":\"…\"}'"}
-        className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[11px] outline-none focus:border-foreground/30"
+        className={cn(monoTextareaCls, "focus:border-foreground/30")}
       />
       <div className="mt-2 flex gap-2">
         <button
@@ -487,6 +492,9 @@ function ProviderCard({
 }) {
   const { t } = useTranslation("canvasUi");
   const [testing, setTesting] = useState("");
+  // 模板编辑器里现在是不是一段非法 JSON。非法时不能保存 —— 编辑器不会把非法文本抛上来,
+  // 硬存的话存进去的是**上一个合法版本**, 用户却拿到一句"保存成功"。
+  const [templateBad, setTemplateBad] = useState(false);
   const isNew = draft.id.startsWith("new-");
   // 这种通道的全部表单规则, 由后端下发。切换 kind 时旋钮列表、占位符、base_url 示例、
   // 能不能一键测**同时**跟着换 —— 后端保存时按的是同一份 KIND_SPECS, 所以界面和真实
@@ -599,6 +607,7 @@ function ProviderCard({
             <TemplateEditor
               value={draft.request_template}
               onChange={(request_template) => onPatch({ request_template })}
+              onInvalid={setTemplateBad}
               starters={spec.starters}
               variables={spec.variables}
             />
@@ -654,7 +663,8 @@ function ProviderCard({
             <button
               type="button"
               onClick={onSave}
-              className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background"
+              disabled={templateBad}
+              className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
             >
               {t("imageProviders.save")}
             </button>
@@ -856,19 +866,29 @@ function Field({
  *  本地存的是**文本**而不是解析后的对象: 用户打字的中间态 (`{"a":` ) 不是合法 JSON,
  *  每敲一个字符就 parse 再回写会把光标和内容都搅乱。只有 parse 成功时才往上抛对象,
  *  失败时留一行红字并且**不覆盖**上层的值 —— 存盘按钮那边拿到的仍然是上一个合法版本。
+ *
+ *  那个"不覆盖"要配 `onInvalid` 一起看: 光留一行红字是不够的, 用户照样能点保存, 然后
+ *  拿到一句"保存成功"而他刚敲的东西被静默丢掉(存进去的是上一个合法版本)。所以非法状态
+ *  要报上去, 由卡片把保存按钮禁掉。
  */
 function TemplateEditor({
-  value, onChange, starters, variables,
+  value, onChange, onInvalid, starters, variables,
 }: {
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
+  /** 当前文本是不是不合法的 JSON。卡片据此禁用保存。 */
+  onInvalid: (bad: boolean) => void;
   starters: { label: string; template: Record<string, unknown> }[];
   variables: string[];
 }) {
   const { t } = useTranslation("canvasUi");
   const pretty = (v: unknown) => JSON.stringify(v ?? {}, null, 2);
   const [text, setText] = useState(() => pretty(value));
-  const [bad, setBad] = useState(false);
+  // 从 text 推, 不另开一份 state —— 它俩描述的是同一件事 ("这段文本能不能 parse"),
+  // 分成两份就有走散的可能, 而且渲染期那段外部同步里还要多一次 setState。
+  const bad = useMemo(() => {
+    try { JSON.parse(text); return false; } catch { return true; }
+  }, [text]);
   // 外部换了模板 (选了起点模板 / reload 拿到服务端版本) 时同步进来。比较的是格式化后的
   // 文本, 否则用户自己敲的空白会被当成"外部变了"而被覆盖掉。
   const external = pretty(value);
@@ -876,17 +896,28 @@ function TemplateEditor({
   if (lastExternal.current !== external) {
     lastExternal.current = external;
     setText(external);
-    setBad(false);
   }
+
+  // 卸载 / bad 变化时把状态报上去。放 effect 里而不是直接在 commit 里调: 上面那段
+  // "外部变了"的同步是**渲染期间**改 state 的, 在渲染期间去改父组件的 state 是非法的。
+  // cleanup 里报 false 是给"通道类型改掉、编辑器整个卸载"兜底 —— 否则保存按钮会永久禁着。
+  useEffect(() => {
+    onInvalid(bad);
+    return () => onInvalid(false);
+  }, [bad, onInvalid]);
 
   const commit = (next: string) => {
     setText(next);
     try {
       const parsed = JSON.parse(next);
-      setBad(false);
+      // **这一步必须同时推进 lastExternal**: onChange 会让父组件的 value 变成 parsed,
+      // 下一次渲染 external 就跟着变了 —— 不推进的话上面那段会把它当成"外部改了模板",
+      // 于是每敲出一个合法 JSON 都被重新格式化一遍、光标弹到末尾。格式化是「格式化」
+      // 按钮的事, 不该在打字中途自己发生。
+      lastExternal.current = pretty(parsed);
       onChange(parsed);
     } catch {
-      setBad(true);   // 不 onChange —— 上层保留上一个合法版本
+      // 解析不了就不 onChange —— 上层保留上一个合法版本, `bad` 由 text 自己推出来。
     }
   };
 
@@ -925,8 +956,8 @@ function TemplateEditor({
         rows={16}
         spellCheck={false}
         className={cn(
-          "w-full resize-y rounded-md border bg-background p-2 font-mono text-[11px] outline-none",
-          bad ? "border-destructive" : "border-border focus:border-foreground/30",
+          monoTextareaCls,
+          bad ? "border-destructive" : "focus:border-foreground/30",
         )}
       />
       {bad && (
