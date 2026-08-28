@@ -201,6 +201,13 @@ class ImageProvider(models.Model):
         # 不支持的代理会静默忽略 tools、回一段 markdown 而不是 tool_call, 于是画布上
         # 什么都不会发生。所以它跟生图那把 key 刻意分开, 别指同一个聚合商端点。
         CHAT = "chat", "Chat agent LLM"
+        # ── 模板类通道 ──────────────────────────────────────────────────
+        # 请求长什么样由用户在 `request_template` 里填, 不再是上面那十四个旋钮 + 一个
+        # 写死的 /images/generations。存在的理由: 生图没有统一的线上格式, 每加一家新
+        # 供应商就要么加旋钮要么改代码, 而端点写死意味着 /images/edits、chat 格式生图、
+        # Midjourney 这些形状根本够不着。见 services/request_template.py。
+        CUSTOM_IMAGE = "custom_image", "Custom image generation (request template)"
+        CUSTOM_VIDEO = "custom_video", "Custom video generation (request template)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     label = models.CharField(max_length=100)
@@ -224,6 +231,10 @@ class ImageProvider(models.Model):
     base_url = models.CharField(max_length=500, blank=True, validators=[validate_endpoint_url])
     api_key = models.CharField(max_length=500, blank=True)
     defaults = models.JSONField(default=dict, blank=True)
+    # 只有 kind=custom_* 用: 一次调用的完整形状 (method / url / headers / body /
+    # result_path, 异步的再加一段 poll)。其余 kind 留空 —— 它们的请求由代码拼。
+    # 校验在 ImageProviderSerializer: 变量名必须在这种 kind 声明的变量表里。
+    request_template = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

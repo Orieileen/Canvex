@@ -89,6 +89,20 @@ class _KindSpec:
     # testable=False 时告诉用户该怎么验。空 = 用通用兜底文案。
     untestable_reason: str = ""
 
+    # ── 模板类通道 ────────────────────────────────────────────────────────
+    # True = 这种通道由**用户填的请求模板**驱动, 不是上面那些旋钮。表单因此完全不同
+    # (一个 JSON 编辑器 + 变量说明, 而不是十四个输入框), 所以前端要靠这个标志分流。
+    template: bool = False
+    # 这种通道能用哪些占位符。**存盘时校验**, 写错的变量当场报错而不是等到生成时 ——
+    # 后者的报错落在 celery 日志里, 用户只看得见"生成失败"。
+    #
+    # 这张表也是"全部由用户填"这句话的边界: 请求的形状随便你写, 但我们必须知道哪个键
+    # 放提示词、哪个放源图, 否则没法把画布上的东西喂进去。
+    variables: frozenset[str] = frozenset()
+    # 内置的起点模板。**不是为了限制, 是因为预设本身就是知识** —— 全空的话每接一家都得
+    # 先读一遍 API 文档手写 JSON, 而常见情况本来填个 url/key/model 就能跑。选一个再改。
+    starters: tuple[tuple[str, dict], ...] = ()
+
 
 # 每种 kind 真正会读的旋钮。
 #
@@ -102,6 +116,61 @@ class _KindSpec:
 # 请求形状旋钮 (image_field / response_format / watermark … 它的请求体是 video.py 自己拼的)。
 # 它的默认值跟生图差很远: 生图 60 次 × 5 秒 = 5 分钟内敲 60 下, 而视频要跑 1-5 分钟 ——
 # 所以 9 次 × 20 秒起步、退避到 180 秒, 这几个数就是原来 CANVAS_VIDEO_* 的默认值。
+# 每种模板通道都有的: 通道自身的三个字段 + 提示词。
+_COMMON_VARS = frozenset({"base_url", "api_key", "model", "prompt"})
+# 生图额外给的: 尺寸、张数、源图 (单张标量 / 多张数组各一个 —— 这一对就替代了原来的
+# image_as_single, 你要标量就写 {{image}}, 要数组就写 {{images}})。
+_IMAGE_VARS = _COMMON_VARS | {"size", "n", "image", "images"}
+# 视频额外给的: 时长和画幅, 加上参考图。
+_VIDEO_VARS = _COMMON_VARS | {"duration", "aspect_ratio", "image", "images"}
+
+# OpenAI 兼容的同步生图 —— 兔子、大多数聚合商都是这个形状。
+_STARTER_OPENAI_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{size}}", "n": "{{n}}",
+        "image": "{{image}}", "response_format": "url",
+    },
+    "result_path": "data[0]",
+}
+# 同一个端点, 但源图是数组 —— apimart 这类。
+_STARTER_OPENAI_IMAGE_MULTI = {
+    **_STARTER_OPENAI_IMAGE,
+    "body": {**_STARTER_OPENAI_IMAGE["body"], "image": None, "image_urls": "{{images}}"},
+}
+# fal.run: 模型名在 URL 路径里, 认证是 `Key` 不是 `Bearer`。
+_STARTER_FAL = {
+    "method": "POST",
+    "url": "{{base_url}}/{{model}}",
+    "headers": {"Authorization": "Key {{api_key}}", "Content-Type": "application/json"},
+    "body": {"prompt": "{{prompt}}", "image_urls": ["{{image}}"], "num_images": "{{n}}"},
+    "result_path": "images[0]",
+}
+# 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
+_STARTER_ASYNC_VIDEO = {
+    "method": "POST",
+    "url": "{{base_url}}/videos/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}",
+        "duration": "{{duration}}", "aspect_ratio": "{{aspect_ratio}}",
+        "image_urls": "{{images}}",
+    },
+    "task_id_path": "data.task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["succeeded", "success", "completed", "done"],
+        "failed": ["failed", "error", "cancelled"],
+        "result_path": "data.result.videos[0]",
+    },
+}
+
+
 KIND_SPECS: dict[str, _KindSpec] = {
     ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True),
     ImageProvider.Kind.ANGLE: _KindSpec(
@@ -121,6 +190,28 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "聊天通道不支持一键测试 —— 要验的是「支不支持 tools 参数」, 跟发一张图不是一回事。"
             "直接在聊天框里说一句「生成一张图」即可: 画布上真的出图 = 通了。"
         ),
+    ),
+    # ── 模板类 ────────────────────────────────────────────────────────────
+    # 只保留 timeout: 别的都在模板里。
+    ImageProvider.Kind.CUSTOM_IMAGE: _KindSpec(
+        tunables=frozenset({"timeout"}),
+        template=True,
+        variables=_IMAGE_VARS,
+        starters=(
+            ("OpenAI 兼容 · 单张源图", _STARTER_OPENAI_IMAGE),
+            ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
+            ("fal.run (模型在 URL、Key 认证)", _STARTER_FAL),
+        ),
+        testable=True,
+    ),
+    ImageProvider.Kind.CUSTOM_VIDEO: _KindSpec(
+        tunables=frozenset({"timeout", "poll_interval", "poll_max_attempts", "poll_timeout"}),
+        defaults={"timeout": 60, "poll_interval": 20, "poll_max_attempts": 9},
+        template=True,
+        variables=_VIDEO_VARS,
+        starters=(("提交 → 轮询 (通用视频)", _STARTER_ASYNC_VIDEO),),
+        # 视频要跑几分钟, 一次同步 HTTP 里测不完 —— 跟内置 video 通道同一个理由。
+        untestable_reason="视频通道没法一键测: 出片要几分钟, 撑不过一次同步请求。配好之后在画布上真发一条最快。",
     ),
     ImageProvider.Kind.VIDEO: _KindSpec(
         tunables=frozenset({
@@ -206,6 +297,12 @@ def tunable_schema() -> dict[str, dict]:
             "requires_base_url": spec.requires_base_url,
             "base_url_example": spec.base_url_example,
             "testable": spec.testable,
+            # 模板类通道的三件事。前端据此改渲染另一套表单 (一个 JSON 编辑器 + 变量
+            # 说明), 而不是那十四个输入框。跟上面几项同一个理由: 判定只此一处, 前端
+            # 不再自己按 kind 名字硬编码。
+            "template": spec.template,
+            "variables": sorted(spec.variables),
+            "starters": [{"label": lbl, "template": tpl} for lbl, tpl in spec.starters],
         }
     return out
 
