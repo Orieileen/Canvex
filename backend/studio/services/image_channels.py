@@ -117,10 +117,20 @@ class _KindSpec:
 # 它的默认值跟生图差很远: 生图 60 次 × 5 秒 = 5 分钟内敲 60 下, 而视频要跑 1-5 分钟 ——
 # 所以 9 次 × 20 秒起步、退避到 180 秒, 这几个数就是原来 CANVAS_VIDEO_* 的默认值。
 # 每种模板通道都有的: 通道自身的三个字段 + 提示词。
-_COMMON_VARS = frozenset({"base_url", "api_key", "model", "prompt"})
+# `task_id` 只在 `poll` 段里有值 (提交回来之后才知道), 但校验是整份模板一起做的, 所以
+# 它也在允许表里。写在 body 里不会报错, 只是渲染成空、那个键消失。
+_COMMON_VARS = frozenset({"base_url", "api_key", "model", "prompt", "task_id"})
 # 生图额外给的: 尺寸、张数、源图 (单张标量 / 多张数组各一个 —— 这一对就替代了原来的
 # image_as_single, 你要标量就写 {{image}}, 要数组就写 {{images}})。
-_IMAGE_VARS = _COMMON_VARS | {"size", "n", "image", "images"}
+#
+# **尺寸给四种形式**, 因为各家要的不一样: 兔子要像素 `1024x1024`, apimart 要比例
+# `1:1`(实测: 给像素会被拒 —— "unsupported image aspect ratio 1024:1024"), 还有些
+# 供应商是分开的 width / height 两个字段。这就是原来 `size_mode` 那个旋钮 —— 它做的是
+# **换算**而不是"放在哪", 模板表达不了计算, 所以换算在我们这边做完, 把几种现成的形式
+# 都摆出来让用户挑写哪个。跟 {{image}}/{{images}} 是同一招。
+_IMAGE_VARS = _COMMON_VARS | {
+    "size", "aspect_ratio", "width", "height", "n", "resolution", "image", "images",
+}
 # 视频额外给的: 时长和画幅, 加上参考图。
 _VIDEO_VARS = _COMMON_VARS | {"duration", "aspect_ratio", "image", "images"}
 
@@ -135,10 +145,14 @@ _STARTER_OPENAI_IMAGE = {
     },
     "result_path": "data[0]",
 }
-# 同一个端点, 但源图是数组 —— apimart 这类。
+# 同一个端点, 但源图是数组、尺寸要比例 —— apimart 这类。
 _STARTER_OPENAI_IMAGE_MULTI = {
     **_STARTER_OPENAI_IMAGE,
-    "body": {**_STARTER_OPENAI_IMAGE["body"], "image": None, "image_urls": "{{images}}"},
+    "body": {
+        **_STARTER_OPENAI_IMAGE["body"],
+        "image": None, "image_urls": "{{images}}",
+        "size": "{{aspect_ratio}}",
+    },
 }
 # fal.run: 模型名在 URL 路径里, 认证是 `Key` 不是 `Bearer`。
 _STARTER_FAL = {
@@ -148,6 +162,31 @@ _STARTER_FAL = {
     "body": {"prompt": "{{prompt}}", "image_urls": ["{{image}}"], "num_images": "{{n}}"},
     "result_path": "images[0]",
 }
+# 提交 → 拿 task_id → 轮询。**照 apimart 实测的形状写的**:
+#   提交回 {"data":[{"status":"submitted","task_id":"..."}]}
+#   轮询回 {"data":{"status":"completed","result":{"images":[{"url":["https://..."]}]}}}
+# 注意 `url` 是个**数组**, 所以路径要一路点到 `url[0]` —— 取出来是裸字符串, item_to_bytes
+# 认这种。
+_STARTER_ASYNC_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{aspect_ratio}}",
+        "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
+    },
+    "task_id_path": "data[0].task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["completed", "succeeded", "success", "done"],
+        "failed": ["failed", "error", "cancelled"],
+        "result_path": "data.result.images[0].url[0]",
+    },
+}
+
 # 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
 _STARTER_ASYNC_VIDEO = {
     "method": "POST",
@@ -200,6 +239,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         starters=(
             ("OpenAI 兼容 · 单张源图", _STARTER_OPENAI_IMAGE),
             ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
+            ("OpenAI 兼容 · 异步 (提交 + 轮询)", _STARTER_ASYNC_IMAGE),
             ("fal.run (模型在 URL、Key 认证)", _STARTER_FAL),
         ),
         testable=True,
