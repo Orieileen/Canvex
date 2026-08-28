@@ -205,7 +205,10 @@ export interface CanvasImageModel {
  *  - `video` 文/图生视频 (提交拿 task_id 再长轮询)。
  *  - `chat` 聊天 agent 的 LLM。必须支持 OpenAI 的 tools 参数, 否则 agent 调不动画布工具。
  *  决定每个选择器列哪些模型, 以及配置表单显示哪些参数(后者由后端下发的 schema 说)。 */
-export type CanvasImageProviderKind = "image" | "angle" | "video" | "chat";
+export type CanvasImageProviderKind =
+  | "image" | "angle" | "video" | "chat"
+  /** 请求形状由用户填的模板决定, 不是那十四个旋钮。见 CanvasKindSpec.template。 */
+  | "custom_image" | "custom_video";
 
 /** 一个生图供应商端点 —— 一把 key + 一个 base_url + 一套请求参数默认值。
  *  api_key 明文返回:本地单机项目,配置页要能回显用户填过什么、直接改。 */
@@ -216,6 +219,8 @@ export interface CanvasImageProvider {
   base_url: string;
   api_key: string;
   defaults: Record<string, unknown>;
+  /** 只有 kind=custom_* 用: 一次调用的完整形状。其余 kind 是 `{}`。 */
+  request_template: Record<string, unknown>;
   models: CanvasImageModel[];
   created_at: string;
   updated_at: string;
@@ -234,6 +239,14 @@ export interface CanvasKindSpec {
   base_url_example: string;
   /** 有没有一键测试的探针。没有时 ⚡ 按钮不显示, 后端也会拒绝。 */
   testable: boolean;
+  /** 工具栏哪个选择器列这种通道。空 = 不进任何选择器 (chat)。 */
+  picker: string;
+  /** true = 这种通道由请求模板驱动, 表单换成模板编辑器而不是那排旋钮。 */
+  template: boolean;
+  /** 模板里能用的占位符。**存盘时后端会校验**, 这里只用来显示给用户看。 */
+  variables: string[];
+  /** 内置起点模板。选一个填进编辑器再改, 而不是从零手写 JSON。 */
+  starters: { label: string; template: Record<string, unknown> }[];
 }
 
 /**
@@ -264,8 +277,11 @@ export interface CanvasImageModelChoice {
   id: string;
   label: string;
   provider_label: string;
-  /** 来自所属 provider。一次请求拿回全部, 两个选择器各自按它筛。 */
+  /** 来自所属 provider。展示用。 */
   kind: CanvasImageProviderKind;
+  /** **筛选按这个, 不是 kind。** 一个选择器对应多种 kind (生图 = image + custom_image),
+   *  按 kind 名字筛的话新加的那种配好了却不出现, 而且不报错。 */
+  picker: string;
   sort_order: number;
 }
 

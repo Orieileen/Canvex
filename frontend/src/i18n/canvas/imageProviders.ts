@@ -12,10 +12,19 @@ export const imageProviders = {
     modelLabelPlaceholder: "Display name",
     modelStringPlaceholder: "model string the provider wants",
     kind: "Channel type",
-    kindImage: "Image generation (Image / Split)",
+    kindImage: "Image generation",
     kindAngle: "Camera angle re-render (Angle)",
     kindVideo: "Video generation (Video)",
     kindChat: "Chat agent LLM",
+    kindCustom_image: "Custom image generation (request template)",
+    kindCustom_video: "Custom video generation (request template)",
+    template: "Request template",
+    templateHint:
+      "The whole request, as JSON. Placeholders below are substituted per generation; a key whose value resolves to empty is dropped entirely.",
+    templateStarter: "Start from…",
+    templateVars: "Available placeholders",
+    templateInvalid: "Not valid JSON — check for a trailing comma or a missing quote.",
+    templateFormat: "Reformat",
     kindHint: {
       image: "Shows up in the Image and Split pickers, and in the chat bar.",
       angle:
@@ -24,9 +33,17 @@ export const imageProviders = {
         "Shows up in the Video picker only. Submit returns a task id which we then long-poll, so the tunables here are the timeouts and the poll schedule.",
       chat:
         "The model behind the chat box. It must support OpenAI-style tool calling — one that doesn't will reply with markdown and quietly do nothing on the canvas. Don't point it at your image key.",
+      custom_image:
+        "For providers the built-in Image channel can't express. You write the whole request — endpoint, headers, body, where the result is — so the fixed /images/generations path and Bearer auth stop being assumptions. Shows up in the same pickers as Image.",
+      custom_video:
+        "Same idea as custom image generation, for video. Submit-then-poll is written out in the template rather than guessed at.",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
+      custom_image:
+        "Whatever {{base_url}} should expand to in your template. Canvex appends nothing — the full path is yours to write.",
+      custom_video:
+        "Whatever {{base_url}} should expand to in your template. Canvex appends nothing — the full path is yours to write.",
       image:
         "Without the /images/generations suffix — Canvex appends it. Local model servers are fine, but the backend runs in a container: use host.docker.internal:11434, not localhost:11434.",
       angle:
@@ -96,10 +113,19 @@ export const imageProviders = {
     modelLabelPlaceholder: "显示名称",
     modelStringPlaceholder: "该供应商要的模型字符串",
     kind: "通道类型",
-    kindImage: "生图 (Image / Split)",
+    kindImage: "图片生成通道",
     kindAngle: "视角重渲染 (Angle)",
     kindVideo: "视频生成 (Video)",
     kindChat: "聊天模型 (Chat)",
+    kindCustom_image: "自定义图片生成通道",
+    kindCustom_video: "自定义视频通道",
+    template: "请求模板",
+    templateHint:
+      "整个请求, 用 JSON 写。下面那些占位符会在每次生成时替换掉; 某个键的值解析出来是空的话, 这个键整个不下发。",
+    templateStarter: "从模板开始…",
+    templateVars: "可用的占位符",
+    templateInvalid: "这不是合法的 JSON —— 检查一下多余的逗号或者少了的引号。",
+    templateFormat: "格式化",
     kindHint: {
       image: "会出现在 Image、Split 两个选择器和聊天栏里。",
       angle:
@@ -108,9 +134,17 @@ export const imageProviders = {
         "只出现在 Video 的选择器里。提交后拿到 task id 再长轮询,所以这里能调的是各种超时和轮询节奏。",
       chat:
         "聊天框背后的模型。它必须支持 OpenAI 风格的 tool calling —— 不支持的会回一段 markdown 然后画布上什么都不发生。别填生图那把 key。",
+      custom_image:
+        "给内置「图片生成通道」表达不了的供应商用。整个请求由你写 —— 端点、请求头、请求体、结果在哪一层,所以写死的 /images/generations 和 Bearer 认证不再是前提。它和图片生成通道出现在同一批选择器里。",
+      custom_video:
+        "跟自定义图片生成同一个思路,用于视频。「提交完再轮询」这套写在模板里,不再靠猜。",
     },
     baseUrl: "Base URL",
     baseUrlHint: {
+      custom_image:
+        "模板里 {{base_url}} 展开成什么就填什么。Canvex 不会再往后拼任何东西 —— 完整路径由你在模板里写。",
+      custom_video:
+        "模板里 {{base_url}} 展开成什么就填什么。Canvex 不会再往后拼任何东西 —— 完整路径由你在模板里写。",
       image:
         "不要带 /images/generations 后缀,Canvex 会自己拼。可以填本机推理服务,但后端跑在容器里 —— 要用 host.docker.internal:11434,不是 localhost:11434。",
       angle:

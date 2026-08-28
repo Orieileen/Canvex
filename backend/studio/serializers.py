@@ -14,7 +14,12 @@ from .models import (
     Scene,
     VideoJob,
 )
-from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
+from .services.image_channels import (
+    KIND_SPECS,
+    POSITIVE_TUNABLES,
+    TUNABLE_TYPES,
+    kinds_for_picker,
+)
 from .services.request_template import TemplateError
 from .services.request_template import validate as validate_template
 
@@ -132,15 +137,19 @@ def _channel_choice_field(kind: str):
     """工具栏模型选择器写回来的那一项。
 
     两件事都不是可选的:
-    - **queryset 按 kind 限死** —— 两种接口形状同住一张表, 把 angle 通道送进生图路径
+    - **queryset 按 kind 限死** —— 几种接口形状同住一张表, 把 angle 通道送进生图路径
       (或反过来) 发出去必然失败, 且失败得莫名其妙。在这里筛掉。
+      限的是**同一个选择器下的那一组** kind 而不是一个: 生图选择器既列内置 image 也列
+      模板 custom_image, 只筛一个的话用户在界面上选得中、一提交却被判"配置不存在"。
     - **用 PrimaryKeyRelatedField 而不是 CharField** —— 要它当场报"配置不存在", 而不是
       等到 worker 里静默回退成别的模型。显式选择失败该显式说。
 
     可空 = 用户没选 → 退到库里第一条启用的通道。
     """
     return serializers.PrimaryKeyRelatedField(
-        queryset=ImageModel.objects.filter(enabled=True, provider__kind=kind),
+        queryset=ImageModel.objects.filter(
+            enabled=True, provider__kind__in=kinds_for_picker(KIND_SPECS[kind].picker),
+        ),
         required=False, allow_null=True, default=None,
     )
 

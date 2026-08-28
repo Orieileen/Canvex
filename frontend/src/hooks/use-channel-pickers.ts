@@ -4,8 +4,12 @@ import { canvasService } from "@/services/canvas.service";
 import { useStickyModelChoice, type StickyModelChoice } from "@/hooks/use-sticky-model-choice";
 import type { CanvasImageModelChoice } from "@/types/canvex";
 
-/** 工具栏上有选择器的那几种通道 —— **chat 刻意不在里面**: 聊天模型是全局一条, 不是
- *  每次生成挑一个, 所以它只在配置面板里配, 没有工具栏入口。
+/** 工具栏上的三个选择器 —— **chat 刻意不在里面**: 聊天模型是全局一条, 不是每次生成挑
+ *  一个, 所以它只在配置面板里配, 没有工具栏入口。
+ *
+ *  这里的字符串是后端的 **picker** 而不是 kind: 一个选择器对应多种 kind (生图 = 内置
+ *  image + 模板 custom_image), 按 kind 名字筛的话新加的那种配好了却不出现在选择器里,
+ *  而且不报错。哪个 kind 喂哪个选择器由后端 KIND_SPECS 说, 随 schema 下发。
  *
  *  模块级常量 (不是 state / 不是 props): `.map` 出来的 hook 调用顺序必须每次渲染都一样。 */
 const PICKER_KINDS = ["image", "angle", "video"] as const;
@@ -60,7 +64,7 @@ export function useChannelPickers(onOpenSettings: () => void): ChannelPickers {
   const byKind = useMemo(
     () =>
       Object.fromEntries(
-        PICKER_KINDS.map((k) => [k, models?.filter((m) => m.kind === k) ?? null]),
+        PICKER_KINDS.map((k) => [k, models?.filter((m) => m.picker === k) ?? null]),
       ) as Record<PickerKind, CanvasImageModelChoice[] | null>,
     [models],
   );

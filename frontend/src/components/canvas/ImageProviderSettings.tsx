@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
@@ -86,6 +86,7 @@ const emptyProvider = (): CanvasImageProvider => ({
   id: "",
   label: "",
   kind: "image",
+  request_template: {},
   base_url: "",
   api_key: "",
   defaults: {},
@@ -104,6 +105,9 @@ const providerPayload = (p: CanvasImageProvider) => ({
   base_url: p.base_url,
   api_key: p.api_key,
   defaults: p.defaults,
+  // 一起发, 也一起参与 isDirty 比较 —— 漏了的话改完模板点保存"没有未保存的改动",
+  // 而且改动直接丢。
+  request_template: p.request_template ?? {},
   models: p.models.map((m) => ({
     // 本地新建的模型行没有后端 id, 不要把假 id 发过去
     ...(m.id.startsWith("new-") ? {} : { id: m.id }),
@@ -589,6 +593,17 @@ function ProviderCard({
             />
           </Field>
 
+          {/* 模板通道: 用一个 JSON 编辑器代替那排旋钮。由后端下发的 spec.template 决定,
+              **不按 kind 名字判** —— 加第三种模板通道时这里自动跟上。 */}
+          {spec?.template && (
+            <TemplateEditor
+              value={draft.request_template}
+              onChange={(request_template) => onPatch({ request_template })}
+              starters={spec.starters}
+              variables={spec.variables}
+            />
+          )}
+
           {/* 模型行 */}
           <div>
             <div className="mb-1 text-[12px] font-medium">{t("imageProviders.models")}</div>
@@ -828,6 +843,101 @@ function Field({
       <div className="mb-1 text-[12px] font-medium">{label}</div>
       {children}
       {hint && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+
+/** 模板通道的请求模板编辑器。
+ *
+ *  为什么是裸 JSON 而不是一堆字段: 模板的整个价值就是"形状随你写" —— 一旦拆成
+ *  URL/headers/body 三个框, 就又开始替用户预设结构了, 而下一个供应商总有个地方对不上。
+ *
+ *  本地存的是**文本**而不是解析后的对象: 用户打字的中间态 (`{"a":` ) 不是合法 JSON,
+ *  每敲一个字符就 parse 再回写会把光标和内容都搅乱。只有 parse 成功时才往上抛对象,
+ *  失败时留一行红字并且**不覆盖**上层的值 —— 存盘按钮那边拿到的仍然是上一个合法版本。
+ */
+function TemplateEditor({
+  value, onChange, starters, variables,
+}: {
+  value: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+  starters: { label: string; template: Record<string, unknown> }[];
+  variables: string[];
+}) {
+  const { t } = useTranslation("canvasUi");
+  const pretty = (v: unknown) => JSON.stringify(v ?? {}, null, 2);
+  const [text, setText] = useState(() => pretty(value));
+  const [bad, setBad] = useState(false);
+  // 外部换了模板 (选了起点模板 / reload 拿到服务端版本) 时同步进来。比较的是格式化后的
+  // 文本, 否则用户自己敲的空白会被当成"外部变了"而被覆盖掉。
+  const external = pretty(value);
+  const lastExternal = useRef(external);
+  if (lastExternal.current !== external) {
+    lastExternal.current = external;
+    setText(external);
+    setBad(false);
+  }
+
+  const commit = (next: string) => {
+    setText(next);
+    try {
+      const parsed = JSON.parse(next);
+      setBad(false);
+      onChange(parsed);
+    } catch {
+      setBad(true);   // 不 onChange —— 上层保留上一个合法版本
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-[12px] font-medium">{t("imageProviders.template")}</span>
+        <select
+          value=""
+          onChange={(e) => {
+            const s = starters.find((x) => x.label === e.target.value);
+            if (s) onChange(s.template);
+          }}
+          className="ml-auto rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground"
+        >
+          <option value="">{t("imageProviders.templateStarter")}</option>
+          {starters.map((s) => (
+            <option key={s.label} value={s.label}>{s.label}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={bad}
+          onClick={() => setText(pretty(value))}
+          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+        >
+          {t("imageProviders.templateFormat")}
+        </button>
+      </div>
+      <p className="mb-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        {t("imageProviders.templateHint")}
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => commit(e.target.value)}
+        rows={16}
+        spellCheck={false}
+        className={cn(
+          "w-full resize-y rounded-md border bg-background p-2 font-mono text-[11px] outline-none",
+          bad ? "border-destructive" : "border-border focus:border-foreground/30",
+        )}
+      />
+      {bad && (
+        <p className="mt-1 text-[11px] text-destructive">{t("imageProviders.templateInvalid")}</p>
+      )}
+      <div className="mt-1.5 text-[11px] text-muted-foreground">
+        {t("imageProviders.templateVars")}:{" "}
+        {variables.map((v) => (
+          <code key={v} className="mr-1 rounded bg-foreground/5 px-1 py-px">{`{{${v}}}`}</code>
+        ))}
+      </div>
     </div>
   );
 }
