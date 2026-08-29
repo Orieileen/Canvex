@@ -377,6 +377,10 @@ export interface CanvasWizardProbe {
   raw: unknown;
   candidates: { path: string; preview: string }[];
   result_path: string;
+  /** 第一个命中位置上的值,且它是个 http(s) 地址时才有。向导拿它把**刚生成的那张图**
+   *  显示出来 —— 一行 `data.result.images[0].url[0]` 只能证明"有个地址长得像结果",
+   *  看见图才是"这条通道真的通了"。base64 / data URI 不给(体积)。 */
+  preview_url?: string;
   /** 没找到图但有 task_id/status = 这家是异步的。**这件事文档里看不出来**,
    *  异步和同步供应商的示例 curl 长得一模一样,差别只在回包。 */
   is_async?: boolean;
@@ -387,19 +391,3 @@ export interface CanvasWizardProbe {
   done?: boolean;
 }
 
-/** POST /image-providers/import-curl/ 从示例 curl 推断出的预填字段。
- *  只包含推断出来的项;`_unrecognized` 是示例里出现但我们不认识的请求体键。 */
-export interface CanvasCurlImportResult {
-  base_url?: string;
-  api_key?: string;
-  model?: string;
-  image_field?: string;
-  image_as_single?: boolean;
-  response_format?: string;
-  quality?: string;
-  watermark?: boolean;
-  _unrecognized?: string[];
-  /** 这段 curl 打的不是 /images/generations —— base_url 里留着端点路径, 直接保存会拼出
-   *  一个多一截的地址。整句话由后端给, 因为"我们会打哪个端点"是后端的事。 */
-  _path_note?: string;
-}

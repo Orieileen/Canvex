@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import type {
-  CanvasImageProvider, CanvasWizardMapping, CanvasWizardParsed,
+  CanvasImageProvider, CanvasKindSpec, CanvasWizardMapping, CanvasWizardParsed,
 } from "@/types/canvex";
 
 /**
@@ -30,13 +30,27 @@ type Step = "paste" | "probe" | "poll" | "done";
 interface ChannelWizardProps {
   /** 建好了 —— 把预填好的通道草稿交给面板, 由它插进列表等用户点保存。 */
   onReady: (draft: Partial<CanvasImageProvider>) => void;
+  /** 后端下发的按 kind 分的表单规则 (GET /image-providers/schema/)。向导只用两样:
+   *  **哪些 kind 是模板类**(= 向导能建的), 和每种 kind 有哪些占位符。
+   *
+   *  从这里拿而不是在前端写一份: 占位符表的唯一真相在后端 (`KIND_SPECS[...].variables`,
+   *  它自己又是从两个 builder 的返回值派生的)。手抄一份的失败方式很安静 —— 下拉里选得中
+   *  的变量后端不认, 或者后端新加的变量在下拉里根本不出现。 */
+  specs: Record<string, CanvasKindSpec>;
 }
 
-export function ChannelWizard({ onReady }: ChannelWizardProps) {
+export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
   const { t } = useTranslation("canvasUi");
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("paste");
   const [busy, setBusy] = useState(false);
+  /** 建哪种通道。默认生图 —— 绝大多数人是为它来的。 */
+  const [kind, setKind] = useState("custom_image");
+  /** 向导能建的 = 模板类通道。**由后端下发的 spec.template 决定, 不按 kind 名字判** ——
+   *  加第三种模板通道时这一行自动跟上 (面板里那几处判定用的也是同一条规则)。 */
+  const templateKinds = Object.keys(specs).filter((k) => specs[k]?.template);
+  /** 这种 kind 的占位符表, 去掉向导自己会填的那几个。见 AUTO_VARS。 */
+  const varChoices = (specs[kind]?.variables ?? []).filter((v) => !AUTO_VARS.has(v));
 
   const [curl, setCurl] = useState("");
   const [parsed, setParsed] = useState<CanvasWizardParsed | null>(null);
@@ -47,11 +61,17 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
   const [taskId, setTaskId] = useState("");
   const [poll, setPoll] = useState<Record<string, unknown> | null>(null);
   const [preview, setPreview] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
   const [found, setFound] = useState("");
+  /** 轮询到第几次、供应商说的状态。**面板里显示, 不发 toast**: 一次轮询要几十秒到几
+   *  分钟, 每轮弹一个 toast 是把进度做成了噪音 —— 而且 toast 会盖住下面的按钮。 */
+  const [pollTry, setPollTry] = useState(0);
+  const [pollStatus, setPollStatus] = useState("");
 
   const reset = () => {
     setStep("paste"); setCurl(""); setParsed(null); setApiKey(""); setMapping([]);
-    setPollCurl(""); setTaskId(""); setPoll(null); setPreview(""); setFound("");
+    setPollCurl(""); setTaskId(""); setPoll(null); setPreview(""); setPreviewUrl("");
+    setFound(""); setPollTry(0); setPollStatus("");
   };
 
   /** 用户在下拉里改了某一行的占位符 → 同步回模板。
@@ -89,6 +109,7 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
     setBusy(true);
     try {
       const { data } = await canvasService.wizardProbe({
+        kind,
         base_url: parsed.base_url, api_key: apiKey, model: parsed.model ?? "",
         request_template: parsed.template,
       });
@@ -97,6 +118,7 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
         setParsed({ ...parsed, template: { ...parsed.template, result_path: data.result_path } });
         setFound(data.result_path);
         setPreview(data.candidates[0]?.preview ?? "");
+        setPreviewUrl(data.preview_url ?? "");
         setStep("done");
       } else if (data.is_async) {
         // **这一步是这个向导最值钱的地方**: 文档里看不出来这家是异步的。
@@ -136,7 +158,9 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
     setBusy(true);
     try {
       for (let i = 0; i < 40; i++) {
+        setPollTry(i + 1);
         const { data } = await canvasService.wizardProbe({
+          kind,
           base_url: parsed.base_url, api_key: apiKey, model: parsed.model ?? "",
           request_template: parsed.template, poll, task_id: taskId,
         });
@@ -149,10 +173,11 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
           setParsed({ ...parsed, template: { ...parsed.template, poll: filled } });
           setFound(data.result_path);
           setPreview(data.candidates[0]?.preview ?? "");
+          setPreviewUrl(data.preview_url ?? "");
           setStep("done");
           return;
         }
-        toast.info(t("wizard.polling", { status: data.status || "…" }), { duration: 4000 });
+        setPollStatus(data.status || "…");
         await new Promise((r) => setTimeout(r, 6000));
       }
       toast.error(t("wizard.pollGaveUp"), { duration: 12000 });
@@ -164,7 +189,8 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
   const finish = () => {
     if (!parsed) return;
     onReady({
-      kind: "custom_image",
+      kind: kind as CanvasImageProvider["kind"],
+      label: channelName(parsed.base_url, t(`wizard.nameFor.${kind}`, "")),
       base_url: parsed.base_url,
       api_key: apiKey,
       request_template: parsed.template,
@@ -200,8 +226,27 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
 
       {step === "paste" && (
         <>
+          {/* 建哪种。只列**模板类** kind —— 由后端下发的 spec.template 决定, 不按 kind
+              名字判, 加第三种模板通道时这里自动多一项。只有一种时整行不出现。 */}
+          {templateKinds.length > 1 && (
+            <div className="mb-2 flex gap-1">
+              {templateKinds.map((k) => (
+                <button
+                  key={k} type="button" onClick={() => setKind(k)}
+                  className={cn(
+                    "rounded-md border px-2.5 py-1 text-[11px]",
+                    k === kind
+                      ? "border-foreground/30 bg-foreground/10 font-medium text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t(`wizard.kindShort.${k}`, k)}
+                </button>
+              ))}
+            </div>
+          )}
           <p className="mb-1.5 text-[11px] leading-relaxed text-muted-foreground">
-            {t("wizard.pasteHint")}
+            {t(`wizard.pasteHint.${kind}`, { defaultValue: t("wizard.pasteHint.custom_image") })}
           </p>
           <textarea
             value={curl} onChange={(e) => setCurl(e.target.value)} rows={8} spellCheck={false}
@@ -240,7 +285,7 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
                   className="shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[11px]"
                 >
                   <option value="">{t("wizard.varFixed")}</option>
-                  {VAR_CHOICES.map((v) => (
+                  {varChoices.map((v) => (
                     <option key={v} value={v}>{t(`wizard.var.${v}`)}</option>
                   ))}
                 </select>
@@ -271,10 +316,19 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
               runLabel={t("wizard.parse")} onCancel={() => setStep("probe")}
             />
           ) : (
-            <WizardButtons
-              busy={busy} disabled={false} onRun={() => void runPoll()}
-              runLabel={t("wizard.runPoll")} onCancel={() => setPoll(null)}
-            />
+            <>
+              {busy && (
+                <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" />
+                  {t("wizard.polling", { n: pollTry, status: pollStatus || "…" })}
+                </p>
+              )}
+              <WizardButtons
+                busy={busy} disabled={false} onRun={() => void runPoll()}
+                runLabel={t("wizard.runPoll")} onCancel={() => setPoll(null)}
+                note={t("wizard.pollNote")}
+              />
+            </>
           )}
         </>
       )}
@@ -286,9 +340,29 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
             <div className="min-w-0">
               <div className="font-medium">{t("wizard.foundTitle")}</div>
               <code className="break-all font-mono text-muted-foreground">{found}</code>
-              {preview && <div className="mt-1 truncate text-muted-foreground">{preview}</div>}
+              {preview && !previewUrl && (
+                <div className="mt-1 truncate text-muted-foreground">{preview}</div>
+              )}
             </div>
           </div>
+          {/* **把刚生成的东西显示出来。** 一行 `data.result.images[0].url[0]` 只能证明
+              "有个地址长得像结果"; 看见图才是"这条通道真的通了"的完整证据 —— 而这正是
+              这个向导相对于"猜一份配置"的全部区别。拉不到 (地址过期 / 防盗链) 就退回
+              显示那行文字, 不挡住"创建"。 */}
+          {previewUrl && (
+            kind === "custom_video" ? (
+              <video
+                src={previewUrl} controls muted playsInline
+                className="mt-2 max-h-48 w-full rounded-md border border-border object-contain"
+              />
+            ) : (
+              <img
+                src={previewUrl} alt=""
+                onError={(e) => { e.currentTarget.style.display = "none"; }}
+                className="mt-2 max-h-48 w-full rounded-md border border-border object-contain"
+              />
+            )
+          )}
           <WizardButtons
             busy={busy} disabled={false} onRun={finish}
             runLabel={t("wizard.create")} onCancel={() => { reset(); setOpen(false); }}
@@ -299,13 +373,31 @@ export function ChannelWizard({ onReady }: ChannelWizardProps) {
   );
 }
 
-/** 用户能把某个键改成哪些占位符。跟后端 KIND_SPECS[custom_image].variables 是同一批,
- *  但这里只列**用户会想手动指定**的那些 —— base_url / api_key / task_id 由向导自己填,
- *  放进下拉只会让人误选。 */
-const VAR_CHOICES = [
-  "prompt", "model", "n", "size", "aspect_ratio", "width", "height",
-  "resolution", "image", "images", "image_base64", "images_base64", "duration",
-] as const;
+/** 这几个占位符**不进下拉**: 它们由向导自己填 (base_url / api_key 从 curl 里拆出来,
+ *  task_id 是轮询时注入的), 放出来只会让人误选一个然后渲染成空。
+ *
+ *  其余的从后端下发的 `spec.variables` 来 —— 那是唯一真相 (后端又是从两个变量 builder
+ *  的返回值派生的)。这里原来手抄了一份十三项的清单, 而生图和视频的变量表根本不一样。 */
+const AUTO_VARS = new Set(["base_url", "api_key", "task_id"]);
+
+/** 「apimart 生图」—— 从 Base URL 的主机名 + 通道类型拼一个默认名字。
+ *
+ *  存在的理由: 不给名字的话新卡片是空的, 而面板要求有名字才能保存 —— 向导一路跑到最后
+ *  一步、点了「创建」, 却卡在一句"名称必填", 是最不该出现的一次卡壳。
+ *
+ *  取主机名是因为那是用户唯一能一眼认出来的东西 (他自己起的名字也是这么来的:
+ *  「自定义-兔子」「向导建的-apimart」)。名字只是默认值, 卡片上随时能改。 */
+function channelName(baseUrl: string, kindWord: string): string {
+  let host = "";
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return "";                       // 连 URL 都不是就不猜, 让用户自己填
+  }
+  const core = host.replace(/^(?:api|www)\./i, "").split(".")[0];
+  if (!core) return "";
+  return kindWord ? `${core} ${kindWord}` : core;
+}
 
 function pickTaskId(raw: unknown): string | undefined {
   const seen: string[] = [];

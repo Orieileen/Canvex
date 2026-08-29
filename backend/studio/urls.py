@@ -5,7 +5,6 @@ from .views import (
     ImageModelChoiceListView,
     ChannelWizardParseView,
     ChannelWizardProbeView,
-    ImageProviderCurlImportView,
     ImageProviderSchemaView,
     ImageProviderTestView,
     ImageProviderViewSet,
@@ -42,11 +41,6 @@ urlpatterns = [
         "image-providers/<uuid:pk>/test/",
         ImageProviderTestView.as_view(),
         name="canvas-image-provider-test",
-    ),
-    path(
-        "image-providers/import-curl/",
-        ImageProviderCurlImportView.as_view(),
-        name="canvas-image-provider-import-curl",
     ),
     # 向导: 两段 curl → 一份能跑的模板。parse 只解析(不发请求), probe 真发一次。
     path(
@@ -150,5 +144,6 @@ urlpatterns = [
         name="canvas-scene-upload-attachment",
     ),
 ] + router.urls
-# router 的 detail 路由是 `image-providers/<pk>/`, 会把 `image-providers/import-curl/`
-# 当成 pk="import-curl" 吃掉 —— 所以显式路径必须排在 router.urls 前面。
+# router 的 detail 路由是 `image-providers/<pk>/`, 会把上面那些固定路径
+# (`image-providers/wizard/parse/`、`image-providers/schema/` …) 当成 pk 吃掉 ——
+# 所以显式路径必须排在 router.urls 前面。

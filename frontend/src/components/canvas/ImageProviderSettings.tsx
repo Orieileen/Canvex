@@ -8,7 +8,6 @@ import {
   Loader2,
   Plus,
   Trash2,
-  Wand2,
   Zap,
 } from "lucide-react";
 
@@ -351,11 +350,10 @@ export function ImageProviderSettings({
         </SheetHeader>
 
         <div className="flex flex-col gap-3 p-4">
-          {/* 向导排在 curl 导入前面: 它是**推荐路径** —— 用户不用先决定"内置还是自定义",
-              也不用理解模板 JSON。下面那个 curl 导入是老路径 (猜内置通道的旋钮), 留着给
-              已经知道自己要什么的人。 */}
-          <ChannelWizard onReady={(seed) => addDraft(seed)} />
-          <CurlImport onImported={(seed) => addDraft(seed)} />
+          {/* 建通道只有这一个入口。这里原来还并排放着一个「从 curl 示例导入」—— 同样
+              写着"粘一段 curl", 但它是把 curl 猜成内置通道那十四个旋钮、而且从不验证,
+              粘完人就落在十四个输入框里。两个入口只是让人选错, 删了。 */}
+          <ChannelWizard onReady={(seed) => addDraft(seed)} specs={tunables} />
 
           {loading && (
             <div className="flex justify-center py-8 text-muted-foreground">
@@ -425,93 +423,6 @@ export function ImageProviderSettings({
         </AlertDialogContent>
       </AlertDialog>
     </Sheet>
-  );
-}
-
-/** 「从 curl 导入」—— 替代内置预设的那块。 */
-function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProvider>) => void }) {
-  const { t } = useTranslation("canvasUi");
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const run = async () => {
-    setBusy(true);
-    try {
-      const { data } = await canvasService.importImageProviderCurl(text);
-      const { base_url, api_key, model, _unrecognized, _path_note, ...tunables } = data;
-      onImported({
-        base_url: base_url ?? "",
-        api_key: api_key ?? "",
-        defaults: tunables as Values,
-        models: model
-          ? [{
-              id: newLocalId(), label: model, model,
-              overrides: {}, enabled: true, sort_order: 0,
-            }]
-          : [],
-      });
-      // 示例里出现但我们不认识的键要说出来, 否则用户以为已经完整导入了
-      // 路径不对是**会导致请求必然失败**的那一类, 比"有几个键不认识"严重, 所以单独一条
-      // 且停留更久 —— 用户多半正要直接点保存。
-      if (_path_note) toast.warning(_path_note, { duration: 15000 });
-      if (_unrecognized?.length) {
-        toast.warning(t("imageProviders.curlUnknown", { keys: _unrecognized.join(", ") }));
-      } else {
-        toast.success(t("imageProviders.curlOk"));
-      }
-      setOpen(false);
-      setText("");
-    } catch (err) {
-      toast.error(extractApiError(err, "curl import failed"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
-      >
-        <Wand2 className="size-4" strokeWidth={2} />
-        {t("imageProviders.curlImport")}
-      </button>
-    );
-  }
-
-  return (
-    <div className="rounded-md border border-border p-3">
-      <p className="mb-2 text-[12px] leading-relaxed text-muted-foreground">
-        {t("imageProviders.curlHint")}
-      </p>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={5}
-        placeholder={"curl https://api.example.com/v1/images/generations \\\n  -H 'Authorization: Bearer …' \\\n  -d '{\"model\":\"…\",\"image\":\"…\"}'"}
-        className={cn(monoTextareaCls, "focus:border-foreground/30")}
-      />
-      <div className="mt-2 flex gap-2">
-        <button
-          type="button"
-          disabled={busy || !text.trim()}
-          onClick={() => void run()}
-          className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
-        >
-          {busy ? t("imageProviders.parsing") : t("imageProviders.parse")}
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded-md px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-        >
-          {t("sidebar.cancel")}
-        </button>
-      </div>
-    </div>
   );
 }
 

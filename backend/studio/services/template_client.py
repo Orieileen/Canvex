@@ -471,12 +471,33 @@ def probe_template(
     return {
         "raw": payload,
         "candidates": [{"path": p, "preview": d} for p, d in hits],
+        # 第一个命中如果是个 http(s) 地址就原样给出来 —— 向导拿它在最后一步把**刚生成的
+        # 那张图**显示出来。一条截断到 60 字的 "URL https://…" 只能证明"有个地址",
+        # 而看见图才是"这条通道通了"的完整证据。不是地址 (base64 / data URI) 就空着:
+        # 那两种在这里没必要塞进 JSON, 体积大得多。
+        "preview_url": _first_http(payload, hits),
         # 第一个命中就是建议值。多个命中时后面那些通常是缩略图 / 备用尺寸, 让用户选。
         "result_path": hits[0][0] if hits else "",
         "is_async": (not hits) and looks_like_task(payload),
         # 异步时下一步要用的: 提交回来的任务 id 在哪一层。
         "task_id_path": "" if hits else _find_task_id_path(payload),
     }
+
+
+def _first_http(payload: Any, hits: list[tuple[str, str]]) -> str:
+    """第一个命中位置上的值, 且它得是个 http(s) 地址。取不到就空串。
+
+    重新走一遍 `extract` 而不是让 find_result_paths 把整个值也带回来: 那个函数会遍历到
+    每一段 base64, 让它顺手把值也收集起来等于把整张回包复制一份。
+    """
+    if not hits:
+        return ""
+    try:
+        value = extract(payload, hits[0][0])
+    except TemplateError:
+        return ""
+    text = value.strip() if isinstance(value, str) else ""
+    return text if text.startswith(("http://", "https://")) else ""
 
 
 def _find_status_path(node: Any, trail: str = "") -> str:
@@ -523,5 +544,9 @@ def probe_poll(
         "status": str(extract(payload, status_path)) if status_path else "",
         "candidates": [{"path": p, "preview": d} for p, d in hits],
         "result_path": hits[0][0] if hits else "",
+        # 跟 probe_template 一样给出来 —— 异步通道出图是在**这条路**上, 而向导最后一步
+        # 要显示的正是那张图。两处各写一次的话, 同步通道有图看、异步通道没有, 而异步恰恰
+        # 是这个向导最值钱的那一半。
+        "preview_url": _first_http(payload, hits),
         "done": bool(hits),
     }

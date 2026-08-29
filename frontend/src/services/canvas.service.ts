@@ -5,7 +5,6 @@ import type {
   CanvasAngleJob,
   CanvasChatMessage,
   CanvasChatStreamEvent,
-  CanvasCurlImportResult,
   CanvasImageEditJob,
   CanvasImageModelChoice,
   CanvasImageProvider,
@@ -404,6 +403,8 @@ export const canvasService = {
     ),
   /** 向导第 2 / 4 步:拿**还没保存**的配置真发一次。会产生一次真实的生成消耗。 */
   wizardProbe: (body: {
+    /** 建哪种模板通道 —— 决定后端喂给模板的是生图还是视频那张变量表。 */
+    kind: string;
     base_url: string; api_key: string; model: string;
     request_template: Record<string, unknown>;
     poll?: Record<string, unknown>; task_id?: string;
@@ -412,8 +413,6 @@ export const canvasService = {
   getImageProviderSchema: () =>
     request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),
   /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
-  importImageProviderCurl: (curl: string) =>
-    request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),
   /** 工具栏选择器的列表 —— 不含凭据。 */
   listImageModels: () => request.get<CanvasImageModelChoice[]>(IMAGE_MODELS),
 

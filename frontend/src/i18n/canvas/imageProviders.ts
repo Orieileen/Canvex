@@ -125,13 +125,6 @@ export const imageProviders = {
       bad_request:
         "The provider rejected the request. Which field it objected to is in the raw response below.",
     },
-    curlImport: "Import from a curl example",
-    curlHint:
-      "Paste the example curl from your provider's docs. The request body's shape tells us which field carries the image and whether it takes one value or an array — the parts their docs never phrase in our terms.",
-    curlOk: "Parsed — check the fields below",
-    curlUnknown: "Parsed, but these body keys aren't ones we model: {{keys}}",
-    parse: "Parse",
-    parsing: "Parsing…",
     unset: "not set",
     dont_send: "don't send",
     /** 旋钮分组。分组本身由后端下发 (services/image_channels.py 的 _TUNABLE_GROUPS),
@@ -270,13 +263,6 @@ export const imageProviders = {
       bad_request:
         "供应商说这次请求有问题,具体是哪个字段写在下面那段原文里。",
     },
-    curlImport: "从 curl 示例导入",
-    curlHint:
-      "把供应商文档里的示例 curl 粘进来。请求体的形状能告诉我们哪个字段装图、是单值还是数组 —— 这些正是他们文档不会用我们的说法写出来的部分。",
-    curlOk: "已解析,检查下面的字段",
-    curlUnknown: "已解析,但这些请求体字段我们没有对应项:{{keys}}",
-    parse: "解析",
-    parsing: "解析中…",
     unset: "未设置",
     dont_send: "不下发",
     group: {

@@ -68,7 +68,6 @@ from .services.image import create_image_edit_job, create_split_jobs
 from .services.curl_import import (
     CurlParseError,
     curl_to_template,
-    parse_curl,
     poll_curl_to_section,
 )
 from .services import channel_diagnosis, template_client
@@ -1223,14 +1222,25 @@ class ChannelWizardProbeView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    # 向导能建的通道类型 = 所有**模板类**通道。从 KIND_SPECS 推, 不写死一个名单 ——
+    # 加第三种模板通道时这里自动跟上, 而写死的名单会静默地把它挡在向导之外。
+    @staticmethod
+    def _template_kinds() -> dict[str, object]:
+        return {k: spec for k, spec in KIND_SPECS.items() if spec.template}
+
     def post(self, request):
         d = request.data
         template = d.get("request_template") or {}
+        kind = str(d.get("kind") or ImageProvider.Kind.CUSTOM_IMAGE)
+        if kind not in self._template_kinds():
+            raise ValidationError({"kind": [
+                f"向导只能建模板类通道, 不认识 `{kind}`。"
+            ]})
         channel = ImageChannel(
             base_url=str(d.get("base_url") or ""),
             api_key=str(d.get("api_key") or ""),
             model=str(d.get("model") or ""),
-            kind=ImageProvider.Kind.CUSTOM_IMAGE,
+            kind=kind,
             request_template=template,
             # 向导是同步 HTTP, 浏览器在等 —— 沿用测试按钮那套墙钟预算。
             timeout=min(ImageProviderTestView.TEST_BUDGET_SECONDS, 300),
@@ -1241,10 +1251,20 @@ class ChannelWizardProbeView(APIView):
 
         task_id = str(d.get("task_id") or "").strip()
         poll = d.get("poll")
-        variables = template_client.image_variables(
-            channel, prompt=d.get("prompt") or "a small red circle on a white background",
-            image_urls=[], size=str(d.get("size") or "1024x1024"), n=1, resolution="1K",
-        )
+        # 变量表按 kind 选。视频那张多了 duration / aspect_ratio, 少了 size / n ——
+        # 喂错的话模板里的 `{{duration}}` 会渲染成空、那个键整个消失, 而供应商多半只会
+        # 回一句"缺少必填参数", 跟"向导挑错了变量表"看不出关系。
+        if kind == ImageProvider.Kind.CUSTOM_VIDEO:
+            variables = template_client.video_variables(
+                channel, prompt=d.get("prompt") or "a slow pan across a calm lake at sunrise",
+                image_urls=[], duration=int(d.get("duration") or 5),
+                aspect_ratio=str(d.get("aspect_ratio") or "16:9"),
+            )
+        else:
+            variables = template_client.image_variables(
+                channel, prompt=d.get("prompt") or "a small red circle on a white background",
+                image_urls=[], size=str(d.get("size") or "1024x1024"), n=1, resolution="1K",
+            )
         try:
             if poll and task_id:
                 return Response(template_client.probe_poll(
@@ -1256,17 +1276,3 @@ class ChannelWizardProbeView(APIView):
             raise ValidationError({"detail": [str(exc)]}) from exc
 
 
-class ImageProviderCurlImportView(APIView):
-    """POST /image-providers/import-curl/ —— 把供应商文档里的示例 curl 转成预填字段。
-
-    替代内置预设: 那 16 个旋钮是我们适配器的词汇而不是供应商的词汇, 用户没法直接从文档
-    抄; 但示例 curl 的请求体形状里就含着答案 (图字段叫什么、是数组还是单值)。
-    """
-
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        try:
-            return Response(parse_curl(request.data.get("curl", "")))
-        except CurlParseError as exc:
-            raise ValidationError({"curl": [str(exc)]}) from exc
