@@ -1,23 +1,39 @@
+/**
+ * 通道配置面板的文案。
+ *
+ * **术语 (这三个词以前是混着用的)**:
+ *   - **通道** = 界面上这个对象:一个端点 + 一把 key + 一套请求形状,下面挂几个模型。
+ *   - **供应商** = 那家**公司** (tu-zi / APIMart / OpenAI)。同一家公司底下可以有好几条
+ *     通道 —— 这个项目里就同时存在「tu-zi」和「自定义-兔子」两条,打的是同一家。
+ *   - **模型** = 通道下面的一行。
+ *
+ * 混用的样子是:侧栏和标题叫「通道配置」,卡片上却写「新建供应商」「删除供应商」——
+ * 同一个对象两个名字,而第二个名字还被那家公司占着,于是「供应商返回:…」这种报错到底
+ * 在说哪一个就没法判断了。
+ *
+ * 后端的模型类仍然叫 `ImageProvider`:改类名要动迁移和整张表,而用户看不到类名。
+ * 对应关系 —— `ImageProvider` = 界面上的通道,`ImageModel` = 界面上的模型。
+ */
 export const imageProviders = {
   en: {
     title: "Channels",
     subtitle:
       "Endpoint, key and request shape for every channel — image, angle, video and the chat model. Configured here, not in the backend env.",
     empty: "No channels yet. Paste a provider's example curl above, or add one by hand. The chat box needs a Chat channel before the agent will run.",
-    add: "Add provider",
+    add: "Add channel",
     addModel: "Add model",
     models: "Models",
     modelCount: "{{n}} model(s)",
-    labelPlaceholder: "Provider name, e.g. APIMart",
+    labelPlaceholder: "Channel name, e.g. APIMart images",
     modelLabelPlaceholder: "Display name",
     modelStringPlaceholder: "model string the provider wants",
     kind: "Channel type",
     kindImage: "Image generation",
-    kindAngle: "Camera angle re-render (Angle)",
-    kindVideo: "Video generation (Video)",
-    kindChat: "Chat agent LLM",
-    kindCustom_image: "Custom image generation (request template)",
-    kindCustom_video: "Custom video generation (request template)",
+    kindAngle: "Camera angle re-render",
+    kindVideo: "Video generation",
+    kindChat: "Chat model",
+    kindCustom_image: "Image generation · custom template",
+    kindCustom_video: "Video generation · custom template",
     template: "Request template",
     templateHint:
       "The whole request, as JSON. Placeholders below are substituted per generation; a key whose value resolves to empty is dropped entirely.",
@@ -57,17 +73,17 @@ export const imageProviders = {
     apiKeyHint: "Stored as-is (local single-machine tool). It is never written to logs.",
     defaults: "Request parameters",
     defaultsHint:
-      "Defaults for every model under this provider. Blank = use Canvex's own default. Individual models can override any of these.",
+      "Defaults for every model under this channel. Blank = use Canvex's own default. Individual models can override any of these.",
     overrides: "Overrides",
     overridesHint:
-      "Only what differs from the provider defaults above. Blank = inherit.",
+      "Only what differs from the channel defaults above. Blank = inherit.",
     save: "Save",
-    saved: "Provider saved",
-    deleted: "Provider deleted",
-    delete: "Delete provider",
-    confirmDeleteTitle: "Delete this provider?",
+    saved: "Channel saved",
+    deleted: "Channel deleted",
+    delete: "Delete channel",
+    confirmDeleteTitle: "Delete this channel?",
     confirmDelete:
-      "This removes the provider and all of its models. Generations that used them keep their images, but lose the record of which model made them. This can't be undone.",
+      "This removes the channel and all of its models. Generations that used them keep their images, but lose the record of which model made them. This can't be undone.",
     unsaved: "unsaved changes",
     needLabelAndUrl: "Name and Base URL are required",
     needLabel: "Name is required",
@@ -153,20 +169,20 @@ export const imageProviders = {
     title: "通道配置",
     subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
     empty: "还没有配置任何通道。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。聊天框要能用,得先加一条「聊天模型」通道。",
-    add: "新建供应商",
+    add: "新建通道",
     addModel: "添加模型",
     models: "模型",
     modelCount: "{{n}} 个模型",
-    labelPlaceholder: "供应商名称,如 APIMart",
+    labelPlaceholder: "通道名称,如 APIMart 生图",
     modelLabelPlaceholder: "显示名称",
     modelStringPlaceholder: "该供应商要的模型字符串",
     kind: "通道类型",
-    kindImage: "图片生成通道",
-    kindAngle: "视角重渲染 (Angle)",
-    kindVideo: "视频生成 (Video)",
-    kindChat: "聊天模型 (Chat)",
-    kindCustom_image: "自定义图片生成通道",
-    kindCustom_video: "自定义视频通道",
+    kindImage: "图片生成",
+    kindAngle: "视角重渲染",
+    kindVideo: "视频生成",
+    kindChat: "聊天模型",
+    kindCustom_image: "图片生成 · 自定义模板",
+    kindCustom_video: "视频生成 · 自定义模板",
     template: "请求模板",
     templateHint:
       "整个请求, 用 JSON 写。下面那些占位符会在每次生成时替换掉; 某个键的值解析出来是空的话, 这个键整个不下发。",
@@ -175,15 +191,15 @@ export const imageProviders = {
     templateInvalid: "这不是合法的 JSON —— 检查一下多余的逗号或者少了的引号。",
     templateFormat: "格式化",
     kindHint: {
-      image: "会出现在 Image、Split 两个选择器和聊天栏里。",
+      image: "会出现在「图像」「拆分」两个选择器和聊天栏里。",
       angle:
-        "只出现在 Angle 的选择器里。它的请求体是画布上那个立方体给的相机坐标,所以这里能调的只有超时。",
+        "只出现在「换视角」的选择器里。它的请求体是画布上那个立方体给的相机坐标,所以这里能调的只有超时。",
       video:
-        "只出现在 Video 的选择器里。提交后拿到 task id 再长轮询,所以这里能调的是各种超时和轮询节奏。",
+        "只出现在「视频」的选择器里。提交后拿到 task id 再长轮询,所以这里能调的是各种超时和轮询节奏。",
       chat:
         "聊天框背后的模型。它必须支持 OpenAI 风格的 tool calling —— 不支持的会回一段 markdown 然后画布上什么都不发生。别填生图那把 key。",
       custom_image:
-        "给内置「图片生成通道」表达不了的供应商用。整个请求由你写 —— 端点、请求头、请求体、结果在哪一层,所以写死的 /images/generations 和 Bearer 认证不再是前提。它和图片生成通道出现在同一批选择器里。",
+        "给内置「图片生成」通道表达不了的供应商用。整个请求由你写 —— 端点、请求头、请求体、结果在哪一层,所以写死的 /images/generations 和 Bearer 认证不再是前提。它和「图片生成」出现在同一批选择器里。",
       custom_video:
         "跟自定义图片生成同一个思路,用于视频。「提交完再轮询」这套写在模板里,不再靠猜。",
     },
@@ -206,14 +222,14 @@ export const imageProviders = {
     apiKeyHint: "原样保存(本地单机工具)。不会写进日志。",
     defaults: "请求参数",
     defaultsHint:
-      "这个供应商下所有模型的默认值。留空 = 用 Canvex 自己的默认。单个模型可以覆盖其中任意一项。",
+      "这条通道下所有模型的默认值。留空 = 用 Canvex 自己的默认。单个模型可以覆盖其中任意一项。",
     overrides: "覆盖项",
-    overridesHint: "只填与上面供应商默认值不同的部分。留空 = 继承。",
+    overridesHint: "只填与上面通道默认值不同的部分。留空 = 继承。",
     save: "保存",
     saved: "已保存",
     deleted: "已删除",
-    delete: "删除供应商",
-    confirmDeleteTitle: "删除这个供应商?",
+    delete: "删除通道",
+    confirmDeleteTitle: "删除这条通道?",
     confirmDelete:
       "会连同它下面的所有模型一起删掉。已经生成的图还在,但会丢掉「这张图是哪个模型出的」这条记录。不可撤销。",
     unsaved: "有未保存的改动",
@@ -303,7 +319,7 @@ export const imageModels = {
     /** 触发按钮上显示 —— 只有一个通道都没配时才会出现。 */
     none: "None",
     empty: "No models configured yet.",
-    configure: "Configure providers…",
+    configure: "Channel settings…",
   },
   zh: {
     title: "生图模型",
@@ -312,6 +328,6 @@ export const imageModels = {
     pick: "选择生图模型",
     none: "未配置",
     empty: "还没有配置任何模型。",
-    configure: "配置供应商…",
+    configure: "通道配置…",
   },
 }

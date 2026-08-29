@@ -1131,13 +1131,13 @@ class ImageProviderTestView(APIView):
                 # 前端给还没保存的模型行发的是本地临时 id ("new-1723…"), 直接丢给
                 # UUIDField 查询会抛 django 的 ValidationError → 500。说人话地拦下来。
                 raise ValidationError(
-                    {"image_model": ["这个模型还没有保存, 先保存供应商再测试"]}
+                    {"image_model": ["这个模型还没有保存, 先保存这条通道再测试"]}
                 ) from exc
             model = provider.models.filter(id=model_pk).first()
         else:
             model = provider.models.first()
         if model is None:
-            raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
+            raise ValidationError({"image_model": ["这条通道下还没有配置任何模型"]})
         # channel_for_model 会读 model.provider —— 那就是我们手上这条, 喂给 FK 缓存,
         # 省掉一次纯属多余的往返。
         model.provider = provider

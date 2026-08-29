@@ -15,7 +15,7 @@ import type { CanvasImageModelChoice } from "@/types/canvex";
  * 生图模型选择器。
  *
  * 存在的理由: 模型以前只能写在后端 env 里, 一个部署固定一个。用户想这张图用 Google、
- * 下张用豆包就做不到。现在供应商配置进了库, 这里就是每次生成前选用哪个。
+ * 下张用豆包就做不到。现在通道配置进了库, 这里就是每次生成前选用哪个。
  *
  * 出现在两处 —— 聊天栏 (ChatOverlay) 和编辑栏的 Image / Split 面板 (ImageEditBar)。
  * 两处**共用同一份画布级 state**, 改哪边都一样; 刻意不做两套独立选择, 否则用户搞不清
@@ -31,12 +31,12 @@ import type { CanvasImageModelChoice } from "@/types/canvex";
  */
 
 interface ImageModelSelectorProps {
-  /** GET /image-models/ 的结果。空 = 还没配过任何供应商。 */
+  /** GET /image-models/ 的结果。空 = 一条通道都还没配过。 */
   models: CanvasImageModelChoice[];
   /** 当前选中的 ImageModel.id;空只可能是 models 为空(一个都没配)。 */
   value: string;
   onChange: (modelId: string) => void;
-  /** 打开供应商配置面板。 */
+  /** 打开「通道配置」面板。 */
   onOpenSettings: () => void;
   buttonDisabled?: boolean;
   /** 触发按钮长什么样, 取决于它站在哪一行:

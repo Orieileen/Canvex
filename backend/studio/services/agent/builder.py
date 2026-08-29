@@ -284,7 +284,7 @@ def _skills_namespace(_rt) -> tuple[str, ...]:
 def build_canvas_agent():
     """按当前配置好的聊天通道返回 deep-agent 实例, 每条通道各建一次。
 
-    配置来自库里 `kind=chat` 的供应商 (在侧栏「配置供应商」里配), 老部署的
+    配置来自库里 `kind=chat` 的那条通道 (在侧栏「通道配置」里配), 老部署的
     `CANVAS_CHAT_*` 由迁移 0015 一次性导入。
 
     **不是单例而是按通道缓存**: 用户在界面上改了 key / base_url / 模型, 下一轮聊天就该用
@@ -311,7 +311,7 @@ def build_canvas_agent():
     # 这一条, 搬到库里之后不能丢。
     if not (channel.api_key or "").strip():
         raise RuntimeError(
-            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「配置供应商」里补上。"
+            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「通道配置」里补上。"
             "它必须是一把支持 OpenAI tools 参数的 key, 别直接填生图那把。"
         )
     with _agent_lock:

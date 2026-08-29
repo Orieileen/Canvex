@@ -320,6 +320,9 @@ export type CanvasImageProviderWrite = Omit<CanvasImageProvider, "models"> & {
 export interface CanvasImageModelChoice {
   id: string;
   label: string;
+  /** 这条模型挂在哪条**通道**下 (界面上显示成「通道名 · 模型名」)。
+   *  字段名里的 `provider` 是后端模型类名 `ImageProvider` 的遗留 —— 界面上这东西叫通道,
+   *  「供应商」只指那家公司。见 i18n/canvas/imageProviders.ts 顶上的用词规则。 */
   provider_label: string;
   /** **分流按这个。** 一个选择器对应多种 kind (生图 = 内置 image + 模板 custom_image),
    *  所以后端直接给"这一项归哪个选择器", 前端不按 kind 名字判 —— 那样新加的通道类型

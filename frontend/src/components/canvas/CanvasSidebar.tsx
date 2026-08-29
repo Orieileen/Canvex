@@ -172,7 +172,7 @@ interface CanvasSidebarProps {
   onSceneCreated?: (id: string) => void;
   /** The active scene was deleted — workspace clears / picks another. */
   onSceneDeleted?: (id: string) => void;
-  /** 打开生图供应商配置面板。直接回调而不是像素材库那样发 window 事件 —— 那个面板挂在
+  /** 打开「通道配置」面板。直接回调而不是像素材库那样发 window 事件 —— 那个面板挂在
    *  CanvasArea 里(隔着一层 key), 这个跟侧栏同属 CanvexWorkspacePage 的直接子节点。 */
   onOpenImageSettings: () => void;
   /** 打开技能库面板。跟上面一条同理, 直接回调。 */
