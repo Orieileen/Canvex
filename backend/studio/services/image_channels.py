@@ -139,6 +139,32 @@ class _KindSpec:
 _IMAGE_VARS = template_client.IMAGE_VARS
 _VIDEO_VARS = template_client.VIDEO_VARS
 
+# OpenAI **官方** 的 /v1/images/generations —— 按官方规范写, 不是聚合商的方言。
+#
+# 单独列一条而不是跟下面那几个"OpenAI 兼容"混在一起, 是因为**这两件事真的不一样**:
+# 「兼容」在这个圈子里通常只保证端点路径和认证头一样, 再往里各写各的。实测过的两家:
+#   - apimart 在同一个端点上是**异步**的 (回 task_id 要轮询), 尺寸只收比例 `16:9`
+#     不收官方的 `1024x1024`, response_format 只认 `url`
+#   - 兔子在 generations 上加了个官方没有的 `image` 字段收源图
+# 所以拿"兼容"的模板去接官方、或者反过来, 都会出问题。
+#
+# 刻意写得最小 —— 少一个字段就少一处会填错的地方:
+#   - **没有源图字段**: 官方的 generations 是纯文生图, 图生图在 /images/edits, 而那个
+#     是 multipart, 模板通道目前只发 JSON, 接不了。
+#   - **没有 response_format**: gpt-image-1 不接受这个参数 (它固定回 b64_json), 而
+#     dall-e-2/3 才支持。留空让各自按需加, 比预设一个会在最新模型上报错的值安全。
+#   - `size` 用像素 (`1024x1024`), 那是官方的格式。
+_STARTER_OPENAI_OFFICIAL = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "n": "{{n}}", "size": "{{size}}",
+    },
+    # data[0] 里是 `url` 还是 `b64_json` 由模型决定, 不用填 —— 取到这一项之后我们自己嗅探。
+    "result_path": "data[0]",
+}
+
 # OpenAI 兼容的同步生图 —— 兔子、大多数聚合商都是这个形状。
 _STARTER_OPENAI_IMAGE = {
     "method": "POST",
@@ -261,6 +287,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         variables=_IMAGE_VARS,
         picker="image",
         starters=(
+            ("OpenAI 官方 (api.openai.com)", _STARTER_OPENAI_OFFICIAL),
             ("OpenAI 兼容 · 单张源图", _STARTER_OPENAI_IMAGE),
             ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
             ("OpenAI 兼容 · 异步 (提交 + 轮询)", _STARTER_ASYNC_IMAGE),
