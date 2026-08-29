@@ -25,6 +25,7 @@
 """
 import base64
 import logging
+import re
 import time
 from typing import Any
 
@@ -337,3 +338,159 @@ IMAGE_VARS = frozenset(
 VIDEO_VARS = frozenset(
     video_variables(_BLANK_CHANNEL, prompt="", image_urls=[], duration=0, aspect_ratio="")
 ) | {"task_id"}
+
+
+# ─────────────────── 响应那一半: 跑一次, 自己找 ───────────────────
+#
+# `result_path` 是模板里唯一不可能让人写出来的东西 —— `data.result.images[0].url[0]`
+# 这种路径, 写这个功能的人自己也是发一次请求看回包才知道的。所以不问用户, 直接跑一次
+# 然后在回包里找"哪个位置长得像图"。
+
+# 长度够、只含 base64 字母表 —— 一段图片的 base64 一定满足, 而一句英文报错不会。
+_LOOKS_B64 = re.compile(r"^[A-Za-z0-9+/\s]{200,}={0,2}$")
+# 回包里没有图, 但有这些键 = 这是一张"任务受理单", 不是结果。
+_TASK_HINTS = frozenset({"task_id", "taskid", "job_id", "id", "request_id"})
+
+
+def find_result_paths(node: Any, trail: str = "") -> list[tuple[str, str]]:
+    """遍历回包, 返回所有"看起来是图/视频"的位置 → `[(路径, 说明)]`。
+
+    判据只看**值长什么样**, 不看键叫什么 —— 键名各家乱起 (`url` / `image_url` /
+    `output` / `src`), 而"这是个 http 地址"或"这是段 base64"是跨供应商稳定的。
+    实测能从 apimart 那个 `data.result.images[0].url[0]` (嵌套 + url 居然是数组) 里
+    找出来, 而那正是没人猜得到的形状。
+    """
+    if isinstance(node, str):
+        text = node.strip()
+        if text.startswith(("http://", "https://")):
+            return [(trail, f"URL {text[:60]}")]
+        if text.startswith("data:image/") or text.startswith("data:video/"):
+            return [(trail, f"data URI ({len(text)} 字符)")]
+        if _LOOKS_B64.match(text):
+            return [(trail, f"base64 ({len(text)} 字符)")]
+        return []
+    if isinstance(node, dict):
+        return [hit for k, v in node.items()
+                for hit in find_result_paths(v, f"{trail}.{k}" if trail else k)]
+    if isinstance(node, list):
+        return [hit for i, v in enumerate(node)
+                for hit in find_result_paths(v, f"{trail}[{i}]")]
+    return []
+
+
+def looks_like_task(payload: Any) -> bool:
+    """回包里没有图, 但带着任务 id / 状态 —— 这家是异步的, 需要 poll 段。
+
+    这个判定值钱是因为它**没法从文档的 curl 里看出来**: apimart 的示例 curl 跟同步
+    供应商的一模一样, 差别只在回包。发一次就知道了。
+    """
+    def walk(node: Any) -> bool:
+        if isinstance(node, dict):
+            keys = {str(k).lower() for k in node}
+            if (_TASK_HINTS & keys) and ("status" in keys or "state" in keys):
+                return True
+            return any(walk(v) for v in node.values())
+        if isinstance(node, list):
+            return any(walk(v) for v in node)
+        return False
+    return walk(payload)
+
+
+def _find_task_id_path(node: Any, trail: str = "") -> str:
+    """受理单里的任务 id 在哪一层。跟 status/result 同理 —— 各家键名不同
+    (`task_id` / `id` / `job_id` / `request_id`), 但"跟状态住在同一个对象里"这条是稳的,
+    所以优先在带 status 的那一层找, 找不到再退回全树扫。"""
+    def scan(n: Any, t: str, same_object_as_status: bool) -> str:
+        if isinstance(n, dict):
+            keys = {str(k).lower() for k in n}
+            has_status = bool({"status", "state", "phase"} & keys)
+            if not same_object_as_status or has_status:
+                for cand in ("task_id", "taskid", "job_id", "id", "request_id"):
+                    val = n.get(cand)
+                    if isinstance(val, (str, int)) and str(val).strip():
+                        return f"{t}.{cand}" if t else cand
+            for k, v in n.items():
+                found = scan(v, f"{t}.{k}" if t else k, same_object_as_status)
+                if found:
+                    return found
+        elif isinstance(n, list):
+            for i, v in enumerate(n):
+                found = scan(v, f"{t}[{i}]", same_object_as_status)
+                if found:
+                    return found
+        return ""
+    # 先只认"跟 status 同一层"的, 免得把回包顶层的 request_id 当成任务 id。
+    return scan(node, trail, True) or scan(node, trail, False)
+
+
+def probe_template(
+    channel: ImageChannel, variables: dict[str, Any], *,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """按模板**只发提交那一次**, 把回包和诊断结果交回去。
+
+    刻意不走 `execute`: 那个会一路轮询到出图, 而这里要的正是"提交回来的是什么" ——
+    是图(同步) 还是一张受理单(异步)。异步的话下一步是让用户再粘一段查询任务的 curl。
+    """
+    payload = _request(
+        session or SHARED_SESSION, channel.request_template or {}, variables,
+        timeout=channel.timeout, what="试跑",
+    )
+    hits = find_result_paths(payload)
+    return {
+        "raw": payload,
+        "candidates": [{"path": p, "preview": d} for p, d in hits],
+        # 第一个命中就是建议值。多个命中时后面那些通常是缩略图 / 备用尺寸, 让用户选。
+        "result_path": hits[0][0] if hits else "",
+        "is_async": (not hits) and looks_like_task(payload),
+        # 异步时下一步要用的: 提交回来的任务 id 在哪一层。
+        "task_id_path": "" if hits else _find_task_id_path(payload),
+    }
+
+
+def _find_status_path(node: Any, trail: str = "") -> str:
+    """回包里"状态"在哪一层。找键叫 status/state/phase 且值是个短字符串的位置。
+
+    跟 `find_result_paths` 一样是"跑一次看出来的", 不问用户 —— 而且顺带能把**那次真实
+    看到的状态值**填进 `done`, 比让人照着文档猜 succeeded / completed / success 靠谱。
+    """
+    if isinstance(node, dict):
+        for key in ("status", "state", "phase"):
+            val = node.get(key)
+            if isinstance(val, str) and 0 < len(val) < 32:
+                return f"{trail}.{key}" if trail else key
+        for k, v in node.items():
+            found = _find_status_path(v, f"{trail}.{k}" if trail else k)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            found = _find_status_path(v, f"{trail}[{i}]")
+            if found:
+                return found
+    return ""
+
+
+def probe_poll(
+    channel: ImageChannel, poll: dict, variables: dict[str, Any], *,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """查一次任务, 把 `status_path` / 当前状态 / `result_path` 都从回包里读出来。
+
+    向导会反复调它直到出图 —— 每次都告诉用户"现在是 pending", 出图那次就把
+    `done` 定成那一刻真实看到的状态值。
+    """
+    payload = _request(
+        session or SHARED_SESSION, {**poll, "body": None}, variables,
+        timeout=channel.poll_timeout or 30, what="查询任务",
+    )
+    status_path = _find_status_path(payload)
+    hits = find_result_paths(payload)
+    return {
+        "raw": payload,
+        "status_path": status_path,
+        "status": str(extract(payload, status_path)) if status_path else "",
+        "candidates": [{"path": p, "preview": d} for p, d in hits],
+        "result_path": hits[0][0] if hits else "",
+        "done": bool(hits),
+    }
