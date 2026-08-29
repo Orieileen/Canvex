@@ -51,6 +51,9 @@ interface ChatOverlayProps {
   placeholder?: string;
   /** All skills the agent has loaded. Empty / undefined = hide selector. */
   skills?: CanvasSkill[];
+  /** 打开技能库面板 —— popover 底部那条「管理技能」。在这里放一个入口是因为用户想到
+   *  skill 的时刻就是打开这个 popover 的时刻; 侧栏那个是主入口。 */
+  onManageSkills?: () => void;
   /** 生图通道选择器的全套 props (由页面那一层持有, 见 useChannelPickers)。models 为空
    *  数组时仍然渲染选择器 —— popover 里会引导去配置页, 这比"按钮根本不出现"更容易被
    *  发现。省略即不渲染。 */
@@ -71,6 +74,7 @@ export function ChatOverlay({
   skillBadges,
   placeholder,
   skills,
+  onManageSkills,
   imageModel,
   attachments,
   onRemoveAttachment,
@@ -217,6 +221,7 @@ export function ChatOverlay({
                 skills={skills}
                 disabledSkills={disabledSkills}
                 onChange={setDisabledSkills}
+                onManage={onManageSkills}
                 buttonDisabled={isStreaming}
               />
             )}

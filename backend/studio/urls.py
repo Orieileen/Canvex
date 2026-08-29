@@ -23,12 +23,17 @@ from .views import (
     SceneVideoJobListView,
     SceneViewSet,
     SkillListView,
+    SkillViewSet,
     VideoJobRetrieveView,
 )
 
 router = DefaultRouter()
 router.register(r"scenes", SceneViewSet, basename="canvas-scene")
 router.register(r"image-providers", ImageProviderViewSet, basename="canvas-image-provider")
+# `/skills/` 是"agent 现在看得见什么"(读 store), 这里是"库里装了什么"(读表, 含停用
+# 的行和 SKILL.md 全文)。两个名字不一样是因为回答的确实是两个问题 ——
+# 见 services/agent/skills.py 的模块文档。
+router.register(r"skill-library", SkillViewSet, basename="canvas-skill")
 
 urlpatterns = [
     path(

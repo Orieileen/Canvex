@@ -502,3 +502,58 @@ class AngleResult(models.Model):
 
     def __str__(self):
         return f"AngleResult({self.job_id}, #{self.order})"
+
+
+class Skill(models.Model):
+    """一个装好的 SKILL.md —— agent 的可选 SOP, 用户在前端传 / 编 / 停用。
+
+    存在的理由: skill 以前只能是磁盘上 `services/agent/skills/<slug>/SKILL.md` 的一个
+    目录, 想加一条自己的 SOP 得进容器改文件再重启。现在进库, 前端传个 .md 就装上了。
+
+    **磁盘那份变成出厂种子**: 迁移 0018 把它导进这张表, 此后运行时只认库。磁盘文件留着
+    是为了新装的人一上来就有两条能用的 SOP, 不再是运行时真相 —— 别再去改那些文件, 改了
+    不生效。
+
+    `content` 是 SKILL.md 全文(含 frontmatter), 是唯一真相。`name` / `description` 是
+    存盘时从 frontmatter 里解析出来的**冗余列**: name 要做唯一约束 + 当 store 的 key,
+    description 要给列表和 popover 用 —— 每次 GET 都重新 yaml 解析一遍全部 skill 太蠢。
+    两列只由 SkillSerializer 那一条通路写, 跟 content 不会飘。
+
+    `source=builtin` 的行**能停用、不能删**: 删了磁盘上还在, 重建容器又长回来, 那种
+    "删不掉"最难跟用户解释。用户装的 (`source=user`) 才是真能删的。
+
+    `enabled=False` = 不往 store 里放 = agent 完全看不见。这跟 ChatOverlay 那个
+    SkillSelector 是两回事: 那个是**单条消息**的临时跳过, 这个是持久的装/不装。
+    """
+
+    class Source(models.TextChoices):
+        # 随代码库发的出厂 SOP, 由数据迁移导入。可停用, 不可删。
+        BUILTIN = "builtin", "Built-in"
+        # 用户自己传上来的。
+        USER = "user", "User-installed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # frontmatter 里的 name。agentskills 规范要求它等于所在目录名, 而我们的目录名就是
+    # 由它生成的 (`/{name}/SKILL.md`), 所以天然满足。max_length 跟 deepagents 的
+    # MAX_SKILL_NAME_LENGTH 对齐。
+    name = models.CharField(max_length=64, unique=True)
+    # frontmatter 里的 description。progressive disclosure 靠它 —— agent 系统提示里只有
+    # 这一段, 它决定 agent 要不要把整篇 SKILL.md 读进来。
+    description = models.TextField()
+    content = models.TextField()
+    source = models.CharField(
+        max_length=16, choices=Source.choices, default=Source.USER, db_index=True,
+    )
+    enabled = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_skills"
+        verbose_name = "Canvas Skill"
+        verbose_name_plural = "Canvas Skills"
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"Skill({self.name})"

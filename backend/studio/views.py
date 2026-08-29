@@ -6,6 +6,7 @@ from dataclasses import replace
 from itertools import chain
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db import transaction
 from django.db.models import Count, Max
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -26,6 +27,7 @@ from .models import (
     ImageEditJob,
     ImageEditResult,
     Scene,
+    Skill,
     VideoJob,
 )
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
@@ -46,6 +48,7 @@ from .serializers import (
     SceneCreateSerializer,
     SceneListSerializer,
     SceneSerializer,
+    SkillSerializer,
     SplitJobCreateSerializer,
     VideoJobCreateSerializer,
     VideoJobSerializer,
@@ -56,7 +59,7 @@ from .services.agent.builder import (
     StreamEvent,
     stream_canvas_agent,
 )
-from .services.agent.skills import list_skills
+from .services.agent.skills import list_skills, resync_skills
 from .services.agent.tools.common import enqueue_on_commit
 from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
@@ -226,16 +229,68 @@ class SceneAttachmentUploadView(APIView):
 class SkillListView(APIView):
     """GET /skills/  列出当前 agent 加载的所有 skill (name + description + path).
 
-    供前端 ChatOverlay 渲染 skill 选择 popover 用。Skills 是进程级缓存
-    (跟 `get_store()` 一起 lazy seed), 所以这里不涉及 DB / 网络;
-    返回 list 是 SkillsMiddleware 同源, 不会跟 agent 看到的飘移。
+    供前端 ChatOverlay 渲染 skill 选择 popover 用。**每次都重新读 store**, 没有缓存
+    (为什么不能有, 见 services/agent/skills.py) —— 读一次 store 是几毫秒的量级, 而这个
+    端点只在开页面和改完 skill 之后调。返回的 list 跟 SkillsMiddleware 同源, 不会跟
+    agent 看到的飘移。
 
-    没分页 — skill 数量是个位数 (canvas 当前 1 个), 前端一次拉完。
+    没分页: 这里只回 name / description / path, 一条一两百字节, 而 skill 是人一篇一篇
+    装的, 不会到需要翻页的量级。
     """
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         return Response(list_skills())
+
+
+class SkillViewSet(viewsets.ModelViewSet):
+    """`/skill-library/` —— 装好的 SKILL.md 的增删改查 + 往 store 里推。
+
+    跟 `SkillListView` (`/skills/`) 的分工见 `services.agent.skills` 的模块文档:
+    那个回答"agent 现在看得见什么", 这个回答"库里装了什么"(含停用的行和全文)。
+
+    **store 同步是这一层的事, 不是序列化器的事。** 删除根本不经过序列化器, 而删除
+    恰恰必须推 —— 放在序列化器里就会漏掉最需要它的那条路径。
+
+    没有鉴权门: 本地单机开源项目, 只有屏幕前的人能访问。但这里比别处多一句 ——
+    装一篇 SKILL.md 等于给一个握着你 API key、能调 generate_image / generate_video
+    的 agent 塞一段指令。自己写的 SOP 无所谓; 从别处拷来的正文, 装之前自己看一遍。
+    """
+
+    queryset = Skill.objects.all()
+    serializer_class = SkillSerializer
+    permission_classes = [permissions.AllowAny]
+
+    # 三个写路径都套 atomic: 库写成了而 store 没写成 (或反过来) 的话, 面板上显示装好了、
+    # agent 却看不见, 而且刷新页面也不会变 —— 用户完全没有线索。让它一起失败, 用户重试
+    # 就行。store 的 put/delete 本身不参与事务, 但它排在库写之后, 它抛异常 → 库回滚 →
+    # 结果是"什么都没发生", 这正是我们要的。
+    #
+    # 三个都是"改完库, 再把 store 整个推导一遍"。**刻意不在这里算增量** (改名了删哪个
+    # key、停用了删不删): 那等于把"store 里该有什么"这条规则在 seed 之外再写一遍, 而
+    # 两遍必然分叉。见 skills.resync_skills。
+    @transaction.atomic
+    def perform_create(self, serializer):
+        serializer.save()
+        resync_skills()
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        serializer.save()
+        resync_skills()
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        if instance.source == Skill.Source.BUILTIN:
+            # 删了磁盘上还在, 重建容器 migrate 又长回来 —— 那种"删不掉"最难解释。
+            # 内置的只提供停用。
+            raise ValidationError({
+                "detail": f"`{instance.name}` is a built-in skill and cannot be deleted.",
+                "code": "builtin_undeletable",
+                "name": instance.name,
+            })
+        instance.delete()
+        resync_skills()
 
 
 class SceneChatView(APIView):

@@ -24,7 +24,7 @@ Main README: [English](./README.md)
   - **样机** —— 借深度把一张设计图贴到另一张图上，带 深度 / 蒙版 / 不透明度 控制。
   - **合并 / 调整 / 下载 / 发到聊天** —— 本地拍平选区、Lightroom 风格调色面板、导出画布、或把图作为LLM Agent参考附件。
 - **框 & 箭头标注** —— 精细化编辑图片：在图上画框/箭头/文字来指向要改的区域。
-- **Skills（技能）** —— agent 遵循的内置 playbook（如 `image-prompt-sop` 把模糊需求改写成高质量单图提示词、`amazon-listing-pack-sop` 一键生成协调的 7 张亚马逊套图）。可在聊天框按单条消息临时关掉某个技能。用户可自定义增加或删除Skills。
+- **Skills（技能）** —— agent 自己判断该不该用的 playbook（如 `image-prompt-sop` 把模糊需求改写成高质量单图提示词、`amazon-listing-pack-sop` 一键生成协调的 7 张亚马逊套图）。侧栏「技能库」可以装自己的：拖一个 `SKILL.md` 进去（或者直接在浏览器里写），下一条消息 agent 就会用上，**不用重启**。停用和删除也在那里；聊天框里那个是按单条消息临时跳过。
 - **场景** —— 侧栏里多个独立画布：新建、重命名、删除、**置顶**、快速切换；编辑自动保存。
 - **素材库** —— 保存你生成过的所有图片/视频，按画布分组；点缩略图即可重新插回当前画布。
 - **分辨率档位** —— 图像生成/编辑支持 1K / 2K / 4K（需供应商以及模型支持）。
@@ -133,7 +133,8 @@ docker compose up -d --build
 | 进行中的 job（恢复轮询） | `GET /scenes/{id}/active-jobs/` |
 | 发到聊天的上传 | `POST /scenes/{id}/upload-attachment/` |
 | 素材库 | `GET /media-library/folders/`、`GET /media-library/folders/{scene_id}/items/` |
-| Skills | `GET /skills/` |
+| Agent 当前看得见的技能 | `GET /skills/` |
+| 装 / 卸技能 | `GET` / `POST /skill-library/`、`PATCH` / `DELETE /skill-library/{id}/` |
 
 聊天端点走 **NDJSON**（一行一个 JSON；事件类型：`user_created`、`tool_call`、`tool_result`、`assistant_final`、`assistant`、`error`、`done`），不是 SSE。
 
@@ -158,7 +159,8 @@ backend/
             ├── builder.py        # create_deep_agent (model, tools, skills, memory, store)
             ├── skills.py  context.py
             ├── tools/            # common.py, image.py (generate_image), video.py (generate_video)
-            └── skills/           # image-prompt-sop/SKILL.md, amazon-listing-pack-sop/SKILL.md
+            └── skills/           # 只是出厂种子 —— 迁移 0018 把它导进库, 运行时以库为准
+                                  #   (改这些文件不生效)
 ```
 
 ### 异步 job 流水线
