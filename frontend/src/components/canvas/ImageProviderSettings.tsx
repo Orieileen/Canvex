@@ -921,21 +921,67 @@ function TunableEditor({
     onChange(next);
   };
 
+  // 用户手动折过的组。没记过的组走下面 `isOpen` 那条默认规则。
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+
+  // 按后端给的 group 切段。**顺序完全由后端下发的行序决定** (它已经按组排好), 这里不再
+  // 自己排一份 —— 排两份的下场是加一组时界面上的位置跟后端说的不一样, 而且不报错。
+  const groups = useMemo(() => {
+    const out: { key: string; rows: CanvasTunableSpec[] }[] = [];
+    for (const f of specs) {
+      const key = f.group || "other";
+      const last = out[out.length - 1];
+      if (last && last.key === key) last.rows.push(f);
+      else out.push({ key, rows: [f] });
+    }
+    return out;
+  }, [specs]);
+
+  // 只有一组时不显示分组头 —— angle / chat 只有一个 timeout, 给它套一个标题纯属噪音。
+  const showHeaders = groups.length > 1;
+
+  /** 「异步轮询」默认折起来: 那几个旋钮只在**异步**通道上有意义, 而同步是大多数, 它们
+   *  平铺出来占了这张表的一半。已经设过值就展开 —— 一条配好的异步通道不该把自己的配置
+   *  藏起来, 那比多几个框糟得多。 */
+  const isOpen = (g: { key: string; rows: CanvasTunableSpec[] }) =>
+    toggled[g.key] ??
+    (g.key !== "poll" || g.rows.some((f) => values[f.key] !== undefined));
+
   return (
     <div className="rounded-md bg-foreground/5 p-2">
       {title && <div className="mb-1 text-[12px] font-medium">{title}</div>}
       {hint && <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
-      <div className="flex flex-col gap-2">
-        {specs.map((f) => {
+      <div className="flex flex-col gap-3">
+        {groups.map((g) => (
+          <div key={g.key} className="flex flex-col gap-2">
+            {showHeaders && (
+              <button
+                type="button"
+                onClick={() => setToggled({ ...toggled, [g.key]: !isOpen(g) })}
+                className="flex items-center gap-1.5 text-left text-[11px] font-medium text-foreground"
+              >
+                <span className="text-muted-foreground">{isOpen(g) ? "▾" : "▸"}</span>
+                {t(`imageProviders.group.${g.key}`, g.key)}
+                <span className="font-normal text-muted-foreground">({g.rows.length})</span>
+              </button>
+            )}
+            {isOpen(g) && showHeaders && (
+              <p className="-mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                {t(`imageProviders.groupHint.${g.key}`, { defaultValue: "" })}
+              </p>
+            )}
+            {isOpen(g) && g.rows.map((f) => {
           // 三种控件都用同一份显示值: undefined (没配这项) → 空串, 其余原样转字符串。
           const shown = values[f.key] === undefined ? "" : String(values[f.key]);
           return (
           <div key={f.key} className="flex items-start gap-2">
-            <div className="w-[124px] shrink-0 pt-1">
-              <div className="font-mono text-[11px] text-foreground">{f.key}</div>
-              <div className="text-[10px] leading-tight text-muted-foreground">
+            {/* 人话在上、字段名在下。反过来看了一年也记不住 `image_as_single` 是什么,
+                而字段名仍然要留着 —— 供应商文档和我们自己的报错都按它称呼。 */}
+            <div className="w-[136px] shrink-0 pt-1">
+              <div className="text-[11px] leading-tight text-foreground">
                 {t(`imageProviders.field.${f.key}`, f.key)}
               </div>
+              <div className="font-mono text-[10px] text-muted-foreground">{f.key}</div>
             </div>
             <div className="min-w-0 flex-1">
               {f.control === "bool" && (
@@ -972,6 +1018,8 @@ function TunableEditor({
           </div>
           );
         })}
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -118,6 +118,20 @@ export const imageProviders = {
     parsing: "Parsing…",
     unset: "not set",
     dont_send: "don't send",
+    /** 旋钮分组。分组本身由后端下发 (services/image_channels.py 的 _TUNABLE_GROUPS),
+     *  这里只管怎么念。 */
+    group: {
+      shape: "Request shape",
+      timing: "Timeout",
+      poll: "Async polling",
+      other: "Other",
+    },
+    groupHint: {
+      shape: "What shape this provider wants its requests in. Follow their docs; blank = Canvex's default.",
+      timing: "How long one request may take before we give up. 60–300s is normal for image generation.",
+      poll: "Only matters if this provider is async — it hands back a task id and you poll for the result. The defaults are usually fine unless you see \"polled N times and it still isn't done\".",
+      other: "",
+    },
     field: {
       image_field: "field carrying the source image(s)",
       image_as_single: "send a single string instead of an array when n=1",
@@ -249,6 +263,18 @@ export const imageProviders = {
     parsing: "解析中…",
     unset: "未设置",
     dont_send: "不下发",
+    group: {
+      shape: "请求形状",
+      timing: "超时",
+      poll: "异步轮询",
+      other: "其它",
+    },
+    groupHint: {
+      shape: "这家要什么格式的请求。照供应商文档填,留空 = 用 Canvex 自己的默认。",
+      timing: "一次请求最多等多久就放弃。生图 60–300 秒都算正常。",
+      poll: "只有这家是异步的才用得上 —— 先回一个 task id,再让你去查结果。默认值一般够用,除非报「轮询了 N 次还没完成」。",
+      other: "",
+    },
     field: {
       image_field: "装源图的字段名",
       image_as_single: "n=1 时发单个字符串而不是数组",

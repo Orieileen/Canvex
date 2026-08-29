@@ -335,6 +335,44 @@ KIND_SPECS: dict[str, _KindSpec] = {
 _CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
 
 
+# 旋钮分组。生图通道有十四个旋钮, 平铺出来是一堵墙 —— 而它们其实回答三个完全不同的问题:
+# "这家要什么格式的请求"、"等多久放弃"、"这家是不是异步的"。第三组尤其值得单独关起来:
+# 六个里有五个在同步通道上永远用不到, 而同步是大多数。
+#
+# **一张有序表, 而不是在十四个字段各标一个 group**: 组和组之间的顺序本身是要表达的东西
+# (先形状后时间), 分散到 metadata 里就没有顺序可言, 也一眼看不出有没有漏掉谁。
+#
+# 组内顺序仍然是 dataclass 的声明顺序 —— 这张表只管"哪几个是一伙的"。(现在两者恰好一致,
+# 所以这次改动不动任何一项在界面上的位置。)
+_TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("shape", frozenset({
+        "image_field", "image_as_single", "response_format", "quality",
+        "watermark", "inline_image", "size_mode",
+    })),
+    ("timing", frozenset({"timeout"})),
+    ("poll", frozenset({
+        "poll_enabled", "poll_url", "poll_max_attempts", "poll_interval",
+        "poll_max_interval", "poll_timeout",
+    })),
+)
+# 没被上面任何一组认领的旋钮落这儿。**不是丢掉** —— 加了新旋钮却忘了归组时, 它照样出现
+# 在界面上(在"其它"里), 而不是静默消失, 那正是本模块顶上那条注释在防的事。
+_FALLBACK_GROUP = "other"
+
+
+def _group_of(name: str) -> str:
+    for group, names in _TUNABLE_GROUPS:
+        if name in names:
+            return group
+    return _FALLBACK_GROUP
+
+
+# 组的先后 = 上面那张表的顺序, 兜底组永远排最后。前端按行里的 group 首次出现的次序分段,
+# 所以顺序由这里的排序决定, 前端不再自己排一份。
+_GROUP_ORDER = {g: i for i, (g, _) in enumerate(_TUNABLE_GROUPS)}
+_GROUP_ORDER[_FALLBACK_GROUP] = len(_TUNABLE_GROUPS)
+
+
 # 没有 `.get(kind, 兜底)`: Kind 就定义在 models.py 里紧挨着这张表, 四个成员全在这儿有行。
 # 加第五种 kind 却忘了加行时, 这里 KeyError 当场炸在"缺 spec"那一点上, 比悄悄把整套生图
 # 旋钮发给一个用不上它们的通道好得多。
@@ -383,6 +421,10 @@ def tunable_schema() -> dict[str, dict]:
             rows.append({
                 "key": name,
                 "control": control,
+                # 归哪一组。前端据此分段 + 决定"异步轮询"那组默认折不折叠 ——
+                # 判定只此一处, 前端不再按字段名前缀猜 (`poll_` 开头的都算轮询那种猜法
+                # 会在有人加一个叫 `poll_something_else` 的非轮询字段时静默出错)。
+                "group": _group_of(name),
                 # False / "" / None / 0 都不值得显示成占位符 —— 空占位符比 "false" 干净。
                 "placeholder": "" if placeholder in (None, "", False, 0) else str(placeholder),
                 # `bool | None` 的"不填"= 不下发该字段(由供应商自己决定), 其余 = 用我们的
@@ -391,6 +433,8 @@ def tunable_schema() -> dict[str, dict]:
                     "dont_send" if type(None) in typing.get_args(annotations[name]) else "unset"
                 ),
             })
+        # 按组排序, 组内保持 dataclass 的声明顺序 (sorted 是稳定的)。
+        rows.sort(key=lambda r: _GROUP_ORDER[r["group"]])
         out[str(kind)] = {
             "tunables": rows,
             "requires_base_url": spec.requires_base_url,

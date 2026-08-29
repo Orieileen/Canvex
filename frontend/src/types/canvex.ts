@@ -298,6 +298,10 @@ export interface CanvasKindSpec {
  */
 export interface CanvasTunableSpec {
   key: string;
+  /** 归哪一组 (`shape` / `timing` / `poll` / `other`)。**后端说了算** —— 前端不按字段名
+   *  前缀猜, 那种猜法会在有人加一个 `poll_` 开头的非轮询字段时静默出错。
+   *  行已经按组排好, 前端只按首次出现的次序切段。 */
+  group: string;
   /** 渲染成什么控件。由字段的标量类型决定。 */
   control: "text" | "bool" | "number";
   /** 输入框的灰字提示。通常就是 Canvex 自己的默认值。 */
