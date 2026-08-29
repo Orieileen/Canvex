@@ -87,6 +87,33 @@ const inputCls =
 let localIdSeq = 0;
 const newLocalId = () => `new-${Date.now()}-${localIdSeq++}`;
 
+/** 「上一次调用是多久以前」。
+ *
+ *  用 Intl.RelativeTimeFormat 而不是自己拼「3 分钟前」: 后者要为秒/分/时/天各补两套
+ *  翻译还得处理单复数, 而浏览器本来就带一份, 跟着 i18n 当前语言走。
+ *
+ *  表是 [到这个秒数为止, 换算除数, 单位]。找第一个装得下的档 —— 90 秒说"1 分钟前"而
+ *  不是"90 秒前"。 */
+const RELATIVE_STEPS: [limit: number, per: number, unit: Intl.RelativeTimeFormatUnit][] = [
+  [60, 1, "second"],
+  [3600, 60, "minute"],
+  [86400, 3600, "hour"],
+  [604800, 86400, "day"],
+  [2629800, 604800, "week"],
+  [31557600, 2629800, "month"],
+  [Infinity, 31557600, "year"],
+];
+
+const relTime = (iso: string, lang: string) => {
+  const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+  const [, per, unit] =
+    RELATIVE_STEPS.find(([limit]) => Math.abs(seconds) < limit) ?? RELATIVE_STEPS[RELATIVE_STEPS.length - 1];
+  // 负数 = 过去。numeric:"auto" 让"0 秒前"变成「刚刚」/「now」而不是「0 秒前」。
+  return new Intl.RelativeTimeFormat(lang, { numeric: "auto" }).format(
+    Math.round(-seconds / per), unit,
+  );
+};
+
 /** 空草稿 —— 「新建供应商」和 curl 导入都从它开始。 */
 const emptyProvider = (): CanvasImageProvider => ({
   id: "",
@@ -99,6 +126,10 @@ const emptyProvider = (): CanvasImageProvider => ({
   models: [],
   created_at: "",
   updated_at: "",
+  // 健康是**服务端事实**, 本地草稿上永远是"还没调用过"。真正的值由 reload 从服务端带回。
+  last_status: "",
+  last_checked_at: null,
+  last_error: "",
 });
 
 /** 只取会被 PUT 上去的部分。既是请求体, 也是"改过没有"的比较基准。
@@ -337,6 +368,7 @@ export function ImageProviderSettings({
               onPatch={(patch) => patchDraft(id, patch)}
               onSave={() => void save(id)}
               onDelete={() => void remove(id)}
+              onTested={() => void reload()}
               tunables={tunables}
               kinds={kinds}
             />
@@ -472,6 +504,70 @@ function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProv
   );
 }
 
+/**
+ * 通道健康的那个点 —— 「上一次真的调用它时, 供应商应答了吗」。
+ *
+ * 存在的理由: 一条配好的通道会在**没有任何人操作**的情况下坏掉 (key 过期、额度打光、
+ * 供应商换端点), 而在此之前唯一的发现方式是"下一次生成失败" —— 那条报错落在画布上一张
+ * 图的红字里, 关掉就没了; 回到这个面板, 这条通道看起来和配好的第一天一模一样。
+ *
+ * **读服务端那份 (`saved`) 而不是草稿**: 这是一条服务端事实, 本地改了半截不会让一条坏
+ * 通道变好, 也不会让一条好通道变坏。所以还没保存的新卡片上它根本不出现 (调用方判)。
+ *
+ * 三态而不是两态: "还没调用过"必须跟"通了"分得开 —— 一个刚建好的通道显示绿点等于凭空
+ * 给了一个没人验证过的承诺。
+ */
+function HealthDot({ provider }: { provider: CanvasImageProvider }) {
+  const { t, i18n } = useTranslation("canvasUi");
+  const when = provider.last_checked_at ? relTime(provider.last_checked_at, i18n.language) : "";
+  // 悬停能看到全文。展开之后下面还有一块能选中复制的 —— 长报文在 title 里读不了。
+  const title =
+    provider.last_status === "error"
+      ? `${t("imageProviders.healthError", { when })}\n${provider.last_error}`
+      : provider.last_status === "ok"
+        ? t("imageProviders.healthOk", { when })
+        : t("imageProviders.healthUnknown");
+  return (
+    <span
+      title={title}
+      // role 不能省: 一个裸 <span> 即使带了 aria-label 也不会被读屏念出来, 而这个点是
+      // 纯颜色编码的 —— 没有它, "这条通道坏了"对读屏用户根本不存在。
+      role="img"
+      aria-label={title}
+      className={cn(
+        "size-2 shrink-0 rounded-full",
+        provider.last_status === "ok" && "bg-ok",
+        provider.last_status === "error" && "bg-destructive",
+        // 没调用过 = 空心。跟"通了"分得开, 又不像实心灰那样看着像"停用了"。
+        !provider.last_status && "border border-border",
+      )}
+    />
+  );
+}
+
+/** 展开之后那一行/一块健康详情。失败时给的是**供应商返回的原文** —— 用户拿着它对着
+ *  文档就能改, 跟「测试」按钮的 toast 是同一份东西, 所以不美化、不归类。 */
+function HealthNote({ provider }: { provider: CanvasImageProvider }) {
+  const { t, i18n } = useTranslation("canvasUi");
+  if (!provider.last_status) return null;
+  const when = provider.last_checked_at ? relTime(provider.last_checked_at, i18n.language) : "";
+  if (provider.last_status === "ok") {
+    return (
+      <p className="text-[11px] text-muted-foreground">{t("imageProviders.healthOk", { when })}</p>
+    );
+  }
+  return (
+    <div className="rounded-md bg-destructive/10 px-2.5 py-2 text-[11px] leading-relaxed text-destructive">
+      <div className="font-medium">{t("imageProviders.healthError", { when })}</div>
+      {/* 可选中: 这段要能复制去搜 / 贴给供应商。break-all 是因为报文里常有一整条没有
+          空格的 URL, 不断行会把卡片撑出横向滚动条。 */}
+      <div className="mt-1 font-mono break-all whitespace-pre-wrap select-text opacity-90">
+        {provider.last_error}
+      </div>
+    </div>
+  );
+}
+
 function ProviderCard({
   draft,
   saved,
@@ -480,6 +576,7 @@ function ProviderCard({
   onPatch,
   onSave,
   onDelete,
+  onTested,
   tunables,
   kinds,
 }: {
@@ -490,6 +587,10 @@ function ProviderCard({
   onPatch: (patch: Partial<CanvasImageProvider>) => void;
   onSave: () => void;
   onDelete: () => void;
+  /** 「测了一次」—— 让父组件重拉列表, 把那个点和下面的报文换成这一次的结果。
+   *  测试的结果是**服务端写的** (后端每次真实调用都记, 不只是这个按钮), 所以不在本地
+   *  凑一份出来: 那样它会跟画布上那次生成写进去的结果打架。 */
+  onTested: () => void;
   /** 后端下发的按 kind 分组的表单规则。 */
   tunables: Record<string, CanvasKindSpec>;
   /** 可选的通道类型 = schema 的键。 */
@@ -529,6 +630,9 @@ function ProviderCard({
       toast.error(extractApiError(err, "test failed"));
     } finally {
       setTesting("");
+      // 通/不通两种都要刷: 后端在这一次调用里已经把结果记到通道行上了, 不重拉的话卡片上
+      // 那个点还停在上一次。
+      onTested();
     }
   };
 
@@ -541,6 +645,9 @@ function ProviderCard({
         <button type="button" onClick={onToggle} className="text-muted-foreground">
           {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         </button>
+        {/* 折叠着也看得见 —— 这一条的全部意义就是不用逐个展开就知道哪条坏了。
+            没保存的新卡片没有 `saved`, 也就没有点: 库里还没有这一行, 谈不上"上次调用"。 */}
+        {saved && <HealthDot provider={saved} />}
         <input
           value={draft.label}
           onChange={(e) => onPatch({ label: e.target.value })}
@@ -567,6 +674,9 @@ function ProviderCard({
 
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border p-3">
+          {/* 排在所有字段前面: 一条通道刚坏的时候, "供应商说了什么"比任何一个输入框都
+              重要 —— 用户就是照着它去改下面那些字段的。 */}
+          {saved && <HealthNote provider={saved} />}
           {/* kind 放在最前面: 它决定下面显示哪些字段, 以及这条通道会出现在哪个选择器里。 */}
           {/* 只有新建时才是一个真实的选择。存过之后它就不是设置了 —— 是"这个端点说哪种
               协议", 改它等于换一个东西 (后端也会拒), 所以这里不留一个点不动的下拉当摆设,

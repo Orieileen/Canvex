@@ -52,6 +52,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from django.conf import settings
 from django.db import DatabaseError, transaction
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -66,6 +67,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from studio.models import ImageProvider
+from studio.services import channel_health
 from studio.services.image_channels import require_channel
 
 from .context import CanvasAgentContext
@@ -315,18 +317,54 @@ def build_canvas_agent():
     with _agent_lock:
         return _agent_for_channel(
             channel.api_key, channel.base_url, channel.model, channel.timeout,
+            channel.provider_id,
+        )
+
+
+class _ChannelHealthCallback(BaseCallbackHandler):
+    """把每一次 LLM 往返的结果记到聊天通道行上 (见 services/channel_health.py)。
+
+    **为什么是回调而不是在 stream_canvas_agent 的 except 里记**: 那里一次工具报错和一次
+    LLM 报错会变成同一个 CanvasAgentInvocationError, 分不出是谁的责任 —— 而卡片上那个红点
+    必须意味着"这条通道不行", 不能意味着"刚才那次生成挂了"。回调是 langchain 里唯一确知
+    "这一次是模型在说话"的地方。
+
+    聊天通道**没有「测试」按钮** (要验的是"支不支持 tools 参数", 跟发一张图不是一回事 ——
+    见 KIND_SPECS 的 untestable_reason), 所以真实对话是它唯一的健康信号。用户那把
+    tu-zi key 额度打光时, 聊天和生图是一起停的, 而在此之前只有生图那条会变红。
+
+    一轮对话会调好几次模型 (每次工具调用之后都要再问一遍), 于是这里一轮写好几次库。
+    单机项目 + 一张几行的表, 换掉这份精确度不值得。
+    """
+
+    def __init__(self, provider_id: str, label: str):
+        self.provider_id = provider_id
+        self.label = label
+
+    def on_llm_end(self, response, **kwargs) -> None:
+        channel_health.record(self.provider_id, self.label, True)
+
+    def on_llm_error(self, error: BaseException, **kwargs) -> None:
+        channel_health.record(
+            self.provider_id, self.label, False, f"{type(error).__name__}: {error}",
         )
 
 
 @functools.lru_cache(maxsize=4)
-def _agent_for_channel(api_key: str, base_url: str, model_name: str, timeout: int):
+def _agent_for_channel(
+    api_key: str, base_url: str, model_name: str, timeout: int, provider_id: str,
+):
     """建一条通道的 graph。**只在 `_agent_lock` 下调用** (见 build_canvas_agent)。
 
-    键是这四个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
+    键是这五个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
     (= "供应商名 · 模型名") 也在里面 —— 在配置面板里给聊天供应商改个名字就会让这条失效,
     下一轮聊天要重新编译整个 deep-agent graph 并新建一个 ChatOpenAI (连带新的 httpx 连接
     池), 而且是握着进程级的 _agent_lock 做的, 期间所有并发的聊天全都排队等着。
     image_client.build_image_client 早就为同一个理由把键收窄到 _CLIENT_FIELDS 了。
+
+    `provider_id` 在键里是因为健康记录要写回**那一行**: 两条 key/端点/模型全一样的聊天
+    通道以前会共用一个 graph, 现在各建各的。这不会引起上面担心的那种反复重建 —— id 是
+    不变的, 改名字照样命中。
     """
     model = ChatOpenAI(
         api_key=api_key,
@@ -334,6 +372,9 @@ def _agent_for_channel(api_key: str, base_url: str, model_name: str, timeout: in
         model=model_name,
         max_retries=10,
         timeout=timeout,
+        # 装在模型构造上而不是每次 invoke 传: 聊天有好几个入口 (流式 / 非流式 / 将来的
+        # 子 agent), 挂在这里就不用每处各记一遍。
+        callbacks=[_ChannelHealthCallback(provider_id, model_name)],
     )
 
     agent = create_deep_agent(

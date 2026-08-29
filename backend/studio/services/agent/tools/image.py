@@ -49,7 +49,7 @@ from studio.services.image_client import (
     build_image_client,
     build_probe_client,
 )
-from studio.services import template_client
+from studio.services import channel_health, template_client
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -220,12 +220,15 @@ def probe_image_channel(channel: ImageChannel) -> int:
     它转给执行器, 并且用的正是 `build_probe_client` 那个不重试的 session —— 探针"不重试"
     这条因此只钉在一个地方 (见 build_probe_client)。
     """
-    return len(_single_generation(
-        channel,
-        client=build_probe_client(channel),
-        prompt="a small red circle on a white background",
-        image_urls=[], size="1024x1024", resolution="1K",
-    ))
+    # 探针也记健康 —— 「测试」按钮和一次真实生成对那张卡片上的点是**同一种事实**。
+    # 走 `_single_generation` 而不是 `_generate_on_channel`, 所以两个 watch 不会嵌套。
+    with channel_health.watch(channel):
+        return len(_single_generation(
+            channel,
+            client=build_probe_client(channel),
+            prompt="a small red circle on a white background",
+            image_urls=[], size="1024x1024", resolution="1K",
+        ))
 
 
 def _generate(
@@ -338,9 +341,14 @@ def _generate_on_channel(
     if channel is None:
         raise no_channel_error("生图")
     try:
-        return _call_with_retries(
-            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-        )
+        # `watch` 在**重试的外面、包装报错的里面**, 两边都是刻意的:
+        #   - 外面: 两次尝试是"一次生成"的内部细节, 用户点了一次就该记一笔;
+        #   - 里面: 记的是供应商的原文, 不是下面那句加了"未自动切换"的话 —— 卡片上那段
+        #     红字要能直接拿去对文档, 而且它自己已经带了通道名 (见 channel_health.record)。
+        with channel_health.watch(channel):
+            return _call_with_retries(
+                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            )
     except Exception as exc:
         # 这里就是终点 —— 这条消息会原样变成 job.error, 再原样变成画布上那行红字。所以
         # 它必须自己说清楚两件事: 挂的是**哪个**通道, 以及我们**没有**替他换一个。否则

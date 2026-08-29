@@ -28,6 +28,7 @@ from django.core.files.storage import default_storage
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
+from studio.services import channel_health
 from studio.services.http_retry import make_retry_session
 
 from ..models import AngleJob, AngleResult, ImageProvider
@@ -143,16 +144,19 @@ def run_angle_job(job: AngleJob) -> list[AngleResult]:
         # assert_source_url_reachable 也在 _generate_on_channel 之外。
         source = _job_source_uri(job)
         try:
-            response = submit_angle(
-                channel,
-                image_url=source,
-                horizontal_angle=job.horizontal_angle,
-                vertical_angle=job.vertical_angle,
-                zoom=job.zoom,
-                num_images=job.num_images,
-                additional_prompt=job.additional_prompt,
-                log_ref=str(job.id),
-            )
+            # `watch` 包住供应商往返, 但**不包**下面那句加了"未自动切换"的包装报错 ——
+            # 卡片上那段红字要能直接拿去对文档 (跟生图路径同一条约定)。
+            with channel_health.watch(channel):
+                response = submit_angle(
+                    channel,
+                    image_url=source,
+                    horizontal_angle=job.horizontal_angle,
+                    vertical_angle=job.vertical_angle,
+                    zoom=job.zoom,
+                    num_images=job.num_images,
+                    additional_prompt=job.additional_prompt,
+                    log_ref=str(job.id),
+                )
         except Exception as exc:
             # 跟生图路径同一条约定: 这条消息会原样变成 job.error 再变成画布上那行红字,
             # 所以先说清是**哪条**通道挂的、我们没替他换 —— 否则用户只看到一句通用失败,
@@ -261,18 +265,21 @@ def probe_angle_channel(channel: ImageChannel, *, image_url: str) -> int:
     全程走 `_probe_session` (不重试): 这是一次同步 HTTP 请求, 上面 view 给的墙钟预算只
     钳得住单次超时, 重试会把它整倍数放大。
     """
-    response = submit_angle(
-        channel,
-        image_url=image_url,
-        horizontal_angle=0.0,
-        vertical_angle=0.0,
-        zoom=5.0,
-        num_images=1,
-        log_ref="provider-test",
-        session=_probe_session,
-    )
-    # 真把图拉回来 —— 200 但结果里没有图同样是"配错了", 只看 HTTP 码会漏掉它。
-    return len(_download_result_images(response, session=_probe_session)[0])
+    # 下载也在 watch 里面 —— 见下面那句: "200 但结果里没有图"同样算这条通道没通, 那张
+    # 卡片上的点该跟着变红。探针不经过 run_angle_job, 所以两个 watch 不会嵌套。
+    with channel_health.watch(channel):
+        response = submit_angle(
+            channel,
+            image_url=image_url,
+            horizontal_angle=0.0,
+            vertical_angle=0.0,
+            zoom=5.0,
+            num_images=1,
+            log_ref="provider-test",
+            session=_probe_session,
+        )
+        # 真把图拉回来 —— 200 但结果里没有图同样是"配错了", 只看 HTTP 码会漏掉它。
+        return len(_download_result_images(response, session=_probe_session)[0])
 
 
 def _job_source_uri(job: AngleJob) -> str:

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # "kind" 的输入框; 一旦有人往里填, channel_for_model 就会同时用关键字和 `**known` 传
 # 它, 抛 "got multiple values for keyword argument 'kind'", 这条通道的每一次生成全挂。
 _NON_TUNABLE_FIELDS = frozenset({
-    "base_url", "api_key", "model", "label", "kind", "request_template",
+    "base_url", "api_key", "model", "label", "kind", "request_template", "provider_id",
 })
 _TUNABLE_FIELDS = frozenset(
     f.name for f in dataclasses.fields(ImageChannel)
@@ -438,6 +438,9 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
         model=model.model,
         kind=provider.kind,
         request_template=provider.request_template or {},
+        # 这条通道是库里哪一行 —— channel_health 靠它把调用结果记回去。这里是**唯一**
+        # 的填充点: 通道只从这个函数产出, 所以每一条生成路径自动都带上了它。
+        provider_id=str(provider.id),
         label=f"{provider.label} · {model.label}",
         **known,
     )

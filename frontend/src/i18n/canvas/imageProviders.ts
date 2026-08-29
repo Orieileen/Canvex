@@ -75,6 +75,9 @@ export const imageProviders = {
     testHint: "Send one real minimal generation with this model (costs one generation)",
     testOk: "Works — responded in {{s}}s",
     testFailed: "Test failed",
+    healthOk: "Last call went through · {{when}}",
+    healthError: "Last call failed · {{when}}",
+    healthUnknown: "Never called yet",
     curlImport: "Import from a curl example",
     curlHint:
       "Paste the example curl from your provider's docs. The request body's shape tells us which field carries the image and whether it takes one value or an array — the parts their docs never phrase in our terms.",
@@ -175,6 +178,9 @@ export const imageProviders = {
     testHint: "用这个模型真发一次最小生成(会消耗一次生成额度)",
     testOk: "通了 —— {{s}} 秒返回",
     testFailed: "测试失败",
+    healthOk: "上次调用通了 · {{when}}",
+    healthError: "上次调用失败 · {{when}}",
+    healthUnknown: "还没调用过",
     curlImport: "从 curl 示例导入",
     curlHint:
       "把供应商文档里的示例 curl 粘进来。请求体的形状能告诉我们哪个字段装图、是单值还是数组 —— 这些正是他们文档不会用我们的说法写出来的部分。",

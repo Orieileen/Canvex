@@ -25,7 +25,7 @@ from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
-from studio.services import template_client
+from studio.services import channel_health, template_client
 from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -74,18 +74,26 @@ def run_video_job(job: VideoJob) -> None:
         # 而不是变成一个只有日志里能看到的异常 (跟 image.py 的 client 初始化同款)。
         channel = resolve_video_channel(job)
 
-        # 模板通道在这里整条分流出去: 提交、轮询、取结果全在用户填的模板里, 下面那套
-        # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
-        # 同 image.py: 看 spec.template, 别按 kind 名字判。
-        if KIND_SPECS[channel.kind].template:
-            job.result_url = _template_video(job, channel)
-            return
+        # 视频通道没有「测试」按钮 (出片要几分钟, 撑不过一次同步请求 —— 见 KIND_SPECS 的
+        # untestable_reason), 所以**真实生成是它唯一的健康信号**。两个分支都在 watch 里,
+        # 提交和轮询一起算 —— 用户眼里"生成一条视频"就是一次调用。
+        #
+        # 中间那行 job.save 也在里面。挪出去要把 watch 拆成两段 (task_id 必须在提交后
+        # 立刻落库), 而它失败意味着库都写不动了 —— 那时 record 自己也写不进去, 只会记一
+        # 条日志, 不会真在卡片上留下一个假红点。
+        with channel_health.watch(channel):
+            # 模板通道在这里整条分流出去: 提交、轮询、取结果全在用户填的模板里, 下面那套
+            # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
+            # 同 image.py: 看 spec.template, 别按 kind 名字判。
+            if KIND_SPECS[channel.kind].template:
+                job.result_url = _template_video(job, channel)
+                return
 
-        task_id = _submit(job, channel)
-        job.task_id = task_id
-        job.save(update_fields=["task_id", "updated_at"])
+            task_id = _submit(job, channel)
+            job.task_id = task_id
+            job.save(update_fields=["task_id", "updated_at"])
 
-        result = _poll_until_done(task_id, channel)
+            result = _poll_until_done(task_id, channel)
         job.result_url = result["url"]
         job.thumbnail_url = result.get("thumbnail_url", "")
 

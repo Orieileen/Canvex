@@ -293,6 +293,15 @@ class ImageChannel:
     # 是个坑**: 两条只差模板的通道会被判等、撞同一个缓存格。真要那么做的话, 先把这个
     # 字段换成一个可哈希的表示 (比如 json.dumps 的结果), 别直接把 compare 改回去。
     request_template: dict = field(default_factory=dict, compare=False)
+    # ── 身份 (不参与请求) ──
+    # 这条通道是库里哪一行 ImageProvider。**只给 channel_health 用** —— 它要把"这次调用
+    # 供应商应答了吗"记回那一行。空串 = 不是从库里来的 (向导里还没保存的探针通道), 记录
+    # 直接跳过。
+    #
+    # 放在通道上而不是让每个调用方自己传: 调用方拿到的就是这个 dataclass, 再多传一个
+    # provider_id 意味着**每一条**生成路径 (生图/角度/视频/探针) 都要各自记得带上它, 而
+    # 忘掉的那条会静默地不记健康 —— 没有任何报错, 只是那张卡片上的点永远是灰的。
+    provider_id: str = ""
     # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
     label: str = ""
 

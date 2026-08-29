@@ -97,7 +97,9 @@ Open http://localhost:5173 and click **Channels** in the left sidebar. Nothing w
 3. *(optional)* **Angle** — a [fal.ai](https://fal.ai) key, for the 3D-cube viewpoint tool.
 4. *(optional)* **Video**.
 
-Paste a provider's example `curl` into **Import from a curl example** and Canvex fills in the Base URL, model and request shape for you. The ⚡ button next to a model sends one real minimal generation and shows the provider's raw error if something is off.
+Paste a provider's example `curl` into **Set up from a curl example** and the wizard walks you through it in three steps — no JSON to write. The ⚡ button next to a model sends one real minimal generation and shows the provider's raw error if something is off.
+
+Every channel carries a **status dot**: green = the last call went through, orange = it failed (expand the card for the provider's raw error), hollow = never called yet. Real generations update it too, not just ⚡ — so a channel that quietly breaks (expired key, exhausted quota, moved endpoint) shows up here instead of as one more mystifying failed generation.
 
 ## Environment variables
 

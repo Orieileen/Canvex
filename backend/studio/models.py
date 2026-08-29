@@ -236,6 +236,33 @@ class ImageProvider(models.Model):
     # 校验在 ImageProviderSerializer: 变量名必须在这种 kind 声明的变量表里。
     request_template = models.JSONField(default=dict, blank=True)
 
+    # ── 健康状态 ────────────────────────────────────────────────────────────
+    # 「这条通道上一次真的被调用时, 供应商应答了吗」。写入点见
+    # services/channel_health.py —— 每一次真实生成 + 每一次「测试」按钮。
+    #
+    # 存在的理由: 一条配好的通道会在**没有任何人操作**的情况下坏掉 (key 过期、额度打光、
+    # 供应商换端点)。在此之前唯一的发现方式是"下次生成失败", 而那条报错落在画布上一张图
+    # 的红字里, 关掉就没了; 配置面板上这条通道看起来和配好的第一天一模一样。
+    #
+    # **粒度是供应商而不是模型**, 尽管一次调用打的是某一个模型: 界面上一个供应商就是一张
+    # 卡片, 一张卡片配一个点。代价说清楚 —— 同一把 key 下面挂了三个模型、只有一个模型名
+    # 写错时, 整张卡片会显示红点。所以 `last_error` 里带上是哪个模型出的错 (见
+    # channel_health.record), 用户看得到"红的是哪一行"。
+    class Health(models.TextChoices):
+        OK = "ok", "Last call succeeded"
+        ERROR = "error", "Last call failed"
+
+    # 空串 = 还没被调用过 (刚建好的通道)。**不是 null**: 三态里"没测过"是常态而不是缺失,
+    # 用空串省掉前端每处都要写的 `?? ""`。
+    last_status = models.CharField(
+        max_length=8, choices=Health.choices, blank=True, default="",
+    )
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    # 供应商返回的原文, 截断到 2000 字 (同 ImageProviderTestView 那条)。用户拿着它对着
+    # 文档就能改 —— 所以不美化、不归类, 跟「测试」按钮的 toast 是同一份东西。
+    # **不含 api_key**: 记录的是异常文本, 不是请求头 (见 channel_health.record)。
+    last_error = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

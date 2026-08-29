@@ -467,8 +467,14 @@ class ImageProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = ImageProvider
         fields = ("id", "label", "kind", "base_url", "api_key", "defaults",
-                  "request_template", "models", "created_at", "updated_at")
-        read_only_fields = ("id", "created_at", "updated_at")
+                  "request_template", "models", "created_at", "updated_at",
+                  # 通道健康 —— 只读, 由 services/channel_health.py 在每次真实调用后写。
+                  # 前端拿它在卡片上点一个绿/红点。放进这套 payload 而不是单开一个接口:
+                  # 配置面板本来就要拉这张列表, 多一次往返只为三个字段不划算, 而且两次
+                  # 拉取之间的时间差会让点和它旁边的配置对不上号。
+                  "last_status", "last_checked_at", "last_error")
+        read_only_fields = ("id", "created_at", "updated_at",
+                            "last_status", "last_checked_at", "last_error")
 
     def validate_defaults(self, value):
         return _validate_tunables(value)

@@ -253,6 +253,15 @@ export interface CanvasImageProvider {
   models: CanvasImageModel[];
   created_at: string;
   updated_at: string;
+  /** 通道健康 —— 「上一次真的调用它时,供应商应答了吗」。只读,由后端在每次真实生成
+   *  和每次「测试」之后写 (backend services/channel_health.py)。
+   *
+   *  `""` = 还没被调用过。`last_error` 是供应商返回的原文,前面缀了是哪条通道
+   *  (「供应商 · 模型」) —— 同一把 key 下面只有一个模型名写错时,那是判断"红的是哪一
+   *  行"的唯一线索。 */
+  last_status: "" | "ok" | "error";
+  last_checked_at: string | null;
+  last_error: string;
 }
 
 /** 后端下发的、关于一种通道类型的全部表单规则 (GET /image-providers/schema/)。
