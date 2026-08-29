@@ -42,10 +42,18 @@ function PopoverContent({
   )
 }
 
+// Radix 自带的"点了就关掉这个 popover"。shadcn 的模板没 re-export 它, 于是每个需要
+// 这个行为的地方都自己拿 useState 做受控 —— 那是三行状态换一行 primitive。
+function PopoverClose({
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Close>) {
+  return <PopoverPrimitive.Close data-slot="popover-close" {...props} />
+}
+
 function PopoverAnchor({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Anchor>) {
   return <PopoverPrimitive.Anchor data-slot="popover-anchor" {...props} />
 }
 
-export { Popover, PopoverTrigger, PopoverContent, PopoverAnchor }
+export { Popover, PopoverTrigger, PopoverContent, PopoverAnchor, PopoverClose }

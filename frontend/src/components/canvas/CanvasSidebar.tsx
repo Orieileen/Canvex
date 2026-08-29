@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+  BookOpen,
   Frame,
   Github,
   HelpCircle,
@@ -174,6 +175,8 @@ interface CanvasSidebarProps {
   /** 打开生图供应商配置面板。直接回调而不是像素材库那样发 window 事件 —— 那个面板挂在
    *  CanvasArea 里(隔着一层 key), 这个跟侧栏同属 CanvexWorkspacePage 的直接子节点。 */
   onOpenImageSettings: () => void;
+  /** 打开技能库面板。跟上面一条同理, 直接回调。 */
+  onOpenSkillLibrary: () => void;
 }
 
 export function CanvasSidebar({
@@ -182,6 +185,7 @@ export function CanvasSidebar({
   onSceneCreated,
   onSceneDeleted,
   onOpenImageSettings,
+  onOpenSkillLibrary,
 }: CanvasSidebarProps) {
   const { t } = useTranslation("canvasUi");
   const { lang, toggle: toggleLanguage } = useLanguageToggle();
@@ -638,6 +642,12 @@ export function CanvasSidebar({
         label={t("sidebar.imageSettings")}
         onClick={onOpenImageSettings}
         icon={<SlidersHorizontal className="size-4 shrink-0" strokeWidth={2} />}
+      />
+      <FooterButton
+        collapsed={collapsed}
+        label={t("sidebar.skillLibrary")}
+        onClick={onOpenSkillLibrary}
+        icon={<BookOpen className="size-4 shrink-0" strokeWidth={2} />}
       />
       {/* 中英文切换: 折叠态没有图标可用, 直接显示目标语言的两个字。 */}
       <FooterButton
