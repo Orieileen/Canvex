@@ -1062,9 +1062,14 @@ class ImageProviderTestView(APIView):
           实测 tu-zi 的 gpt-image-2 要 49 秒 —— 按 15 秒掐, 一条**配得完全正确**的通道
           会稳定报"测试失败", 正是这个按钮要消灭的那种假信号。angle 早就为同一个理由拿
           整个预算 (见 ANGLE_OP_TIMEOUT), 生图这条当时漏了。
-        - **轮询** (apimart 这类先返 task_id): 总耗时是 POST + N×(单次超时 + 间隔),
-          所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
-          interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
+        - **轮询** (apimart 这类先返 task_id): POST 只能拿一小段 (它只是交个任务),
+          剩下的时间给轮询。**轮数不动** —— 停下来靠的是一个真的 deadline
+          (见 `_probe` / `probe_image_channel`), 不是从预算换算出来的次数。
+
+        这里原来是把预算倒推成 `poll_max_attempts`。那个换算必须假设"每轮都耗尽单次
+        超时", 而实际每轮通常一秒就回来 —— 于是 600 秒的预算实际只等了 96 秒, 一条配得
+        完全正确、只是慢一点的异步通道会被判失败。现在只钳"单次能有多久", 总时长交给
+        deadline, 两者各管各的: 钳单次是为了让越界最多超出一轮, deadline 才是硬上限。
         """
         # 「这条通道会不会轮询」有两种说法, 两种都得看:
         #   - 内置通道: `poll_enabled` 旋钮
@@ -1076,23 +1081,18 @@ class ImageProviderTestView(APIView):
         if not polls:
             return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
 
-        op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
-        poll_timeout = min(channel.poll_timeout, cls.TEST_OP_TIMEOUT)
         interval = min(channel.poll_interval, cls.TEST_POLL_INTERVAL)
-        per_attempt = max(1, poll_timeout + interval)
         return replace(
             channel,
-            timeout=op_timeout,
-            poll_timeout=poll_timeout,
+            timeout=min(channel.timeout, cls.TEST_OP_TIMEOUT),
+            # 钳单次超时是为了让"撞线"最多超出一轮 —— deadline 是在**发下一个请求之前**
+            # 判的, 判完那个请求本身还能跑 poll_timeout 那么久。
+            poll_timeout=min(channel.poll_timeout, cls.TEST_OP_TIMEOUT),
             poll_interval=interval,
-            # 退避上限也要钳: 下面那道轮数推导是按"每轮都只等 interval"算的, 而模板通道的
-            # 轮询会把等待翻倍到 poll_max_interval (跟内置 video 同一条式子)。不钳的话一条
-            # poll_max_interval=180 的自定义通道, 推导出的轮数乘上真实等待照样跑到几十分钟。
-            # 钳成 interval = 这次测试里不退避, 固定间隔。
+            # 退避上限也钳成 interval (= 这次测试里固定间隔不退避)。一条
+            # poll_max_interval=180 的通道, 第一次撞线可能要先睡三分钟才轮到判断,
+            # 那三分钟里浏览器什么也不知道。
             poll_max_interval=interval,
-            poll_max_attempts=max(
-                1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
-            ),
         )
 
     @classmethod
@@ -1109,7 +1109,12 @@ class ImageProviderTestView(APIView):
                 replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
                 image_url=cls.ANGLE_PROBE_IMAGE,
             )
-        return probe_image_channel(cls._budgeted(channel))
+        # deadline 在这儿算而不是更深的地方: 「这次点击能占多久」是 **view** 的事
+        # (它知道浏览器那头的 axios 超时是多少), 不是通道配置的一部分。
+        return probe_image_channel(
+            cls._budgeted(channel),
+            deadline=time.monotonic() + cls.TEST_BUDGET_SECONDS,
+        )
 
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)

@@ -177,6 +177,7 @@ def poll_task(
     max_attempts: int = 60,
     interval: int = 5,
     req_timeout: int = 30,
+    deadline: float | None = None,
 ) -> bytes:
     """
     轮询异步任务直到完成/失败/超时，返回图片字节。
@@ -188,11 +189,23 @@ def poll_task(
         max_attempts: 最大轮询次数
         interval:     轮询间隔秒数
         req_timeout:  单次 HTTP 请求超时秒数
+        deadline:     `time.monotonic()` 时间点，撞上就停。**只有同步调用方会给** ——
+                      「测试」按钮必须在一次 HTTP 请求里返回。给真实墙钟而不是一个换算
+                      出来的次数：次数换算必须假设"每轮都耗尽超时"，而实际每轮通常一秒
+                      就回来，于是 600 秒预算只用掉 96 秒就宣布失败 —— 一条配得完全正确、
+                      只是慢一点的异步通道会被判死刑。worker 里不传，那边没人在等。
+                      (模板通道那条路是 template_client._poll，同一个道理。)
     """
     status_url = f"{poll_url.rstrip('/')}/tasks/{task_id}"
     headers = {"Authorization": f"Bearer {api_key}"}
 
     for attempt in range(max_attempts):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"这条通道跑得通, 但比这次测试能等的时间更慢 —— 轮询了 {attempt} 次, "
+                f"时间预算用完了。**不要据此改配置**: 提交和轮询都正常, 只是这家出图慢。"
+                f"直接在画布上真发一次, 那条路径没有这个时间限制。"
+            )
         try:
             resp = requests.get(status_url, headers=headers, timeout=req_timeout)
             resp.raise_for_status()
@@ -261,6 +274,7 @@ def handle_poll_if_needed(
     max_attempts: int = 60,
     interval: int = 5,
     req_timeout: int = 30,
+    deadline: float | None = None,
 ) -> bytes:
     """
     从 images.generations 响应中提取图片。
@@ -274,6 +288,7 @@ def handle_poll_if_needed(
         max_attempts: 最大轮询次数
         interval:     轮询间隔秒数
         req_timeout:  单次请求超时秒数
+        deadline:     见 poll_task —— 同步调用方(「测试」按钮)的墙钟上限
     """
     # 先尝试直接提取图片（同步响应）
     try:
@@ -297,4 +312,5 @@ def handle_poll_if_needed(
         max_attempts=max_attempts,
         interval=interval,
         req_timeout=req_timeout,
+        deadline=deadline,
     )

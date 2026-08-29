@@ -103,7 +103,7 @@ def _request(
 
 def execute(
     channel: ImageChannel, variables: dict[str, Any],
-    *, session: requests.Session | None = None,
+    *, session: requests.Session | None = None, deadline: float | None = None,
 ) -> Any:
     """跑完一次模板调用, 返回 `result_path` 指到的那一项。
 
@@ -132,13 +132,23 @@ def execute(
         raise TemplateRequestError(
             f"提交成功了, 但按 `task_id_path` 取到的不是一个可用的任务 id: {task_id!r}"
         )
-    return _poll(session, channel, poll, {**variables, "task_id": str(task_id)})
+    return _poll(session, channel, poll, {**variables, "task_id": str(task_id)}, deadline=deadline)
 
 
 def _poll(
     session: requests.Session, channel: ImageChannel, poll: dict, variables: dict,
+    *, deadline: float | None = None,
 ) -> Any:
-    """按 poll 段反复查, 直到 done / failed / 查够次数。"""
+    """按 poll 段反复查, 直到 done / failed / 查够次数 / 撞上 deadline。
+
+    `deadline` 是一个 `time.monotonic()` 时间点, **只有同步调用方会给** ——「测试」按钮
+    必须在一次 HTTP 请求里返回, 而轮多少次是用户配的。给的是真实墙钟而不是一个换算出来
+    的次数: 次数换算必须假设"每轮都耗尽超时", 而实际每轮通常一秒就回来, 于是 600 秒的
+    预算只用掉 96 秒就宣布失败 —— 一条配得完全正确、只是慢一点的异步通道会被判死刑,
+    正是这个按钮要消灭的那种假信号。
+
+    worker 里不传: 那边没人在等, `poll_max_attempts` 就是它的上限。
+    """
     done = {str(v).lower() for v in (poll.get("done") or [])}
     failed = {str(v).lower() for v in (poll.get("failed") or [])}
     if not done:
@@ -159,6 +169,9 @@ def _poll(
         if attempt:
             time.sleep(wait)
             wait = min(wait * 2, max_wait)
+        # 睡完再判: 这样"还剩 2 秒"时不会再发一个必然来不及的请求。
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TemplateRequestError(_budget_exhausted(attempt, last_status))
         payload = _request(
             # 轮询默认 **GET** (提交那一次才默认 POST): 状态端点几乎都是 GET, 而模板里
             # 漏写 `method` 时发一个 POST 换回来的 405 跟"模板哪里写错了"毫无关系。
@@ -180,6 +193,21 @@ def _poll(
         f"最后看到的状态是 `{last_status or '(取不到)'}`。要么把 poll_max_attempts / "
         f"poll_interval / poll_max_interval 调大, 要么检查模板里的 `status_path` 和 "
         f"`done` 写对了没有。"
+    )
+
+
+def _budget_exhausted(attempts_done: int, last_status: str) -> str:
+    """撞上 deadline 时那句话。
+
+    **它不等于"这条通道配错了"** —— 恰恰相反, 走到这里说明提交成功、轮询也在正常返回
+    状态, 只是这家比一次同步测试能等的时间更慢。所以话要从这一句开始说, 否则用户会去改
+    一个没问题的配置。
+    """
+    return (
+        f"这条通道跑得通, 但比这次测试能等的时间更慢 —— 轮询了 {attempts_done} 次, "
+        f"最后看到的状态是 `{last_status or '(取不到)'}`, 时间预算用完了。"
+        f"**不要据此改配置**: 提交和轮询都正常, 只是这家出图慢。直接在画布上真发一次, "
+        f"那条路径没有这个时间限制。"
     )
 
 
