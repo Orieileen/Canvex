@@ -78,6 +78,37 @@ export const imageProviders = {
     healthOk: "Last call went through · {{when}}",
     healthError: "Last call failed · {{when}}",
     healthUnknown: "Never called yet",
+    /** 诊断文案 —— 后端只回一个 code (backend services/channel_diagnosis.py), 话在这儿说。
+     *  后端不回中文的理由: 那样英文界面上会冒出一句中文, 而且同一句话有了两个来源。
+     *  每一句都必须是**能照做的一步**, 不是对报错的复述 —— 复述的活儿原文自己会干。 */
+    diag: {
+      quota:
+        "Not a config problem — this key is out of credit. Top up with the provider; leave these settings alone.",
+      auth:
+        "The provider rejected this key. Check the API key is complete and still valid — and that it was issued by whoever this Base URL points at.",
+      rate_limit:
+        "Rate-limited, not a config problem. Wait a moment and try again, or ask the provider to raise your limit.",
+      provider_down:
+        "The provider itself errored (5xx) — not your config. Try again shortly; if it keeps happening, that provider is unstable right now.",
+      endpoint:
+        "No such endpoint. Base URL should stop at …/v1 — don't include /images/generations, Canvex appends that itself.",
+      endpoint_template:
+        "No such endpoint. Check the `url` in the request template, and how it joins onto the Base URL.",
+      unreachable:
+        "Couldn't reach that address. Check the Base URL's spelling, scheme (http/https) and port. It may also just be a network blip — try once more.",
+      unreachable_local:
+        "Couldn't reach that local address. The backend runs in a container, so localhost means the container itself — point local model servers at host.docker.internal instead.",
+      timeout:
+        "Connected, but the provider never answered. Raise the timeout (60–300s is normal for image generation). If this provider is async — it hands back a task id first — you need polling, not a longer timeout.",
+      tls:
+        "The TLS handshake failed — usually the network or a proxy, not your config. Try another network, or turn the proxy off.",
+      no_channel:
+        "The aggregator has no route for this request — usually the model name isn't enabled for your account or group, occasionally the size tier isn't supported. Check the model name against their docs first; if it's right, check that model's access in their console. (Some aggregators report this as a 5xx, so don't read it as \"their server is down\".)",
+      model:
+        "The provider doesn't recognise this model name. Copy it verbatim from their docs (case and date suffixes count) — or your account may not have access to it yet.",
+      bad_request:
+        "The provider rejected the request. Which field it objected to is in the raw response below.",
+    },
     curlImport: "Import from a curl example",
     curlHint:
       "Paste the example curl from your provider's docs. The request body's shape tells us which field carries the image and whether it takes one value or an array — the parts their docs never phrase in our terms.",
@@ -181,6 +212,34 @@ export const imageProviders = {
     healthOk: "上次调用通了 · {{when}}",
     healthError: "上次调用失败 · {{when}}",
     healthUnknown: "还没调用过",
+    diag: {
+      quota:
+        "这不是配置问题 —— 这把 key 的额度用完了(或者欠费了)。去供应商后台充值,配置一个字都不用改。",
+      auth:
+        "供应商不认这把 key。检查 API 密钥有没有复制全、是不是过期了,以及它确实是这个 Base URL 那家发的。",
+      rate_limit:
+        "被限流了,不是配置问题。等一会儿再试,或者去供应商后台提额。",
+      provider_down:
+        "供应商自己出错了(5xx),不是你的配置。过一会儿再试;一直这样就是那家现在不稳。",
+      endpoint:
+        "这个端点不存在。Base URL 填到 …/v1 就够了,别带 /images/generations —— 那一段是我们自己拼的。",
+      endpoint_template:
+        "这个端点不存在。检查模板里的 `url`,以及它跟 Base URL 拼起来对不对。",
+      unreachable:
+        "连不上这个地址。检查 Base URL 的拼写、协议(http/https)和端口。也可能只是网络抖了一下,再点一次看看。",
+      unreachable_local:
+        "连不上这个本机地址。后端跑在容器里,localhost 指的是容器自己 —— 本机的推理服务要写 host.docker.internal。",
+      timeout:
+        "连上了,但对方一直没回。把「超时」调大(生图 60–300 秒都算正常)。如果这家是异步的(先回一个 task_id),那要配轮询,加超时没用。",
+      tls:
+        "TLS 握手失败 —— 通常是网络或代理的事,不是配置。换个网络、或者把代理关掉再试。",
+      no_channel:
+        "聚合商说这个请求没有可用渠道 —— 通常是这个模型名在你的账号/分组下没开通,偶尔是这个尺寸档它不支持。先照文档核对模型名;确认没错就去供应商后台看这个模型的权限。(有的聚合商把这种情况报成 5xx,别当成\"人家服务器挂了\"。)",
+      model:
+        "供应商不认这个模型名。照它文档里的写法原样填(大小写、日期后缀都算);也可能是你的账号还没开通这个模型。",
+      bad_request:
+        "供应商说这次请求有问题,具体是哪个字段写在下面那段原文里。",
+    },
     curlImport: "从 curl 示例导入",
     curlHint:
       "把供应商文档里的示例 curl 粘进来。请求体的形状能告诉我们哪个字段装图、是单值还是数组 —— 这些正是他们文档不会用我们的说法写出来的部分。",

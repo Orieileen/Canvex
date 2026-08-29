@@ -71,7 +71,7 @@ from .services.curl_import import (
     parse_curl,
     poll_curl_to_section,
 )
-from .services import template_client
+from .services import channel_diagnosis, template_client
 from .services.image_client import ImageChannel
 from .services.request_template import TemplateError
 from .services.template_client import TemplateRequestError
@@ -1147,13 +1147,18 @@ class ImageProviderTestView(APIView):
             image_bytes = self._probe(provider, channel_for_model(model))
         except Exception as exc:  # noqa: BLE001 — 原样回传才是这个接口的价值
             logger.info("image provider test failed: provider=%s model=%s", provider.label, model.label)
+            error = f"{type(exc).__name__}: {exc}"[:2000]
             return Response(
                 {
                     "ok": False,
                     "elapsed": round(time.monotonic() - started, 1),
                     # str(exc) 可能带供应商回的整段报文。这是本地工具, 用户就是要看它;
                     # 但**不要**把 channel / 请求头拼进去 —— 那里面有 api_key。
-                    "error": f"{type(exc).__name__}: {exc}"[:2000],
+                    "error": error,
+                    # 「这属于哪一类问题」。只回 code, 文案在前端 (中英各一份) ——
+                    # 见 services/channel_diagnosis.py。认不出就是空串, 那时界面上只有
+                    # 上面那段原文, 跟没有这个字段时一样。
+                    "diagnosis": channel_diagnosis.diagnose(error, template=spec.template),
                 },
                 status=status.HTTP_200_OK,  # 测试"失败"本身是成功的测试结果, 不是 HTTP 错误
             )

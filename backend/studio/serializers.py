@@ -16,6 +16,7 @@ from .models import (
     VideoJob,
 )
 from .services.agent.skill_md import SkillMdError, parse_skill_md
+from .services.channel_diagnosis import diagnose
 from .services.image_channels import (
     KIND_SPECS,
     POSITIVE_TUNABLES,
@@ -463,6 +464,14 @@ class ImageProviderSerializer(serializers.ModelSerializer):
     """
 
     models = ImageModelSerializer(many=True, required=False)
+    # 「上次那条报错属于哪一类」。**算出来而不是存一列**: 它是 `last_error` 的纯函数,
+    # 存一列就意味着规则改了之后, 库里躺着的是按旧规则算的答案 —— 而这些规则正是会随着
+    # 又见到一种新报文而长的那种东西。见 services/channel_diagnosis.py。
+    last_error_diagnosis = serializers.SerializerMethodField()
+
+    def get_last_error_diagnosis(self, obj) -> str:
+        # 模板通道和内置通道的"端点不对"要改的不是一处, 所以得告诉诊断这是哪种。
+        return diagnose(obj.last_error, template=KIND_SPECS[obj.kind].template)
 
     class Meta:
         model = ImageProvider
@@ -472,7 +481,8 @@ class ImageProviderSerializer(serializers.ModelSerializer):
                   # 前端拿它在卡片上点一个绿/红点。放进这套 payload 而不是单开一个接口:
                   # 配置面板本来就要拉这张列表, 多一次往返只为三个字段不划算, 而且两次
                   # 拉取之间的时间差会让点和它旁边的配置对不上号。
-                  "last_status", "last_checked_at", "last_error")
+                  "last_status", "last_checked_at", "last_error",
+                  "last_error_diagnosis")
         read_only_fields = ("id", "created_at", "updated_at",
                             "last_status", "last_checked_at", "last_error")
 

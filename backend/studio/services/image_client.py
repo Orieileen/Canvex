@@ -39,6 +39,12 @@ _INLINE_DOWNLOAD_TIMEOUT = (10, 60)
 _MIME_ALIASES = {"image/jpg": "image/jpeg", "image/mpo": "image/jpeg", "image/jfif": "image/jpeg"}
 
 
+# 报错里带多少响应体。够看清供应商说了什么, 又不至于把一整个 base64 图塞进日志/DB。
+# 住在这个叶子模块里, template_client 从这儿 import —— 两边各写一个数的话, 同一个"报错
+# 能有多长"会在两条通道上不一样, 而没有任何地方会提醒你。
+BODY_TRUNC = 800
+
+
 def _sniff_image_mime(content: bytes) -> str:
     """从图片字节头嗅探 MIME (PIL lazy import, 只读 header 不解码全图).
 
@@ -205,14 +211,23 @@ class ImageClient:
 
         resp = self.session.post(url, json=payload, headers=headers, timeout=self.timeout)
         if not resp.ok:
-            # provider HTTP 错误 → 把 status + body 打 ERROR 让定位 (tu-zi/apimart 的
-            # 400/422 通常带具体字段 / quota / model 错误描述). raise_for_status 之前
-            # 拦, 再让它 raise 不掩盖原 HTTPError.
             logger.error(
                 "ImageClient %d %s: prompt_len=%d image_count=%d body=%.500s",
                 resp.status_code, url, len(prompt), len(image_urls), resp.text,
             )
-        resp.raise_for_status()
+            # **自己抛而不是 raise_for_status()**: 后者的消息只有一行状态
+            # ("401 Client Error: Unauthorized for url: …"), 供应商真正说了什么全在 body
+            # 里 —— tu-zi 那句 "Invalid token"、火山那句"model 不存在"、额度打光那句"余额
+            # 不足"。而这条消息正是「测试」按钮和画布上那行红字要显示的东西, 只留一行状态
+            # 等于把这个按钮存在的理由删掉了 (body 原来只进日志, 用户看不到)。
+            # 模板通道那条路早就是这么做的 (template_client._request), 内置这条落下了。
+            #
+            # 仍然是 HTTPError 且带着 response: `_call_with_retries` 靠 `exc.response
+            # .status_code` 判"确定性 4xx 不重试", 换个异常类型会让那条判断静默失效。
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason} for {url}: {resp.text[:BODY_TRUNC]}",
+                response=resp,
+            )
         result = resp.json()
 
         logger.info(

@@ -68,6 +68,16 @@ type Values = Record<string, unknown>;
 const kindLabel = (t: TFunction, kind: string) =>
   t(`imageProviders.kind${kind[0].toUpperCase()}${kind.slice(1)}`);
 
+/** 诊断 code → 一句能照做的话。
+ *
+ *  后端只回 code (见 backend services/channel_diagnosis.py), 文案在这边 —— 否则英文界面
+ *  上会冒出一句中文, 而且同一句话有了两个来源。
+ *
+ *  `defaultValue: ""` 而不是 `i18n.exists`: 后端加了一个新 code、这边还没补文案时, 表现是
+ *  "少一句提示"而不是界面上冒出一个 key 名。原文本来就在下面, 少一句提示不致命。 */
+const diagText = (t: TFunction, code: string) =>
+  code ? t(`imageProviders.diag.${code}`, { defaultValue: "" }) : "";
+
 /** 等宽多行输入 (curl 导入、请求模板)。跟 `inputCls` 同一个理由: 这串 class 在本文件里
  *  已经出现过三次, 而改主题/尺寸时漏掉一处不会报错, 只会长得不一样。 */
 const monoTextareaCls =
@@ -130,6 +140,7 @@ const emptyProvider = (): CanvasImageProvider => ({
   last_status: "",
   last_checked_at: null,
   last_error: "",
+  last_error_diagnosis: "",
 });
 
 /** 只取会被 PUT 上去的部分。既是请求体, 也是"改过没有"的比较基准。
@@ -556,12 +567,16 @@ function HealthNote({ provider }: { provider: CanvasImageProvider }) {
       <p className="text-[11px] text-muted-foreground">{t("imageProviders.healthOk", { when })}</p>
     );
   }
+  const hint = diagText(t, provider.last_error_diagnosis);
   return (
     <div className="rounded-md bg-destructive/10 px-2.5 py-2 text-[11px] leading-relaxed text-destructive">
       <div className="font-medium">{t("imageProviders.healthError", { when })}</div>
+      {/* 诊断排在原文**前面**: 原文说的是"发生了什么", 这句说的是"你该改哪儿", 而后者
+          才是用户打开这张卡片要找的东西。认不出类别时这一行整个不出现。 */}
+      {hint && <div className="mt-1">{hint}</div>}
       {/* 可选中: 这段要能复制去搜 / 贴给供应商。break-all 是因为报文里常有一整条没有
           空格的 URL, 不断行会把卡片撑出横向滚动条。 */}
-      <div className="mt-1 font-mono break-all whitespace-pre-wrap select-text opacity-90">
+      <div className="mt-1 font-mono break-all whitespace-pre-wrap select-text opacity-75">
         {provider.last_error}
       </div>
     </div>
@@ -622,10 +637,18 @@ function ProviderCard({
     setTesting(model.id);
     try {
       const { data } = await canvasService.testImageProvider(draft.id, model.id);
-      if (data.ok) toast.success(t("imageProviders.testOk", { s: data.elapsed }));
-      // 原始错误直接显示 —— 用户拿着它对着供应商文档就能改。这是没有预设之后
-      // 唯一的反馈回路, 所以不做美化、不截断成"请求失败"。
-      else toast.error(data.error || t("imageProviders.testFailed"), { duration: 15000 });
+      if (data.ok) {
+        toast.success(t("imageProviders.testOk", { s: data.elapsed }));
+      } else {
+        // 原始错误**永远**显示 —— 用户拿着它对着供应商文档就能改, 所以不美化、不截断成
+        // 一句"请求失败"。诊断只是**加**在它上面的一句"你该改哪儿": 认得出就当标题、原文
+        // 退到副标题; 认不出就跟以前一模一样。
+        const hint = diagText(t, data.diagnosis ?? "");
+        toast.error(hint || data.error || t("imageProviders.testFailed"), {
+          description: hint ? data.error : undefined,
+          duration: 15000,
+        });
+      }
     } catch (err) {
       toast.error(extractApiError(err, "test failed"));
     } finally {

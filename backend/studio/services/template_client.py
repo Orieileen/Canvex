@@ -36,14 +36,17 @@ import requests
 # **没有循环**。之前这两个 import 一个绕道、一个写成函数内延迟导入并注着"避免循环
 # import" —— 那条注释是错的, 而它的代价是有人照着又抄了一份比例换算。
 from studio.services.http_retry import make_retry_session
-from studio.services.image_client import ImageChannel, _url_to_data_uri, size_to_ratio, size_to_wh
+from studio.services.image_client import (
+    BODY_TRUNC,
+    ImageChannel,
+    _url_to_data_uri,
+    size_to_ratio,
+    size_to_wh,
+)
 from studio.services.listings_utils import _extract_image_bytes_from_item, resolve_image_bytes
 from studio.services.request_template import TemplateError, extract, placeholders, render
 
 logger = logging.getLogger(__name__)
-
-# 报错里带多少响应体。够看清供应商说了什么, 又不至于把一整个 base64 图塞进日志/DB。
-_BODY_TRUNC = 800
 
 # 模板通道共用的 Session (带重试)。**模块级而不是每次生成新建一个**: 新建的那个 TCP 池
 # 永远是冷的 —— 每张图重连一次 TLS, 而 fan-out 出 4 张就是 4 套池子; 而且它到 GC 之前
@@ -88,13 +91,13 @@ def _request(
         # 模板的线索, 绝不能吞。
         logger.error("template %s %d %s: body=%.500s", what, resp.status_code, url, resp.text)
         raise TemplateRequestError(
-            f"{what} HTTP {resp.status_code}: {resp.text[:_BODY_TRUNC]}"
+            f"{what} HTTP {resp.status_code}: {resp.text[:BODY_TRUNC]}"
         )
     try:
         return resp.json()
     except ValueError as exc:
         raise TemplateRequestError(
-            f"{what} 返回的不是 JSON (HTTP {resp.status_code}): {resp.text[:_BODY_TRUNC]}"
+            f"{what} 返回的不是 JSON (HTTP {resp.status_code}): {resp.text[:BODY_TRUNC]}"
         ) from exc
 
 
@@ -170,7 +173,7 @@ def _poll(
         if status in failed:
             raise TemplateRequestError(
                 f"供应商报告任务失败 (status={status}): "
-                f"{str(payload)[:_BODY_TRUNC]}"
+                f"{str(payload)[:BODY_TRUNC]}"
             )
     raise TemplateRequestError(
         f"轮询了 {attempts} 次 (间隔 {interval}s 起, 退避到 {max_wait}s) 任务还没完成, "

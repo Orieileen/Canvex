@@ -262,6 +262,10 @@ export interface CanvasImageProvider {
   last_status: "" | "ok" | "error";
   last_checked_at: string | null;
   last_error: string;
+  /** `last_error` 属于哪一类问题 —— 后端算出来的 code,文案在前端
+   *  (`imageProviders.diag.<code>`,中英各一份)。空串 = 认不出,那时只显示原文。
+   *  见 backend services/channel_diagnosis.py。 */
+  last_error_diagnosis: string;
 }
 
 /** 后端下发的、关于一种通道类型的全部表单规则 (GET /image-providers/schema/)。
@@ -327,6 +331,9 @@ export interface CanvasImageProviderTestResult {
   elapsed: number;
   bytes?: number;
   error?: string;
+  /** 失败时的诊断 code,跟 `CanvasImageProvider.last_error_diagnosis` 同一套。
+   *  空串 = 认不出。 */
+  diagnosis?: string;
 }
 
 /** 向导第 1 步:一段 curl 解析出来的东西 (POST /image-providers/wizard/parse/)。
