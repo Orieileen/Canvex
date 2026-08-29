@@ -16,7 +16,14 @@ from .models import (
     VideoJob,
 )
 from .services.agent.skill_md import SkillMdError, parse_skill_md
-from .services.image_channels import KIND_SPECS, POSITIVE_TUNABLES, TUNABLE_TYPES
+from .services.image_channels import (
+    KIND_SPECS,
+    POSITIVE_TUNABLES,
+    TUNABLE_TYPES,
+    kinds_for_kind,
+)
+from .services.request_template import TemplateError
+from .services.request_template import validate as validate_template
 
 logger = logging.getLogger(__name__)
 
@@ -132,15 +139,19 @@ def _channel_choice_field(kind: str):
     """工具栏模型选择器写回来的那一项。
 
     两件事都不是可选的:
-    - **queryset 按 kind 限死** —— 两种接口形状同住一张表, 把 angle 通道送进生图路径
+    - **queryset 按 kind 限死** —— 几种接口形状同住一张表, 把 angle 通道送进生图路径
       (或反过来) 发出去必然失败, 且失败得莫名其妙。在这里筛掉。
+      限的是**同一个选择器下的那一组** kind 而不是一个: 生图选择器既列内置 image 也列
+      模板 custom_image, 只筛一个的话用户在界面上选得中、一提交却被判"配置不存在"。
     - **用 PrimaryKeyRelatedField 而不是 CharField** —— 要它当场报"配置不存在", 而不是
       等到 worker 里静默回退成别的模型。显式选择失败该显式说。
 
     可空 = 用户没选 → 退到库里第一条启用的通道。
     """
     return serializers.PrimaryKeyRelatedField(
-        queryset=ImageModel.objects.filter(enabled=True, provider__kind=kind),
+        queryset=ImageModel.objects.filter(
+            enabled=True, provider__kind__in=kinds_for_kind(kind),
+        ),
         required=False, allow_null=True, default=None,
     )
 
@@ -455,8 +466,8 @@ class ImageProviderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ImageProvider
-        fields = ("id", "label", "kind", "base_url", "api_key", "defaults", "models",
-                  "created_at", "updated_at")
+        fields = ("id", "label", "kind", "base_url", "api_key", "defaults",
+                  "request_template", "models", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate_defaults(self, value):
@@ -494,7 +505,23 @@ class ImageProviderSerializer(serializers.ModelSerializer):
                 {"base_url": ["这种通道必须填 Base URL(只有聊天通道可以留空 = 用 OpenAI 官方端点)"]}
             )
 
-        allowed = KIND_SPECS[kind].tunables
+        # ── 请求模板 ────────────────────────────────────────────────────────
+        # 形状规则**不在这里** —— 它们是"模板这个格式长什么样"的一部分, 住在
+        # request_template.validate 里, 这样 fixture / shell / 管理命令这些不走序列化器
+        # 的写入也过同一道闸。这一层只负责把 TemplateError 翻成 DRF 的 400。
+        spec = KIND_SPECS[kind]
+        tpl = data.get("request_template", getattr(self.instance, "request_template", None))
+        if spec.template:
+            try:
+                validate_template(tpl, set(spec.variables))
+            except TemplateError as exc:
+                raise serializers.ValidationError({"request_template": [str(exc)]}) from exc
+        elif tpl:
+            # 非模板通道存了模板 = 存得下去、永远不生效。跟旋钮裁剪同一个态度, 但这里
+            # 直接清空而不只是 warning: 它是一整块 JSON, 留着会让人以为在起作用。
+            data["request_template"] = {}
+
+        allowed = spec.tunables
 
         def prune(values, where):
             dropped = sorted(set(values) - allowed)
@@ -555,13 +582,17 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     """工具栏模型选择器拉的列表 —— 只有展示需要的字段, 不含 key/base_url。"""
 
     provider_label = serializers.CharField(source="provider.label", read_only=True)
-    # 前端按它分流: Image / Split 面板只列 image, Angle 面板只列 angle。带在每一项上
-    # (而不是让前端按 kind 各拉一次) —— 一次请求、一份 state, 两个选择器各自 filter。
-    kind = serializers.CharField(source="provider.kind", read_only=True)
+    # 前端按它分流: 一次请求拿回全部, 三个选择器各自 filter。**筛的是 picker 不是 kind**
+    # —— 一个选择器对应多种 kind (生图 = 内置 image + 模板 custom_image), 按 kind 名字筛
+    # 的话新加的那种配好了却不出现在工具栏里, 而且不报错。kind 本身前端不用, 就不发了。
+    picker = serializers.SerializerMethodField()
+
+    def get_picker(self, obj) -> str:
+        return KIND_SPECS[obj.provider.kind].picker
 
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "kind", "sort_order")
+        fields = ("id", "label", "provider_label", "picker", "sort_order")
 
 
 def _skill_error(code: str, message: str, **params: object) -> serializers.ValidationError:

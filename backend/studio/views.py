@@ -1011,15 +1011,27 @@ class ImageProviderTestView(APIView):
     #
     # 逐个钳制每个旋钮是不够的: 轮询的真实耗时是 POST + N×(单次超时 + 间隔), 而 interval
     # 用户可以在界面上自己填。所以这里从**总墙钟预算**倒推出允许几轮, 让整体有个硬上限。
-    TEST_BUDGET_SECONDS = 60
+    # 跟前端 axios 的 `timeout: 600000` (毫秒) 对齐 —— 那才是真正会掐断这次点击的东西,
+    # 而 compose 里没有反代, 是 runserver 直连。原来写 60 是保守估的, 结果是**测试比真实
+    # 调用还严**: 实测图生图 66 秒, 一条配得完全正确的通道会被自己的测试判失败。
+    #
+    # 代价说清楚: 一次点击最长会占住一个同步 worker 十分钟, 而且真的烧一次生成额度。
+    TEST_BUDGET_SECONDS = 600
     TEST_OP_TIMEOUT = 15
     TEST_POLL_INTERVAL = 3
 
     # angle 通道是**一次同步阻塞出图** (fal.run 的 sync endpoint, 实测 15-30s), 没有
     # 轮询可压缩。给它整个预算, 否则一条配得完全正确的通道也会被 15s 掐断、报成"失败"。
+    # 注意这是个**耦合**: 预算从 60 抬到 600 之后, 一个卡死的 fal 请求也会占住 worker
+    # 十分钟。保留耦合是因为理由没变 —— "同步出图, 给它整个预算"; 变的只是预算本身。
     ANGLE_OP_TIMEOUT = TEST_BUDGET_SECONDS
     # 64×64 白色 PNG (132 字节)。angle 的请求体必须带源图, 而这里只是要问供应商
     # "端点/密钥/模型名对不对" —— 用尽量小的图, 别让测试变成一次真实构图。
+    #
+    # 生图那条探针**不带源图**, 所以 `image_field` 填错它抓不到 (只发文生图时那个键是空
+    # 数组, 供应商直接忽略)。试过让它也带图: 轮询通道会因为图生图更慢而假失败 —— 不是
+    # 图的问题, 是下面 poll_max_attempts 的推导按"每轮都耗尽超时"估, 600s 预算实际只等
+    # 了 96s。要修得先把轮数换成真正的 deadline。
     #
     # 不用 1×1: 视觉模型对入参尺寸普遍有下限 (fal 的 Qwen-Image-Edit 这类会直接 422),
     # 那样一条**配得完全正确**的通道也会被报成"测试失败" —— 正是这个按钮要消灭的那种
@@ -1045,7 +1057,14 @@ class ImageProviderTestView(APIView):
           所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
           interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
         """
-        if not channel.poll_enabled:
+        # 「这条通道会不会轮询」有两种说法, 两种都得看:
+        #   - 内置通道: `poll_enabled` 旋钮
+        #   - 模板通道: 模板里有没有 `poll` 段 —— 它**没有** poll_enabled 这个旋钮, 恒为
+        #     False。只看旋钮的话, 一条异步的自定义生图通道会拿到"整个预算给 POST"的待遇,
+        #     然后再自顾自轮询 60 次 × (30s 超时 + 5s 间隔), 墙钟预算形同虚设: 一次点击能
+        #     占住同步 worker 半小时, 而浏览器那 600s 早就断了。
+        polls = channel.poll_enabled or bool((channel.request_template or {}).get("poll"))
+        if not polls:
             return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
 
         op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
@@ -1057,6 +1076,11 @@ class ImageProviderTestView(APIView):
             timeout=op_timeout,
             poll_timeout=poll_timeout,
             poll_interval=interval,
+            # 退避上限也要钳: 下面那道轮数推导是按"每轮都只等 interval"算的, 而模板通道的
+            # 轮询会把等待翻倍到 poll_max_interval (跟内置 video 同一条式子)。不钳的话一条
+            # poll_max_interval=180 的自定义通道, 推导出的轮数乘上真实等待照样跑到几十分钟。
+            # 钳成 interval = 这次测试里不退避, 固定间隔。
+            poll_max_interval=interval,
             poll_max_attempts=max(
                 1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
             ),

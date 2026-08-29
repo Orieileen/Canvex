@@ -14,6 +14,7 @@ import typing
 import uuid as uuid_lib
 
 from studio.models import ImageModel, ImageProvider
+from studio.services import template_client
 from studio.services.image_client import ImageChannel
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,15 @@ logger = logging.getLogger(__name__)
 # base_url / api_key / model / label 有各自的来源, 不走 JSON 合并; ImageChannel 上
 # 其余的字段就是可调项。从 dataclass 派生而不是手抄一份 —— 手抄的那份会在有人给
 # ImageChannel 加旋钮时悄悄落后, 表现是"在界面上配了却不生效", 而且没有任何报错。
-_NON_TUNABLE_FIELDS = frozenset({"base_url", "api_key", "model", "label"})
+#
+# **kind / request_template 也在这张排除表里**, 理由跟上面四个一样: 它们由 provider 行
+# 直接决定 (见 channel_for_model), 不是用户在 defaults/overrides 里填的东西。漏掉的话
+# 派生会把它们当成旋钮, 而且失败得很难看 —— `kind` 是 str, 于是表单里凭空多出一个叫
+# "kind" 的输入框; 一旦有人往里填, channel_for_model 就会同时用关键字和 `**known` 传
+# 它, 抛 "got multiple values for keyword argument 'kind'", 这条通道的每一次生成全挂。
+_NON_TUNABLE_FIELDS = frozenset({
+    "base_url", "api_key", "model", "label", "kind", "request_template",
+})
 _TUNABLE_FIELDS = frozenset(
     f.name for f in dataclasses.fields(ImageChannel)
 ) - _NON_TUNABLE_FIELDS
@@ -89,6 +98,28 @@ class _KindSpec:
     # testable=False 时告诉用户该怎么验。空 = 用通用兜底文案。
     untestable_reason: str = ""
 
+    # 工具栏上的哪个选择器列这种通道。`image` / `angle` / `video`, 空 = 不进任何选择器
+    # (chat 是全局一条, 没有工具栏入口)。
+    #
+    # 存在的理由跟这个类里其它字段一样: 前端原来是按 kind **名字**筛的
+    # (`m.kind === "image"`), 于是新增 custom_image 之后它配好了却不出现在选择器里 ——
+    # 而且不报错。判定收在这里, 随 schema 下发, 前端只认 picker 不认 kind。
+    picker: str = ""
+
+    # ── 模板类通道 ────────────────────────────────────────────────────────
+    # True = 这种通道由**用户填的请求模板**驱动, 不是上面那些旋钮。表单因此完全不同
+    # (一个 JSON 编辑器 + 变量说明, 而不是十四个输入框), 所以前端要靠这个标志分流。
+    template: bool = False
+    # 这种通道能用哪些占位符。**存盘时校验**, 写错的变量当场报错而不是等到生成时 ——
+    # 后者的报错落在 celery 日志里, 用户只看得见"生成失败"。
+    #
+    # 这张表也是"全部由用户填"这句话的边界: 请求的形状随便你写, 但我们必须知道哪个键
+    # 放提示词、哪个放源图, 否则没法把画布上的东西喂进去。
+    variables: frozenset[str] = frozenset()
+    # 内置的起点模板。**不是为了限制, 是因为预设本身就是知识** —— 全空的话每接一家都得
+    # 先读一遍 API 文档手写 JSON, 而常见情况本来填个 url/key/model 就能跑。选一个再改。
+    starters: tuple[tuple[str, dict], ...] = ()
+
 
 # 每种 kind 真正会读的旋钮。
 #
@@ -102,12 +133,106 @@ class _KindSpec:
 # 请求形状旋钮 (image_field / response_format / watermark … 它的请求体是 video.py 自己拼的)。
 # 它的默认值跟生图差很远: 生图 60 次 × 5 秒 = 5 分钟内敲 60 下, 而视频要跑 1-5 分钟 ——
 # 所以 9 次 × 20 秒起步、退避到 180 秒, 这几个数就是原来 CANVAS_VIDEO_* 的默认值。
+# 模板通道能用哪些占位符 —— **从变量 builder 的实际返回值派生**, 不在这里手抄一份。
+# 抄的那份漏一个名字, 表现是"模板里写了、存盘通过、渲染成空、那个键整个消失", 没有报错。
+# 见 template_client 里那两个常量上面的注释。
+_IMAGE_VARS = template_client.IMAGE_VARS
+_VIDEO_VARS = template_client.VIDEO_VARS
+
+# OpenAI 兼容的同步生图 —— 兔子、大多数聚合商都是这个形状。
+_STARTER_OPENAI_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{size}}", "n": "{{n}}",
+        "image": "{{image}}", "response_format": "url",
+    },
+    "result_path": "data[0]",
+}
+# 同一个端点, 但源图是数组、尺寸要比例 —— apimart 这类。
+# 起点模板是**原样显示在编辑器里给人看**的, 所以这条写全, 不用 dict-spread 去改上面那条
+# —— 那样会在用户第一眼看到的 JSON 里留下一个 `"image": null` 的取消标记。
+_STARTER_OPENAI_IMAGE_MULTI = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{aspect_ratio}}",
+        "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
+    },
+    "result_path": "data[0]",
+}
+# fal.run: 模型名在 URL 路径里, 认证是 `Key` 不是 `Bearer`。
+_STARTER_FAL = {
+    "method": "POST",
+    "url": "{{base_url}}/{{model}}",
+    "headers": {"Authorization": "Key {{api_key}}", "Content-Type": "application/json"},
+    "body": {"prompt": "{{prompt}}", "image_urls": ["{{image}}"], "num_images": "{{n}}"},
+    "result_path": "images[0]",
+}
+# 提交 → 拿 task_id → 轮询。**照 apimart 实测的形状写的**:
+#   提交回 {"data":[{"status":"submitted","task_id":"..."}]}
+#   轮询回 {"data":{"status":"completed","result":{"images":[{"url":["https://..."]}]}}}
+# 注意 `url` 是个**数组**, 所以路径要一路点到 `url[0]` —— 取出来是裸字符串, item_to_bytes
+# 认这种。
+_STARTER_ASYNC_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{aspect_ratio}}",
+        "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
+    },
+    "task_id_path": "data[0].task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["completed", "succeeded", "success", "done"],
+        "failed": ["failed", "error", "cancelled"],
+        "result_path": "data.result.images[0].url[0]",
+    },
+}
+
+# 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
+_STARTER_ASYNC_VIDEO = {
+    "method": "POST",
+    "url": "{{base_url}}/videos/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}",
+        "duration": "{{duration}}", "aspect_ratio": "{{aspect_ratio}}",
+        "image_urls": "{{images}}",
+    },
+    "task_id_path": "data.task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["succeeded", "success", "completed", "done"],
+        "failed": ["failed", "error", "cancelled"],
+        "result_path": "data.result.videos[0]",
+    },
+}
+
+
+# 模板通道的旋钮: 请求形状全在模板里, 剩下的只有"跑多久 / 怎么轮询"。生图和视频两种
+# 模板通道读的是同一组 —— 它们的差别在变量表和结果怎么用, 不在这里。
+_TEMPLATE_TUNABLES = frozenset({
+    "timeout", "poll_interval", "poll_max_attempts", "poll_max_interval", "poll_timeout",
+})
+
+
 KIND_SPECS: dict[str, _KindSpec] = {
-    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True),
+    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True, picker="image"),
     ImageProvider.Kind.ANGLE: _KindSpec(
         tunables=frozenset({"timeout"}),
         base_url_example="https://fal.run",
         testable=True,
+        picker="angle",
     ),
     # 聊天只用得上连接三件套 + 超时。温度之类的旋钮没加: ImageChannel 现在只认
     # str/int/bool, 加 float 要连带扩控件映射, 而且 agent 的行为主要由 system prompt
@@ -122,11 +247,49 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "直接在聊天框里说一句「生成一张图」即可: 画布上真的出图 = 通了。"
         ),
     ),
+    # ── 模板类 ────────────────────────────────────────────────────────────
+    # 请求形状全在模板里, 所以旋钮只剩两类: 超时, 和轮询的节奏。
+    #
+    # **轮询那几个必须留着**, 哪怕"要不要轮询"是写在模板的 `poll` 段里而不是旋钮上:
+    # 起点模板里就有一条异步的 (「OpenAI 兼容 · 异步」), 而 template_client._poll 读的
+    # 正是 channel.poll_interval / poll_max_attempts / poll_timeout。不放出来的话它们
+    # 会被 serializer 当成"这种通道用不上的旋钮"裁掉, 用户拿到的是一句"轮询了 60 次还
+    # 没完成, 把 poll_max_attempts 调大" —— 而那个输入框在界面上根本不存在。
+    ImageProvider.Kind.CUSTOM_IMAGE: _KindSpec(
+        tunables=_TEMPLATE_TUNABLES,
+        template=True,
+        variables=_IMAGE_VARS,
+        picker="image",
+        starters=(
+            ("OpenAI 兼容 · 单张源图", _STARTER_OPENAI_IMAGE),
+            ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
+            ("OpenAI 兼容 · 异步 (提交 + 轮询)", _STARTER_ASYNC_IMAGE),
+            ("fal.run (模型在 URL、Key 认证)", _STARTER_FAL),
+        ),
+        testable=True,
+    ),
+    ImageProvider.Kind.CUSTOM_VIDEO: _KindSpec(
+        tunables=_TEMPLATE_TUNABLES,
+        # 跟内置 video 通道**同一组数**, 包括 poll_max_interval —— 少了它这四个数的含义
+        # 就变了: 固定 20 秒 × 9 次 = 160 秒, 而视频要跑 1-5 分钟, 一条配得完全正确的通道
+        # 会稳定报"轮询了 9 次还没完成"。退避到 180 秒之后总墙钟才跟内置那条对得上。
+        defaults={
+            "timeout": 60, "poll_interval": 20,
+            "poll_max_attempts": 9, "poll_max_interval": 180,
+        },
+        template=True,
+        variables=_VIDEO_VARS,
+        picker="video",
+        starters=(("提交 → 轮询 (通用视频)", _STARTER_ASYNC_VIDEO),),
+        # 视频要跑几分钟, 一次同步 HTTP 里测不完 —— 跟内置 video 通道同一个理由。
+        untestable_reason="视频通道没法一键测: 出片要几分钟, 撑不过一次同步请求。配好之后在画布上真发一条最快。",
+    ),
     ImageProvider.Kind.VIDEO: _KindSpec(
         tunables=frozenset({
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
         }),
+        picker="video",
         defaults={
             "timeout": 60,
             "poll_max_attempts": 9,
@@ -206,6 +369,12 @@ def tunable_schema() -> dict[str, dict]:
             "requires_base_url": spec.requires_base_url,
             "base_url_example": spec.base_url_example,
             "testable": spec.testable,
+            # 模板类通道的三件事。前端据此改渲染另一套表单 (一个 JSON 编辑器 + 变量
+            # 说明), 而不是那十四个输入框。跟上面几项同一个理由: 判定只此一处, 前端
+            # 不再自己按 kind 名字硬编码。
+            "template": spec.template,
+            "variables": sorted(spec.variables),
+            "starters": [{"label": lbl, "template": tpl} for lbl, tpl in spec.starters],
         }
     return out
 
@@ -240,6 +409,8 @@ def channel_for_model(model: ImageModel) -> ImageChannel:
         base_url=provider.base_url,
         api_key=provider.api_key,
         model=model.model,
+        kind=provider.kind,
+        request_template=provider.request_template or {},
         label=f"{provider.label} · {model.label}",
         **known,
     )
@@ -263,20 +434,21 @@ def _parse_model_id(raw) -> uuid_lib.UUID | None:
 
 # 「哪个模型算可用」的唯一判定 —— 存在、启用、且是这种 kind。_enabled_model 和
 # resolve_model_id 都从这里出发, 所以两者不会对"可用"有不同看法。
-def _usable(parsed, kind: str):
-    return ImageModel.objects.filter(id=parsed, enabled=True, provider__kind=kind)
+def _usable(parsed, kinds: list[str]):
+    return ImageModel.objects.filter(id=parsed, enabled=True, provider__kind__in=kinds)
 
 
-def _enabled_model(raw, kind: str) -> ImageModel | None:
+def _enabled_model(raw, kinds: list[str]) -> ImageModel | None:
     """随请求/随任务行传进来的模型 id → 一条**存在且启用**的记录, 否则 None。
 
     「哪个模型算可用」的唯一判定处。刻意不抛: 用户随时可能删掉或停用一个配置, 而这个
     id 可能来自前端 localStorage 里的粘性选择, 也可能来自一条早就排好队的任务行。这两种
     情况下"退回默认通道生成"都比"整件事 500"合理。
 
-    `kind` 不是可选的过滤条件而是正确性的一部分: 两种接口形状同住一张表, 不筛的话一个
+    `kinds` 不是可选的过滤条件而是正确性的一部分: 几种接口形状同住一张表, 不筛的话一个
     angle 通道 (模型名在 URL 路径里、认证是 `Key`) 会被交给生图路径当普通模型用, 请求
-    发出去必然失败, 而且失败得莫名其妙。
+    发出去必然失败, 而且失败得莫名其妙。传的是**一组** kind 而不是一个, 因为一个工具栏
+    选择器现在对应多种 kind (生图 = 内置 image + 模板 custom_image), 见 kinds_for_kind。
 
     UUID 先行解析是必需的而不是防御性的: 不合法的字符串直接进 `.filter(id=...)` 会抛
     django 的 ValidationError, 那就把"选择已失效"变成了一个 500。
@@ -286,10 +458,11 @@ def _enabled_model(raw, kind: str) -> ImageModel | None:
         return None
     # select_related: 调用方一定会 deref model.provider (channel_for_model 要它的
     # base_url / api_key), 不预取就是每条多一次查询。
-    model = _usable(parsed, kind).select_related("provider").first()
+    model = _usable(parsed, kinds).select_related("provider").first()
     if model is None:
         logger.warning(
-            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 回退默认通道", parsed, kind,
+            "image channel: 模型配置 %s 不存在/已禁用/不属于 %s, 回退默认通道",
+            parsed, "/".join(kinds),
         )
     return model
 
@@ -309,10 +482,12 @@ def resolve_model_id(raw, kind: str = ImageProvider.Kind.IMAGE) -> uuid_lib.UUID
     parsed = _parse_model_id(raw)
     if parsed is None:
         return None
-    model_id = _usable(parsed, kind).values_list("id", flat=True).first()
+    kinds = kinds_for_kind(kind)
+    model_id = _usable(parsed, kinds).values_list("id", flat=True).first()
     if model_id is None:
         logger.warning(
-            "image channel: 模型配置 %s 不存在/已禁用/不是 %s 通道, 退到库里第一条", parsed, kind,
+            "image channel: 模型配置 %s 不存在/已禁用/不属于 %s, 退到库里第一条",
+            parsed, "/".join(kinds),
         )
     return model_id
 
@@ -338,6 +513,23 @@ def require_channel(raw, kind: str, *, noun: str, extra: str = "") -> ImageChann
     return channel
 
 
+def kinds_for_kind(kind: str) -> list[str]:
+    """「按这个 kind 找通道时, 哪几种 kind 都算数」—— 通道解析的唯一入口。
+
+    有工具栏选择器的 (image / angle / video) 返回**同一个选择器下的那一组**: 生图选择器
+    既列内置 image 也列模板 custom_image, 只筛一个的话用户在界面上选得中、一提交却被判
+    "配置不存在"。
+
+    没有选择器的 (chat) 只返回它自己。**这一条不能靠 `picker == ""` 分组反推**: 那样将来
+    任何一个新加的、同样没有工具栏入口的 kind 都会自动变成"聊天模型的候选", 而 builder
+    那边一整段注释都在防"聊天被静默接到别的通道上"。
+    """
+    spec = KIND_SPECS.get(kind)
+    if spec is None or not spec.picker:
+        return [kind]
+    return [k for k, other in KIND_SPECS.items() if other.picker == spec.picker]
+
+
 def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChannel | None:
     """「选中的那条, 没选/已失效就退到库里第一条」—— 生图和 angle 走的是同一条阶梯。
 
@@ -348,8 +540,11 @@ def channel_or_default(raw, kind: str = ImageProvider.Kind.IMAGE) -> ImageChanne
     agent 没传 model 参数)本来就没带选择。前端选择器会自动落位到列表第一项, 所以正常
     使用不依赖它。排序跟选择器一致 (sort_order, label), 两边的"第一条"是同一条。
     """
-    model = _enabled_model(raw, kind) or (
-        ImageModel.objects.filter(enabled=True, provider__kind=kind)
+    # 同一个选择器下的全部 kind 一起找: 生图选择器现在既列内置 image 也列模板
+    # custom_image, 任务行里存的 id 可能是任一种。
+    kinds = kinds_for_kind(kind)
+    model = _enabled_model(raw, kinds) or (
+        ImageModel.objects.filter(enabled=True, provider__kind__in=kinds)
         .select_related("provider")
         .first()
     )

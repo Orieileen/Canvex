@@ -24,7 +24,8 @@ from langchain.tools import ToolRuntime, tool
 from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
-from studio.services.image_channels import require_channel, resolve_model_id
+from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
+from studio.services import template_client
 from studio.services.image_client import ImageChannel
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -73,6 +74,13 @@ def run_video_job(job: VideoJob) -> None:
         # 而不是变成一个只有日志里能看到的异常 (跟 image.py 的 client 初始化同款)。
         channel = resolve_video_channel(job)
 
+        # 模板通道在这里整条分流出去: 提交、轮询、取结果全在用户填的模板里, 下面那套
+        # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
+        # 同 image.py: 看 spec.template, 别按 kind 名字判。
+        if KIND_SPECS[channel.kind].template:
+            job.result_url = _template_video(job, channel)
+            return
+
         task_id = _submit(job, channel)
         job.task_id = task_id
         job.save(update_fields=["task_id", "updated_at"])
@@ -80,6 +88,23 @@ def run_video_job(job: VideoJob) -> None:
         result = _poll_until_done(task_id, channel)
         job.result_url = result["url"]
         job.thumbnail_url = result.get("thumbnail_url", "")
+
+
+def _template_video(job: VideoJob, channel: ImageChannel) -> str:
+    """模板通道的整条视频生成 —— 返回结果地址。
+
+    不落字节: 视频跟内置 video 通道一样只存外链 (`job.result_url`)。`task_id` 也不回写
+    job 行, 因为那是内置形状的概念 (模板里叫什么、在哪一层, 由用户决定)。
+
+    Session 用 template_client 那个共用的, 理由跟这个模块顶上的 `_session` 一样 ——
+    提交 + 轮询是同一台主机的一串请求, 每个 job 新建一个 Session 等于每次都重连一遍。
+    """
+    # session 不传: video_variables / execute 都默认走 template_client.SHARED_SESSION。
+    variables = template_client.video_variables(
+        channel, prompt=job.prompt, image_urls=list(job.image_urls or []),
+        duration=job.duration, aspect_ratio=job.aspect_ratio,
+    )
+    return template_client.item_to_url(template_client.execute(channel, variables))
 
 
 # ---------------------------------------------------------------------------

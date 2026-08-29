@@ -27,7 +27,6 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from math import gcd
 from typing import Iterable
 
 import requests
@@ -38,16 +37,19 @@ from studio.constants import CUTOUT_LLM_PROMPT
 from studio.models import ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.image_channels import (
+    KIND_SPECS,
     channel_or_default,
     no_channel_error,
     resolve_model_id,
 )
 from studio.services.image_client import (
+    size_to_ratio,
     ImageChannel,
     ImageClient,
     build_image_client,
     build_probe_client,
 )
+from studio.services import template_client
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -105,19 +107,6 @@ def run_image_edit_job(job: ImageEditJob) -> list[ImageEditResult]:
 # LLM path
 # ---------------------------------------------------------------------------
 
-def _canvas_size_to_ratio(size: str) -> str:
-    """`WxH` 像素 → `W:H` 比例 (gcd 化简). apimart-style poll provider 用比例 size,
-    canvas 用像素 size. 已是比例 ("1:1") / 无法解析时原样返."""
-    if "x" not in size:
-        return size
-    try:
-        w, h = (int(s) for s in size.lower().split("x", 1))
-    except ValueError:
-        return size
-    g = gcd(w, h) or 1
-    return f"{w // g}:{h // g}"
-
-
 # 火山 doubao-seedream-4.5 合法尺寸: 只收分辨率关键字 (2K/4K) 或像素 WxH (总像素
 # ∈ [3686400, 16777216], 宽高比 ∈ [1/16, 16]). 不收比例串 "1:1" / "auto", 且 canvas
 # 默认的 "1024x1024" 低于 4.5 的总像素下限会被拒. 这里把 canvas 的比例映射到官方
@@ -143,7 +132,7 @@ def _volc_size(size: str, resolution: str) -> str:
     先归一到比例 (像素经 gcd 化简), 再按 resolution 档位查推荐像素表; "auto" / 未知
     比例返回裸 "2K"/"4K" 关键字 (官方接受, 模型自定尺寸)."""
     tier = "4K" if (resolution or "").upper() == "4K" else "2K"
-    return _VOLC_PIXELS[tier].get(_canvas_size_to_ratio(size), tier)
+    return _VOLC_PIXELS[tier].get(size_to_ratio(size), tier)
 
 
 def _single_generation(
@@ -161,13 +150,25 @@ def _single_generation(
 
     `client` 留给调用方换重试策略 (worker 要重试, 同步的测试按钮不要 ——
     见 probe_image_channel), 默认走缓存的那个带 retry 的。
+
+    **模板通道 (kind=custom_image) 在最前面分流出去**: 它的请求形状由用户填的模板决定,
+    下面这些 size_mode / poll_enabled / image_field 的适配一条都不适用。
     """
+    # 看 `spec.template` 而不是 `kind == CUSTOM_IMAGE`: 前端那边这条规则已经写明了
+    # ("由后端下发的 spec.template 决定, 不按 kind 名字判 —— 加第三种模板通道时这里自动
+    # 跟上"), 后端更该守。按名字判的话, 将来加一种模板通道会**静默**落到内置那条路上,
+    # 发出一个形状完全不对的请求。
+    if KIND_SPECS[channel.kind].template:
+        return _template_generation(
+            channel, prompt=prompt, image_urls=image_urls, size=size,
+            resolution=resolution, session=client.session if client else None,
+        )
     client = client or build_image_client(channel)
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
     elif channel.poll_enabled:
-        size = _canvas_size_to_ratio(size)
+        size = size_to_ratio(size)
 
     response = client.generate(
         prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
@@ -185,15 +186,39 @@ def _single_generation(
     )
 
 
+def _template_generation(
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
+    resolution: str, session: requests.Session | None = None,
+) -> bytes:
+    """模板通道的单次生成。请求怎么拼全在 channel.request_template 里。
+
+    `session` 让调用方换重试策略, 跟 `_single_generation` 的 `client` 参数同一个理由
+    (worker 要重试, 同步的测试按钮不要)。不传 = 用 template_client 那个共用的带重试
+    Session —— 每次生成新建一个的话 TCP 池永远是冷的。
+    """
+    sess = session or template_client.SHARED_SESSION
+    variables = template_client.image_variables(
+        channel, prompt=prompt, image_urls=image_urls, size=size, n=1,
+        resolution=resolution, session=sess,
+    )
+    return template_client.item_to_bytes(
+        template_client.execute(channel, variables, session=sess)
+    )
+
+
 def probe_image_channel(channel: ImageChannel) -> int:
     """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
 
     公开一个函数而不是让 views 直接 import `_single_generation`: angle 那边已经有
     `probe_angle_channel` 了, 两条探针一边公有、一边从外面伸手拿私有函数, 会让"探针住在
     哪"这件事没有答案。顺带把"探针不重试"钉死在这里 (见 build_probe_client), 而不是指望
-    每个调用方自己记得 —— 忘掉的下场是 view 那个 60s 预算被静静乘成四倍。
+    每个调用方自己记得 —— 忘掉的下场是 view 那个 600s 墙钟预算被静静乘成四倍。
 
     尺寸取一个所有实现都合法的中庸值; 这里问的是"端点/密钥/模型名对不对", 不是构图。
+
+    模板通道也走这里, 而且**不需要在这儿再分一次流**: `_single_generation` 在最前面就把
+    它转给执行器, 并且用的正是 `build_probe_client` 那个不重试的 session —— 探针"不重试"
+    这条因此只钉在一个地方 (见 build_probe_client)。
     """
     return len(_single_generation(
         channel,
