@@ -320,6 +320,50 @@ export interface CanvasImageProviderTestResult {
   error?: string;
 }
 
+/** 向导第 1 步:一段 curl 解析出来的东西 (POST /image-providers/wizard/parse/)。
+ *
+ *  `mapping` 是给界面渲染成"这个键 = 提示词 / 尺寸 / 固定值"那张表的 —— 占位符是**猜**
+ *  的(按键名 + 值的形状),所以必须让用户能逐行改。`var` 为空 = 认不出来,原样当固定值
+ *  发给供应商,那通常正是对的。 */
+export interface CanvasWizardMapping {
+  /** 在请求体里的位置,如 `body.size` / `input.image_urls[0]`。 */
+  path: string;
+  key: string;
+  /** curl 示例里那个具体的值,显示给用户看"我们是照着什么猜的"。 */
+  sample: unknown;
+  /** 认成了哪个占位符。空 = 固定值。 */
+  var: string;
+}
+
+export interface CanvasWizardParsed {
+  base_url: string;
+  /** 示例里的 key 是占位符时不返回 —— 见 notes。 */
+  api_key?: string;
+  model?: string;
+  template: Record<string, unknown>;
+  mapping: CanvasWizardMapping[];
+  notes: string[];
+}
+
+/** 向导第 2 / 4 步:真发一次之后,从回包里自动认出来的东西
+ *  (POST /image-providers/wizard/probe/)。
+ *
+ *  `result_path` 是模板里唯一没人写得出来的字段(`data.result.images[0].url[0]` 这种),
+ *  所以不问用户,跑一次在回包里找"哪个位置长得像图"。 */
+export interface CanvasWizardProbe {
+  raw: unknown;
+  candidates: { path: string; preview: string }[];
+  result_path: string;
+  /** 没找到图但有 task_id/status = 这家是异步的。**这件事文档里看不出来**,
+   *  异步和同步供应商的示例 curl 长得一模一样,差别只在回包。 */
+  is_async?: boolean;
+  task_id_path?: string;
+  /** 轮询探针才有 */
+  status_path?: string;
+  status?: string;
+  done?: boolean;
+}
+
 /** POST /image-providers/import-curl/ 从示例 curl 推断出的预填字段。
  *  只包含推断出来的项;`_unrecognized` 是示例里出现但我们不认识的请求体键。 */
 export interface CanvasCurlImportResult {

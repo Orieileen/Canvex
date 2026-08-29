@@ -3,6 +3,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     ImageModelChoiceListView,
+    ChannelWizardParseView,
+    ChannelWizardProbeView,
     ImageProviderCurlImportView,
     ImageProviderSchemaView,
     ImageProviderTestView,
@@ -45,6 +47,17 @@ urlpatterns = [
         "image-providers/import-curl/",
         ImageProviderCurlImportView.as_view(),
         name="canvas-image-provider-import-curl",
+    ),
+    # 向导: 两段 curl → 一份能跑的模板。parse 只解析(不发请求), probe 真发一次。
+    path(
+        "image-providers/wizard/parse/",
+        ChannelWizardParseView.as_view(),
+        name="canvas-channel-wizard-parse",
+    ),
+    path(
+        "image-providers/wizard/probe/",
+        ChannelWizardProbeView.as_view(),
+        name="canvas-channel-wizard-probe",
     ),
     path(
         "image-providers/schema/",

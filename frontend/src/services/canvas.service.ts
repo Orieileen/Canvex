@@ -21,6 +21,8 @@ import type {
   CanvasSkill,
   CanvasSkillRow,
   CanvasSkillWrite,
+  CanvasWizardParsed,
+  CanvasWizardProbe,
   CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
@@ -395,6 +397,17 @@ export const canvasService = {
     request.post<CanvasImageProviderTestResult>(`${IMAGE_PROVIDERS}${id}/test/`, {
       image_model: imageModelId,
     }),
+  /** 向导第 1 步:curl → 模板。带 task_id 时解析的是"查询任务"那一段。 */
+  wizardParseCurl: (curl: string, poll?: { task_id: string; base_url: string }) =>
+    request.post<CanvasWizardParsed & { poll?: Record<string, unknown> }>(
+      `${IMAGE_PROVIDERS}wizard/parse/`, { curl, ...poll },
+    ),
+  /** 向导第 2 / 4 步:拿**还没保存**的配置真发一次。会产生一次真实的生成消耗。 */
+  wizardProbe: (body: {
+    base_url: string; api_key: string; model: string;
+    request_template: Record<string, unknown>;
+    poll?: Record<string, unknown>; task_id?: string;
+  }) => request.post<CanvasWizardProbe>(`${IMAGE_PROVIDERS}wizard/probe/`, body),
   /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
   getImageProviderSchema: () =>
     request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),

@@ -65,7 +65,16 @@ from .services.agent.tools.image import probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
-from .services.curl_import import CurlParseError, parse_curl
+from .services.curl_import import (
+    CurlParseError,
+    curl_to_template,
+    parse_curl,
+    poll_curl_to_section,
+)
+from .services import template_client
+from .services.image_client import ImageChannel
+from .services.request_template import TemplateError
+from .services.template_client import TemplateRequestError
 from .services.image_channels import (
     KIND_SPECS,
     UNTESTABLE_FALLBACK,
@@ -1167,6 +1176,74 @@ class ImageProviderSchemaView(APIView):
 
     def get(self, request):
         return Response({"tunables": tunable_schema()})
+
+
+class ChannelWizardParseView(APIView):
+    """POST /image-providers/wizard/parse/ —— 一段 curl → 请求模板 (或 poll 段)。
+
+    带 `task_id` 时解析的是"查询任务"那一段, 否则是"提交生成"那一段。两者合成一个端点
+    是因为对前端而言它们是同一件事的两步, 而且第二步的入参 (`task_id` / `base_url`) 全
+    来自第一步的结果。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        curl = request.data.get("curl", "")
+        task_id = str(request.data.get("task_id") or "").strip()
+        try:
+            if task_id:
+                return Response({"poll": poll_curl_to_section(
+                    curl, task_id=task_id, base_url=request.data.get("base_url", ""),
+                )})
+            return Response(curl_to_template(curl))
+        except CurlParseError as exc:
+            raise ValidationError({"curl": [str(exc)]}) from exc
+
+
+class ChannelWizardProbeView(APIView):
+    """POST /image-providers/wizard/probe/ —— 拿**还没保存**的配置真发一次, 把回包里
+    能自动认出来的东西 (result_path / status_path / task_id_path / 完成时的状态值) 交回去。
+
+    必须接受未入库的通道: 向导的全部意义就是"存之前先跑通"。所以这里从请求体拼一个临时
+    ImageChannel, 不碰数据库。
+
+    这会真的产生一次生成消耗 —— 跟 ⚡ 测试同理。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        d = request.data
+        template = d.get("request_template") or {}
+        channel = ImageChannel(
+            base_url=str(d.get("base_url") or ""),
+            api_key=str(d.get("api_key") or ""),
+            model=str(d.get("model") or ""),
+            kind=ImageProvider.Kind.CUSTOM_IMAGE,
+            request_template=template,
+            # 向导是同步 HTTP, 浏览器在等 —— 沿用测试按钮那套墙钟预算。
+            timeout=min(ImageProviderTestView.TEST_BUDGET_SECONDS, 300),
+            poll_timeout=ImageProviderTestView.TEST_OP_TIMEOUT,
+        )
+        if not channel.base_url or not channel.api_key:
+            raise ValidationError({"detail": ["先填好 Base URL 和 API key 再试跑"]})
+
+        task_id = str(d.get("task_id") or "").strip()
+        poll = d.get("poll")
+        variables = template_client.image_variables(
+            channel, prompt=d.get("prompt") or "a small red circle on a white background",
+            image_urls=[], size=str(d.get("size") or "1024x1024"), n=1, resolution="1K",
+        )
+        try:
+            if poll and task_id:
+                return Response(template_client.probe_poll(
+                    channel, poll, {**variables, "task_id": task_id},
+                ))
+            return Response(template_client.probe_template(channel, variables))
+        except (TemplateRequestError, TemplateError) as exc:
+            # 供应商的原文一路带到界面上 —— 向导失败时那句话就是用户唯一的线索。
+            raise ValidationError({"detail": [str(exc)]}) from exc
 
 
 class ImageProviderCurlImportView(APIView):

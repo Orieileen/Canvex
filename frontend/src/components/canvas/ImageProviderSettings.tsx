@@ -29,6 +29,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ChannelWizard } from "@/components/canvas/ChannelWizard";
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
@@ -308,6 +309,10 @@ export function ImageProviderSettings({
         </SheetHeader>
 
         <div className="flex flex-col gap-3 p-4">
+          {/* 向导排在 curl 导入前面: 它是**推荐路径** —— 用户不用先决定"内置还是自定义",
+              也不用理解模板 JSON。下面那个 curl 导入是老路径 (猜内置通道的旋钮), 留着给
+              已经知道自己要什么的人。 */}
+          <ChannelWizard onReady={(seed) => addDraft(seed)} />
           <CurlImport onImported={(seed) => addDraft(seed)} />
 
           {loading && (
