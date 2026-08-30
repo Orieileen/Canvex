@@ -286,7 +286,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
     # str/int/bool, 加 float 要连带扩控件映射, 而且 agent 的行为主要由 system prompt
     # 和工具定义决定, 温度不是这次搬家的必需品。
     ImageProvider.Kind.CHAT: _KindSpec(
-        tunables=frozenset({"timeout"}),
+        tunables=frozenset({"timeout", "protocol"}),
         defaults={"timeout": 120},
         # 留空 = 用 OpenAI 官方端点, 所以这是唯一一种 base_url 可空的通道。
         requires_base_url=False,
@@ -372,7 +372,7 @@ _CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
 _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
-        "watermark", "inline_image", "size_mode", "allowed_ratios",
+        "watermark", "inline_image", "size_mode", "allowed_ratios", "protocol",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({
@@ -467,6 +467,23 @@ PRESETS: tuple[_Preset, ...] = (
         kind=ImageProvider.Kind.CHAT,
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         model="gemini-3-pro",
+    ),
+    # 国内两家按量付费的 agent 供应商, 都提供 OpenAI 兼容端点。加进来的理由只有一个:
+    # **便宜**。形状上跟 OpenAI 那条没有任何区别, 所以这里只是两行表。
+    #
+    # 注意跟"coding plan"那类**订阅**不是一回事: 那些卖的通常是 Anthropic 协议的端点
+    # (给 Claude Code 用的), 要走 chat 通道的 `protocol` 开关。见 ImageChannel.protocol。
+    _Preset(
+        key="deepseek_chat",
+        kind=ImageProvider.Kind.CHAT,
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+    ),
+    _Preset(
+        key="zhipu_chat",
+        kind=ImageProvider.Kind.CHAT,
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        model="glm-4.6",
     ),
     # OpenAI 官方生图。**allowed_ratios 带右边那一半是必需的** —— gpt-image-1 只认
     # `1024x1024` / `1536x1024` / `1024x1536` / `auto` 这四个具体值, 而 3:2 按长边 1024

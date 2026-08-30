@@ -27,6 +27,10 @@ gevent==26.7.0
 openai==2.53.0
 deepagents==0.7.5                   # 内置工具集随版本变化(execute/write_todos/delete)
 langchain==1.3.14
+# 直接 import 了 (聊天通道的 anthropic 协议 —— 见 agent/builder.CHAT_PROTOCOLS)。
+# 本来是 deepagents 的传递依赖, 但既然自己用就得自己声明: 哪天 deepagents 不带它了,
+# 表现是配了 anthropic 协议的通道一聊天就 ImportError。
+langchain-anthropic==1.5.4
 langchain-openai==1.4.1
 langgraph==1.2.10
 # canvas agent /memories/ 可选 postgres 后端 (CANVAS_AGENT_STORE_BACKEND=postgres);

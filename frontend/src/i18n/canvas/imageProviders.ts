@@ -53,6 +53,16 @@ export const imageProviders = {
         hint: "Gemini via its OpenAI-compatible endpoint — chat box and agent",
         channel: "Gemini chat",
       },
+      deepseek_chat: {
+        label: "DeepSeek",
+        hint: "api.deepseek.com — cheap pay-as-you-go, OpenAI-compatible",
+        channel: "DeepSeek chat",
+      },
+      zhipu_chat: {
+        label: "Zhipu GLM",
+        hint: "open.bigmodel.cn — GLM-4.6, OpenAI-compatible",
+        channel: "GLM chat",
+      },
       openai_image: {
         label: "OpenAI",
         hint: "api.openai.com — gpt-image-1, sizes already mapped",
@@ -201,8 +211,8 @@ export const imageProviders = {
       watermark: "not sent unless set explicitly",
       inline_image: "download source URLs and inline as base64",
       size_mode: "pixel = snap to the provider's legal pixel sizes",
-      allowed_ratios:
-        "comma-separated, e.g. 16:9, 1:1, 4:3, 9:16, auto — blank means no limit. Models differ even within one provider, and the toolbar's ratio picker is trimmed to whatever you put here.",
+      allowed_ratios: "ratios this model takes",
+      protocol: "protocol",
       timeout: "request timeout (s)",
       poll_enabled: "provider returns a task id to poll",
       poll_url: "poll endpoint, blank = Base URL",
@@ -242,6 +252,16 @@ export const imageProviders = {
         label: "Google 官方",
         hint: "Gemini,走它的 OpenAI 兼容端点 —— 聊天框和 agent 都走它",
         channel: "Gemini 聊天",
+      },
+      deepseek_chat: {
+        label: "DeepSeek",
+        hint: "api.deepseek.com —— 按量付费,便宜,OpenAI 兼容",
+        channel: "DeepSeek 聊天",
+      },
+      zhipu_chat: {
+        label: "智谱 GLM",
+        hint: "open.bigmodel.cn —— GLM-4.6,OpenAI 兼容",
+        channel: "GLM 聊天",
       },
       openai_image: {
         label: "OpenAI 官方",
@@ -385,8 +405,8 @@ export const imageProviders = {
       watermark: "不显式设置就不下发",
       inline_image: "把源图 URL 下载下来转 base64 内联",
       size_mode: "pixel = 归一到供应商的合法像素尺寸",
-      allowed_ratios:
-        "逗号分隔,如 16:9, 1:1, 4:3, 9:16, auto —— 留空 = 不限制。同一家的不同模型收的比例都不一样;填了之后工具栏的比例选择器只列这些。",
+      allowed_ratios: "收哪几种比例",
+      protocol: "协议",
       timeout: "请求超时(秒)",
       poll_enabled: "供应商先返 task id 再轮询",
       poll_url: "轮询端点,留空 = Base URL",

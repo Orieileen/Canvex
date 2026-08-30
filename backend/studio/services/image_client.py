@@ -401,6 +401,16 @@ class ImageChannel:
     # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
     size_mode: str = field(default="", metadata={"example": "pixel"})
+    # 聊天通道说哪种协议。空 / "openai" = OpenAI 的 /chat/completions (默认, 绝大多数);
+    # "anthropic" = Anthropic 的 /v1/messages。
+    #
+    # 存在的理由: 国内几家的 **coding plan 订阅**卖的是 Anthropic 协议端点 (给 Claude
+    # Code 用的), 比按量付费便宜一大截 —— 智谱的 `open.bigmodel.cn/api/anthropic`、
+    # DeepSeek 的 `api.deepseek.com/anthropic` 都是。协议对不上时 ChatOpenAI 发出去的
+    # 是 `/chat/completions`, 换回来一个 404, 而那跟"key 不对"看起来一模一样。
+    #
+    # 只对 chat 通道有意义 (见 KIND_SPECS)。生图那边形状由模板决定, 不需要这个开关。
+    protocol: str = field(default="", metadata={"example": "anthropic"})
     # 这个模型**真的收**哪几种比例, 逗号分隔; 空 = 不限制 (默认, 也是绝大多数通道)。
     # 每一项可以写成 `比例=要发的值` —— 有些家只收一张写死的像素表, 而那些像素不是按比例
     # 算出来的 (OpenAI: `3:2` 要发 `1536x1024`)。省略右边 = 原样发比例。见 parse_ratio_map。
@@ -412,7 +422,9 @@ class ImageChannel:
     #
     # **放在旋钮里而不是写一张内置表**: 这是 per-model 的事实, 而 overrides 本来就是
     # per-model 的 —— 同一条通道下两个模型可以各填各的。内置表则永远追不上新模型。
-    allowed_ratios: str = field(default="", metadata={"example": "16:9, 1:1, 4:3, 9:16, auto"})
+    allowed_ratios: str = field(
+        default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
+    )
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False

@@ -317,7 +317,7 @@ def build_canvas_agent():
     with _agent_lock:
         return _agent_for_channel(
             channel.api_key, channel.base_url, channel.model, channel.timeout,
-            channel.provider_id,
+            channel.provider_id, channel.protocol,
         )
 
 
@@ -350,13 +350,44 @@ class _ChannelHealthCallback(BaseCallbackHandler):
         )
 
 
+# 聊天通道说的协议 → 建哪个 langchain 模型。
+#
+# 为什么需要不止一种: 国内几家的 **coding plan 订阅**卖的是 Anthropic 协议端点 (给
+# Claude Code 用的), 比按量付费便宜一大截。协议对不上时 ChatOpenAI 发出去的是
+# `/chat/completions`, 换回来一个 404 —— 而那跟"地址填错了"看起来一模一样。
+#
+# **一张表而不是 if/else**: 加第三种协议 (Gemini 原生?) 时只加一行, 而且"支持哪几种"
+# 这个事实有一个唯一出处 —— 校验、表单提示、这里, 三处读的是同一张表。
+def _openai_model(**kw):
+    return ChatOpenAI(**kw)
+
+
+def _anthropic_model(**kw):
+    # `max_tokens` 是 Anthropic 协议的**必填项** (OpenAI 那边可选)。langchain 的默认值
+    # 偏小, 而 agent 一轮要吐工具调用 + 一段回复, 给窄了的表现是回答被拦腰截断。
+    #
+    # 延迟 import: 只有配了 anthropic 协议的通道才会走到这里, 而这个包是 deepagents 带
+    # 进来的 —— 放模块顶上会让所有人 (含从不用它的绝大多数) 多付一次 import。
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(max_tokens=8192, **kw)
+
+
+CHAT_PROTOCOLS = {
+    "": _openai_model,             # 没填 = OpenAI, 绝大多数
+    "openai": _openai_model,
+    "anthropic": _anthropic_model,
+}
+
+
 @functools.lru_cache(maxsize=4)
 def _agent_for_channel(
     api_key: str, base_url: str, model_name: str, timeout: int, provider_id: str,
+    protocol: str = "",
 ):
     """建一条通道的 graph。**只在 `_agent_lock` 下调用** (见 build_canvas_agent)。
 
-    键是这五个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
+    键是这六个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
     (= "供应商名 · 模型名") 也在里面 —— 在配置面板里给聊天供应商改个名字就会让这条失效,
     下一轮聊天要重新编译整个 deep-agent graph 并新建一个 ChatOpenAI (连带新的 httpx 连接
     池), 而且是握着进程级的 _agent_lock 做的, 期间所有并发的聊天全都排队等着。
@@ -366,8 +397,16 @@ def _agent_for_channel(
     通道以前会共用一个 graph, 现在各建各的。这不会引起上面担心的那种反复重建 —— id 是
     不变的, 改名字照样命中。
     """
-    model = ChatOpenAI(
+    build = CHAT_PROTOCOLS.get((protocol or "").strip().lower())
+    if build is None:
+        raise ValueError(
+            f"聊天通道的 protocol 填了 `{protocol}`, 只认: "
+            f"{', '.join(k or '(留空 = openai)' for k in CHAT_PROTOCOLS)}"
+        )
+    model = build(
         api_key=api_key,
+        # 空串 → None: 两个 SDK 都把 None 当成"用官方默认端点", 而空串会被当成一个
+        # 真的 (空的) 地址。chat 通道的 base_url 本来就允许留空。
         base_url=base_url or None,
         model=model_name,
         max_retries=10,
