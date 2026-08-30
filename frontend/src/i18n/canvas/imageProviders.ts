@@ -34,6 +34,16 @@ export const imageProviders = {
         hint: "api.apimart.ai — async; the request shape is already wired up",
         channel: "apimart images",
       },
+      openai_chat: {
+        label: "Quick setup: OpenAI direct",
+        hint: "api.openai.com — powers the chat box and the agent",
+        channel: "OpenAI chat",
+      },
+      google_chat: {
+        label: "Quick setup: Google direct",
+        hint: "Gemini via its OpenAI-compatible endpoint — chat box and agent",
+        channel: "Gemini chat",
+      },
       fal_angle: {
         label: "Quick setup: re-angle provider",
         hint: "fal.ai — powers the Change angle panel",
@@ -196,6 +206,16 @@ export const imageProviders = {
         label: "快捷配置:生图供应商",
         hint: "api.apimart.ai —— 异步通道,请求形状已经配好",
         channel: "apimart 生图",
+      },
+      openai_chat: {
+        label: "快捷配置:OpenAI 官方直连",
+        hint: "api.openai.com —— 聊天框和 agent 都走它",
+        channel: "OpenAI 聊天",
+      },
+      google_chat: {
+        label: "快捷配置:Google 官方直连",
+        hint: "Gemini,走它的 OpenAI 兼容端点 —— 聊天框和 agent 都走它",
+        channel: "Gemini 聊天",
       },
       fal_angle: {
         label: "快捷配置:视角重渲染供应商",

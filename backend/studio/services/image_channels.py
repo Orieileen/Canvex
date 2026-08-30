@@ -429,6 +429,26 @@ PRESETS: tuple[_Preset, ...] = (
         model="gpt-image-2",
         request_template=_STARTER_ASYNC_IMAGE,
     ),
+    # 官方直连的两家 agent 供应商, 作为 tu-zi 之外的选择。
+    #
+    # **base_url 显式写出来而不是留空。** chat 通道留空确实等于走 OpenAI 官方端点
+    # (见 builder 的 `base_url or None`), 但那样卡片上是个空输入框 —— 用户看不出这条通道
+    # 到底连的是谁, 也就不知道该去哪儿拿 key。
+    _Preset(
+        key="openai_chat",
+        kind=ImageProvider.Kind.CHAT,
+        base_url="https://api.openai.com/v1",
+        model="gpt-5",
+    ),
+    # Google 走的是它的 **OpenAI 兼容层** (`/v1beta/openai`), 不是原生的 generateContent
+    # —— agent 那条路是 langchain 的 ChatOpenAI, 只会说 OpenAI 协议。路径写到 `openai`
+    # 为止, `/chat/completions` 由 SDK 自己拼。
+    _Preset(
+        key="google_chat",
+        kind=ImageProvider.Kind.CHAT,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        model="gemini-3-pro",
+    ),
     # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
     # 这是所有人第一次配它都会填错的一处 (填 fal.ai 得到一个 404)。预设的价值正在这儿。
     #
