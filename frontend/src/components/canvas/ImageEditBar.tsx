@@ -751,6 +751,33 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   const trimmed = prompt.trim();
   const canGenerate = canPin && !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
 
+  // 这个模型真的收哪几个时长 / 比例 —— 后端下发 (已经合并过三层配置)。
+  //
+  // 时长跟比例的处理不一样: 比例是拿它去**筛**画布那三档, 时长是**照它列**。因为各家
+  // 收的秒数差得离谱 —— veo3 固定 8 秒、sora 只收 4/8/12/16/20, 画布那三档 (5/10/15)
+  // 一个都不在里面, 筛完会是个空下拉。照它列则显示「8 秒」, 诚实且能用。
+  const picked = videoModel.models.find((m) => m.id === videoModel.value);
+  const durKey = (picked?.allowed_durations ?? []).join(",");
+  const ratioKey = (picked?.allowed_ratios ?? []).join(",");
+  const durations = useMemo(() => {
+    const allowed = durKey ? durKey.split(",").map(Number).filter(Number.isFinite) : [];
+    return allowed.length ? allowed : (VIDEO_DURATIONS as number[]);
+  }, [durKey]);
+  const ratios = useMemo(() => {
+    const allowed = ratioKey ? ratioKey.split(",") : [];
+    const hit = VIDEO_ASPECT_RATIOS.filter((r) => allowed.includes(r));
+    return hit.length ? hit : VIDEO_ASPECT_RATIOS;
+  }, [ratioKey]);
+
+  // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
+  // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。
+  useEffect(() => {
+    if (!durations.includes(duration)) setDuration(durations[0]);
+  }, [durations, duration]);
+  useEffect(() => {
+    if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
+  }, [ratios, aspectRatio]);
+
   function submitGenerate() {
     if (!canGenerate) return;
     const finalPrompt = [promptFromTexts, trimmed].filter(Boolean).join("\n");
@@ -800,7 +827,7 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
         disabled={isSubmitting}
         className={selectClass}
       >
-        {VIDEO_DURATIONS.map((d) => (
+        {durations.map((d) => (
           <option key={d} value={d}>{t("edit.durationSuffix", { n: d })}</option>
         ))}
       </select>
@@ -811,7 +838,7 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
         disabled={isSubmitting}
         className={selectClass}
       >
-        {VIDEO_ASPECT_RATIOS.map((r) => (
+        {ratios.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>

@@ -14,9 +14,14 @@ import { submitCanvasJob } from "@/hooks/submit-canvas-job";
  * `image_urls` JSON when sourceUrl is set, multipart File otherwise.
  */
 
-export type VideoDuration = 5 | 10 | 15;
+/** 秒。**不是一个封闭的联合类型** —— 各家模型收的秒数差得离谱 (veo3 固定 8,
+ *  sora 只收 4/8/12/16/20), 而那张表是后端按供应商文档下发的, 前端写不出穷举。
+ *  后端 VideoJobCreateSerializer 会校验 1~60。 */
+export type VideoDuration = number;
 export type VideoAspectRatio = "16:9" | "9:16" | "1:1";
 
+/** 画布默认给的三档。**只是默认** —— 模型自己报了支持的秒数时(见
+ *  CanvasImageModelChoice.allowed_durations)选择器照那个列, 不用这三个。 */
 export const VIDEO_DURATIONS: VideoDuration[] = [5, 10, 15];
 export const VIDEO_ASPECT_RATIOS: VideoAspectRatio[] = ["16:9", "9:16", "1:1"];
 

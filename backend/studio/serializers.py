@@ -24,7 +24,7 @@ from .services.image_channels import (
     channel_for_model,
     kinds_for_kind,
 )
-from .services.image_client import parse_ratios
+from .services.image_client import parse_durations, parse_ratios
 from .services.request_template import TemplateError
 from .services.request_template import validate as validate_template
 
@@ -619,9 +619,21 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_allowed_ratios(self, obj) -> list[str]:
         return parse_ratios(channel_for_model(obj).allowed_ratios)
 
+    # 这个模型**真的收**哪几个时长(秒)。空 = 用画布自己那三档。
+    #
+    # 跟 allowed_ratios 不同, 选择器是**照这个列**而不是拿它去筛画布那三档: veo3 只出
+    # 8 秒, 画布那三档一个都不在里面, 筛完会是空的。
+    allowed_durations = serializers.SerializerMethodField()
+
+    def get_allowed_durations(self, obj) -> list[int]:
+        return parse_durations(channel_for_model(obj).allowed_durations)
+
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "picker", "sort_order", "allowed_ratios")
+        fields = (
+            "id", "label", "provider_label", "picker", "sort_order",
+            "allowed_ratios", "allowed_durations",
+        )
 
 
 def _skill_error(code: str, message: str, **params: object) -> serializers.ValidationError:

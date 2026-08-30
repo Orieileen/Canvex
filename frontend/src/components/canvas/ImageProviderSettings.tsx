@@ -291,7 +291,10 @@ export function ImageProviderSettings({
       // 显示的是「通道名 · 模型名」, 而模型名正是用户在供应商文档里看到的那个词。
       models: preset.models.map((m, i) => ({
         id: newLocalId(), label: m, model: m,
-        overrides: {}, enabled: true, sort_order: i,
+        // 每个模型自己的覆盖 (apimart 视频那条装的是各模型真实支持的时长)。没有的就是
+        // 空对象 = 跟着通道默认走。
+        overrides: (preset.model_overrides?.[m] ?? {}) as Values,
+        enabled: true, sort_order: i,
       })),
     }),
     [t],

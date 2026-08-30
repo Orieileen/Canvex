@@ -40,7 +40,9 @@ from studio.services.image_client import (
     BODY_TRUNC,
     ImageChannel,
     _url_to_data_uri,
+    nearest_duration,
     nearest_ratio,
+    parse_durations,
     parse_ratio_map,
     parse_ratios,
     ratio_to_pixels,
@@ -396,9 +398,12 @@ def video_variables(
     16:9 / 9:16 / 1:1)。
     """
     picked = nearest_ratio(aspect_ratio, parse_ratios(channel.allowed_ratios))
+    # 时长同样过一遍。选择器已经按 allowed_durations 列过一次, 这里管它拦不住的:
+    # agent 自己挑的秒数, 以及"换了模型之后 localStorage 里那个旧选择失效"。
+    secs = nearest_duration(duration, parse_durations(channel.allowed_durations))
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        "duration": duration, "aspect_ratio": picked,
+        "duration": secs, "aspect_ratio": picked,
     }
 
 

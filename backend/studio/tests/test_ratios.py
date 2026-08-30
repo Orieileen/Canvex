@@ -7,7 +7,9 @@
 from django.test import SimpleTestCase
 
 from studio.services.image_client import (
+    nearest_duration,
     nearest_ratio,
+    parse_durations,
     parse_ratio_map,
     parse_ratios,
     ratio_to_pixels,
@@ -103,3 +105,36 @@ class RatioMapTests(SimpleTestCase):
     def test_full_width_comma(self):
         """中文文档里逗号常常是全角的, 而复制粘贴是这个框最主要的填写方式。"""
         self.assertEqual(list(parse_ratio_map("16:9，1:1")), ["16:9", "1:1"])
+
+
+class DurationTests(SimpleTestCase):
+    """各家收的秒数差得离谱, 而画布原来固定给 5/10/15 —— veo3 只收 8、sora 只收
+    4/8/12/16/20, 那八个模型**一条都生成不出来**, 报错还是供应商给的 invalid duration,
+    跟"通道配错了"看起来一模一样。"""
+
+    def test_empty_is_passthrough(self):
+        """没填 = 不限制。绝大多数模型走这条 (它们 5/10/15 都收)。"""
+        for want in (5, 10, 15, 7):
+            with self.subTest(want=want):
+                self.assertEqual(nearest_duration(want, []), want)
+
+    def test_supported_value_untouched(self):
+        self.assertEqual(nearest_duration(8, [4, 8, 12, 16, 20]), 8)
+
+    def test_falls_to_nearest(self):
+        """选择器已经照 allowed 列过一次, 这条兜底管的是 agent 自己挑的秒数, 以及
+        "换了模型之后 localStorage 里那个旧选择失效"。"""
+        self.assertEqual(nearest_duration(5, [8]), 8)              # veo3: 只有一个
+        self.assertEqual(nearest_duration(5, [4, 8, 12, 16, 20]), 4)
+        self.assertEqual(nearest_duration(15, [5, 10, 12]), 12)
+        self.assertEqual(nearest_duration(5, [6, 10]), 6)          # Hailuo-2.3 下限是 6
+
+    def test_ties_prefer_the_shorter(self):
+        """离得一样近时取小的 —— 时长直接决定计费, 多给不如少给。"""
+        self.assertEqual(nearest_duration(5, [4, 6]), 4)
+
+    def test_parse(self):
+        self.assertEqual(parse_durations("4, 8, 12"), [4, 8, 12])
+        self.assertEqual(parse_durations("6，10"), [6, 10])        # 全角逗号
+        self.assertEqual(parse_durations(""), [])
+        self.assertEqual(parse_durations("abc, 5"), [5])           # 认不出的跳过

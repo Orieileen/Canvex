@@ -177,6 +177,32 @@ def _ratio_value(ratio: str) -> float | None:
     return w / h if h else None
 
 
+def parse_durations(raw: str) -> list[int]:
+    """`"4, 8, 12"` → `[4, 8, 12]`。认不出的项跳过, 空串 → 空列表 (= 不限制)。"""
+    out: list[int] = []
+    for part in (raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(float(part)))
+        except ValueError:
+            continue
+    return out
+
+
+def nearest_duration(want: int, allowed: list[int]) -> int:
+    """用户选的秒数 → 这个模型**真的收**的那一个。`allowed` 为空 = 不限制, 原样返回。
+
+    选择器本来就只列 allowed 里的数字, 所以正常路径永远命中。这条兜底管的是选择器拦不住
+    的那几种: agent 自己挑的时长、以及"换了模型之后旧选择失效"(画布上那三档是粘在
+    localStorage 里的)。
+    """
+    if not allowed or want in allowed:
+        return want
+    return min(allowed, key=lambda d: (abs(d - want), d))
+
+
 def nearest_ratio(want: str, allowed: list[str]) -> str:
     """用户选的比例 → 这个模型**真的收**的那一个。
 
@@ -431,6 +457,16 @@ class ImageChannel:
     #
     # **放在旋钮里而不是写一张内置表**: 这是 per-model 的事实, 而 overrides 本来就是
     # per-model 的 —— 同一条通道下两个模型可以各填各的。内置表则永远追不上新模型。
+    # 这个模型**真的收**哪几个时长(秒), 逗号分隔; 空 = 用画布自己那三档 (5/10/15)。
+    #
+    # 跟 allowed_ratios 不同, 这里**不需要"画布值=要发的值"映射** —— 选择器直接列这些
+    # 数字。veo3 只出 8 秒, 那就让它显示「8 秒」, 而不是显示「5 秒」偷偷发 8: 后者用户
+    # 拿到一条时长不对的视频, 还以为是模型没听话。
+    #
+    # 实测这件事有多要紧: 画布原来固定给 5/10/15, 而 apimart 那 41 个模型里 veo3 只收 8、
+    # sora 只收 4/8/12/16/20 —— 那八个模型**一条都生成不出来**, 而报错是供应商给的
+    # invalid duration, 跟"通道配错了"看起来一样。
+    allowed_durations: str = field(default="", metadata={"example": "5, 10, 15"})
     allowed_ratios: str = field(
         default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
     )

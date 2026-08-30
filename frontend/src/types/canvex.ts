@@ -346,6 +346,11 @@ export interface CanvasImageModelChoice {
    *  好得多。实测 apimart 的 gemini-3.1-flash-image-preview 只收 15 种并会直接拒掉别的,
    *  而同一家的 gpt-image-2 连 `999:998` 都收,所以这是 per-model 的事实。 */
   allowed_ratios: string[];
+  /** 这个模型**真的收**哪几个时长(秒)。空 = 用画布自己那三档。
+   *
+   *  跟 allowed_ratios 不同,选择器是**照这个列**而不是拿它去筛画布那三档 —— veo3 只出
+   *  8 秒,画布的 5/10/15 一个都不在里面,筛完会是空的。 */
+  allowed_durations: number[];
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——
@@ -381,6 +386,9 @@ export interface CanvasChannelPreset {
    *  第一项)。绝大多数只有一个;apimart 视频那条有四十一个 —— 同一家的所有视频模型
    *  共用一个端点和一套请求形状,差别只在这个字符串。 */
   models: string[];
+  /** 某几个模型自己的旋钮覆盖,键是模型字符串。只有 apimart 视频那条用得上 ——
+   *  它装的是每个模型真实支持的时长。 */
+  model_overrides: Record<string, Record<string, unknown>>;
   defaults: Record<string, unknown>;
   request_template: Record<string, unknown>;
 }

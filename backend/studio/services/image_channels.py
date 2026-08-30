@@ -322,6 +322,9 @@ _TEMPLATE_TUNABLES = frozenset({
     # 哪几种比例**, 一条关于供应商的事实, 模板里表达不了 (模板只会把 {{aspect_ratio}}
     # 原样填进去)。填了之后工具栏的比例选择器只列这些, 后端再兜底映射到最近的一个。
     "allowed_ratios",
+    # 视频那半: 各家收的秒数差得离谱 (veo3 固定 8, sora 只收 4/8/12/16/20)。生图通道
+    # 也留着这一项没有坏处 —— 它的模板里没有 {{duration}}, 填了也不下发。
+    "allowed_durations",
 })
 
 
@@ -405,7 +408,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
             # 视频模型的可用比例往往比生图还窄 —— 常见只有 16:9 / 9:16 / 1:1。
-            "allowed_ratios",
+            "allowed_ratios", "allowed_durations",
         }),
         picker="video",
         defaults={
@@ -438,7 +441,8 @@ _CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
 _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
-        "watermark", "inline_image", "size_mode", "allowed_ratios", "protocol",
+        "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
+        "protocol",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({
@@ -495,9 +499,60 @@ class _Preset:
     # 共用一个端点和一套请求形状, 差别只在这个字符串, 所以它们该是一条通道下的几十行,
     # 而不是几十条通道。
     models: tuple[str, ...]
+    # 某几个模型自己的旋钮覆盖, 键是模型字符串。只写**跟通道默认不一样**的那些 ——
+    # 绝大多数预设是空的; apimart 视频那条用它装每个模型真实支持的时长。
+    model_overrides: dict[str, dict] = dataclasses.field(default_factory=dict)
     # 只写跟 kind 默认值不同的那几项 —— 跟 _KindSpec.defaults 同一个规矩。
     defaults: dict[str, object] = dataclasses.field(default_factory=dict)
     request_template: dict = dataclasses.field(default_factory=dict)
+
+
+# 每个视频模型**文档写明**支持的时长(秒)。逐页抄的, 不是猜的。
+#
+# **只列跟画布那三档 (5/10/15) 不一样的**: 一致的留空 = 不限制, 少一行要维护的数据。
+# 值就是要发给供应商的秒数, 选择器直接列它们 (见 ImageChannel.allowed_durations)。
+_APIMART_VIDEO_DURATIONS: dict[str, str] = {
+    # /videos/doubao —— 2~12 秒。画布的 15 超了, 换成上限 12。
+    "seedance-1-0-pro-fast": "5, 10, 12",
+    "seedance-1-0-pro-quality": "5, 10, 12",
+    # /videos/seedance-1-5-pro —— 4~12 秒
+    "seedance-1-5-pro": "5, 10, 12",
+    # /videos/sora-2 —— 只收这五个离散值, 画布那三档**一个都不在里面**
+    "sora-2": "4, 8, 12, 16, 20",
+    "sora-2-pro": "4, 8, 12, 16, 20",
+    # /videos/veo3 —— 文档原话「固定值：8（VEO3 仅支持 8 秒时长）」
+    "veo3.1-fast": "8",
+    "veo3.1-quality": "8",
+    "veo3.1-lite": "8",
+    # /videos/minimax-hailuo —— 5 或 10
+    "MiniMax-Hailuo-02": "5, 10",
+    # /videos/minimax-hailuo-2.3 —— **6** 或 10, 不是 5
+    "MiniMax-Hailuo-2.3": "6, 10",
+    "MiniMax-Hailuo-2.3-Fast": "6, 10",
+    # /videos/kling-v2-6 、 /videos/kling-video-o1 —— 5 或 10
+    "kling-v2-6": "5, 10",
+    "kling-video-o1": "5, 10",
+    # /videos/wan2.5 —— 5 或 10
+    "wan2.5-preview": "5, 10",
+    # /videos/grok-imagine —— 6~15, 下限是 6
+    "grok-imagine-1.5-video-apimart": "6, 10, 15",
+    # /videos/omni-flash-ext —— 只收 4/6/8/10, 文档明说传 5、7 会 invalid_duration
+    "Omni-Flash-Ext": "4, 6, 8, 10",
+    # 留空 (= 画布那三档都能用) 的, 连同文档写的范围:
+    #   seedance-2.0 / -fast / -mini / -face / -fast-face  4~15
+    #   seedance-2.5                                       4~30
+    #   MiniMax-H3                                         4~15
+    #   kling-v3 / kling-3.0-turbo / kling-v3-omni         3~15
+    #   wan2.6                                             5 / 10 / 15
+    #   wan2.6-i2v-flash / wan2.7                          2~15
+    #   wan3.0-video                                       2~30
+    #   viduq3-pro / -turbo / -mix  1~16                   viduq3  3~16
+    #   flux-3-video                                       5~20
+    #   skyreels-v4-std / -fast                            3~15
+    #   happyhorse-1.0 / 1.1                               3~15
+    #   pixverse-v6                                        1~15
+    #   gemini-omni-flash-preview   文档里根本没有 duration 这一项 (见下面那条注释)
+}
 
 
 PRESETS: tuple[_Preset, ...] = (
@@ -617,9 +672,12 @@ PRESETS: tuple[_Preset, ...] = (
         "kling-v3-omni", "kling-video-o1", "wan2.5-preview", "wan2.6", "wan2.6-i2v-flash",
         "wan2.7", "wan3.0-video", "viduq3", "viduq3-pro", "viduq3-turbo", "viduq3-mix",
         "flux-3-video", "skyreels-v4-std", "skyreels-v4-fast", "happyhorse-1.0",
-        "happyhorse-1.1", "pixverse-v6", "grok-imagine-video-1.5", "Omni-Flash-Ext",
+        "happyhorse-1.1", "pixverse-v6", "grok-imagine-1.5-video-apimart", "Omni-Flash-Ext",
         "gemini-omni-flash-preview",
         ),
+        model_overrides={
+            m: {"allowed_durations": d} for m, d in _APIMART_VIDEO_DURATIONS.items()
+        },
         request_template=_STARTER_APIMART_VIDEO,
     ),
     # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
