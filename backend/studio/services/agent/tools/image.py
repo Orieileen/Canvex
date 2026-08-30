@@ -212,6 +212,23 @@ def _template_generation(
     )
 
 
+# 探针的提示词。**一份, 两个调用方共用** (这里的 ⚡ 和 views 里的向导试跑) —— 分成两份
+# 抄写的话, 用户在两个地方看到两张不同的图, 而它们本该是"同一次体检"。
+#
+# 挑什么图有讲究, 它不是随便一句话:
+#  - 要**一眼认得出是测试图**。看见它就知道"这是探针发的", 不会跟自己生成的东西混。
+#  - 要**画得出来**。任何模型都不会在这句上失败, 否则失败原因就不是通道配置了。
+#  - **不能长得像任何一面国旗或有含义的符号。** 上一版是 "a small red circle on a
+#    white background" —— 白底居中一个红圆, 那就是日章旗, 而向导最后一步会把这张图
+#    直接摆在中文界面上。这是那次改动的直接教训: 探针的图从"没人看得见的字节数"变成
+#    了"界面上一张画", 挑图的标准也跟着变了。具体物件比几何图形安全, 几何图形和纯色块
+#    太容易撞上旗帜。
+PROBE_PROMPT = "a yellow rubber duck toy on a plain white background"
+# 视频探针同一只鸭子 —— 两个探针出来的东西看着是一家的, 更像"体检"而不是"我生成的"。
+# 动作写进提示词里 (漂、晃), 免得模型给一张静止画面。
+PROBE_VIDEO_PROMPT = "a yellow rubber duck toy floating and bobbing gently in clear water"
+
+
 def probe_image_channel(channel: ImageChannel, *, deadline: float | None = None) -> int:
     """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
 
@@ -237,7 +254,7 @@ def probe_image_channel(channel: ImageChannel, *, deadline: float | None = None)
             channel,
             client=build_probe_client(channel),
             deadline=deadline,
-            prompt="a small red circle on a white background",
+            prompt=PROBE_PROMPT,
             image_urls=[], size="1024x1024", resolution="1K",
         ))
 

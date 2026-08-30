@@ -61,7 +61,7 @@ from .services.agent.builder import (
 )
 from .services.agent.skills import list_skills, resync_skills
 from .services.agent.tools.common import enqueue_on_commit
-from .services.agent.tools.image import probe_image_channel
+from .services.agent.tools.image import PROBE_PROMPT, PROBE_VIDEO_PROMPT, probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
@@ -1259,13 +1259,13 @@ class ChannelWizardProbeView(APIView):
         # 回一句"缺少必填参数", 跟"向导挑错了变量表"看不出关系。
         if kind == ImageProvider.Kind.CUSTOM_VIDEO:
             variables = template_client.video_variables(
-                channel, prompt=d.get("prompt") or "a slow pan across a calm lake at sunrise",
+                channel, prompt=d.get("prompt") or PROBE_VIDEO_PROMPT,
                 image_urls=[], duration=int(d.get("duration") or 5),
                 aspect_ratio=str(d.get("aspect_ratio") or "16:9"),
             )
         else:
             variables = template_client.image_variables(
-                channel, prompt=d.get("prompt") or "a small red circle on a white background",
+                channel, prompt=d.get("prompt") or PROBE_PROMPT,
                 image_urls=[], size=str(d.get("size") or "1024x1024"), n=1, resolution="1K",
             )
         try:
