@@ -1,6 +1,6 @@
 export const wizard = {
   en: {
-  start: "Set up from a curl example",
+  start: "Set up a provider from a curl example",
   title: "New channel from curl",
   step: { paste: "1 / 3 · paste", probe: "2 / 3 · try it", poll: "3 / 3 · polling",
           confirm: "2 / 2 · check", done: "done" },
@@ -52,7 +52,7 @@ export const wizard = {
   create: "Create the channel",
   },
   zh: {
-  start: "从一段 curl 开始配",
+  start: "从一段 curl 开始配置供应商",
   title: "从 curl 新建通道",
   step: { paste: "1 / 3 · 粘贴", probe: "2 / 3 · 试跑", poll: "3 / 3 · 轮询",
           confirm: "2 / 2 · 确认", done: "完成" },
