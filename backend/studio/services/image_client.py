@@ -359,6 +359,15 @@ class ImageClient:
 _D = {f.name: f.default for f in fields(ImageClient)}
 
 
+# 聊天通道能说的协议。**空串排第一 = 默认**, 也就是 OpenAI 兼容那条 —— 绝大多数供应商
+# 都提供它, 九条预设里九条都走这条。
+#
+# 表住在这个叶子模块而不是 agent/builder: 表单要它 (下拉里列哪几项), 而表单那条路不该为
+# 了一张三个字符串的表把 deepagents / langchain 整个 import 进来。builder 那边的分派表
+# 在 import 时对着它断言, 所以两边不可能漂。
+CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
+
+
 @dataclass(frozen=True)
 class ImageChannel:
     """一次生图调用需要的全部供应商参数 —— 「用哪个模型、怎么跟它说话」。
@@ -410,7 +419,7 @@ class ImageChannel:
     # 是 `/chat/completions`, 换回来一个 404, 而那跟"key 不对"看起来一模一样。
     #
     # 只对 chat 通道有意义 (见 KIND_SPECS)。生图那边形状由模板决定, 不需要这个开关。
-    protocol: str = field(default="", metadata={"example": "anthropic"})
+    protocol: str = field(default="", metadata={"choices": CHAT_PROTOCOL_CHOICES})
     # 这个模型**真的收**哪几种比例, 逗号分隔; 空 = 不限制 (默认, 也是绝大多数通道)。
     # 每一项可以写成 `比例=要发的值` —— 有些家只收一张写死的像素表, 而那些像素不是按比例
     # 算出来的 (OpenAI: `3:2` 要发 `1536x1024`)。省略右边 = 原样发比例。见 parse_ratio_map。

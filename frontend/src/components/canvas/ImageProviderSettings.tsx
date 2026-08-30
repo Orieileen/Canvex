@@ -986,6 +986,21 @@ function TunableEditor({
                   <option value="false">false</option>
                 </select>
               )}
+              {f.control === "choice" && (
+                <select
+                  value={shown}
+                  onChange={(e) => set(f.key, e.target.value)}
+                  className={inputCls}
+                >
+                  {/* 空串排第一 = 默认那一项 (见后端的 CHAT_PROTOCOL_CHOICES)。它的
+                      名字要说清楚"不选就是这个", 而不是显示成一个空格。 */}
+                  {(f.choices ?? []).map((c) => (
+                    <option key={c} value={c}>
+                      {t(`imageProviders.choice.${f.key}.${c || "default"}`, c || "—")}
+                    </option>
+                  ))}
+                </select>
+              )}
               {f.control === "number" && (
                 <input
                   type="number"

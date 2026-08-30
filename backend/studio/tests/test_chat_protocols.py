@@ -15,6 +15,8 @@ from django.test import SimpleTestCase
 from langchain_core.tools import tool
 
 from studio.services.agent.builder import CHAT_PROTOCOLS
+from studio.services.image_channels import tunable_schema
+from studio.services.image_client import CHAT_PROTOCOL_CHOICES
 
 
 @tool
@@ -92,3 +94,21 @@ class ChatProtocolTests(SimpleTestCase):
         # 最要紧的一条: 它回的 tool_use 块被读成了一次真正的工具调用。
         self.assertEqual(reply.tool_calls[0]["name"], "paint")
         self.assertEqual(reply.tool_calls[0]["args"], {"what": "一只橘猫"})
+
+
+class ProtocolChoicesTests(SimpleTestCase):
+    """下拉里能选的 = 分派表认得的。两边漂了的表现是"下拉里选得中的值, 一聊天就抛"。"""
+
+    def test_choices_match_dispatch_table(self):
+        self.assertEqual(set(CHAT_PROTOCOL_CHOICES), set(CHAT_PROTOCOLS))
+
+    def test_blank_is_first(self):
+        """空串排第一 = 表单里的默认项。挪到后面去的话, 新建的聊天通道会默认选中
+        `openai` 那一项 —— 行为一样, 但存进库的值从"没配这项"变成了一个显式值。"""
+        self.assertEqual(CHAT_PROTOCOL_CHOICES[0], "")
+
+    def test_schema_sends_a_dropdown(self):
+        """表单靠这个才知道渲染 select 而不是文本框。"""
+        row = next(t for t in tunable_schema()["chat"]["tunables"] if t["key"] == "protocol")
+        self.assertEqual(row["control"], "choice")
+        self.assertEqual(row["choices"], list(CHAT_PROTOCOL_CHOICES))

@@ -203,6 +203,14 @@ export const imageProviders = {
       poll: "Only matters if this provider is async — it hands back a task id and you poll for the result. The defaults are usually fine unless you see \"polled N times and it still isn't done\".",
       other: "",
     },
+    /** 下拉选项的人话。**按 `字段.取值` 查** —— 空串那一项的 key 是 `default`。 */
+    choice: {
+      protocol: {
+        default: "OpenAI-compatible (default)",
+        openai: "OpenAI-compatible",
+        anthropic: "Anthropic (/v1/messages)",
+      },
+    },
     field: {
       image_field: "field carrying the source image(s)",
       image_as_single: "send a single string instead of an array when n=1",
@@ -396,6 +404,13 @@ export const imageProviders = {
       timing: "一次请求最多等多久就放弃。生图 60–300 秒都算正常。",
       poll: "只有这家是异步的才用得上 —— 先回一个 task id,再让你去查结果。默认值一般够用,除非报「轮询了 N 次还没完成」。",
       other: "",
+    },
+    choice: {
+      protocol: {
+        default: "OpenAI 兼容(默认)",
+        openai: "OpenAI 兼容",
+        anthropic: "Anthropic(/v1/messages)",
+      },
     },
     field: {
       image_field: "装源图的字段名",

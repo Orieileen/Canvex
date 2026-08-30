@@ -69,6 +69,7 @@ from langgraph.types import Overwrite
 from studio.models import ImageProvider
 from studio.services import channel_health
 from studio.services.image_channels import require_channel
+from studio.services.image_client import CHAT_PROTOCOL_CHOICES
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
@@ -378,6 +379,11 @@ CHAT_PROTOCOLS = {
     "openai": _openai_model,
     "anthropic": _anthropic_model,
 }
+# 表单的下拉列的是 CHAT_PROTOCOL_CHOICES, 这里分派的是 CHAT_PROTOCOLS —— 两边漂了的
+# 表现是"下拉里选得中的值, 一聊天就抛 ValueError"。import 时就炸掉, 别等到用户点。
+assert set(CHAT_PROTOCOLS) == set(CHAT_PROTOCOL_CHOICES), (
+    f"协议表对不上: 能选 {sorted(CHAT_PROTOCOL_CHOICES)}, 认得 {sorted(CHAT_PROTOCOLS)}"
+)
 
 
 @functools.lru_cache(maxsize=4)

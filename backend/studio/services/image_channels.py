@@ -578,9 +578,14 @@ def tunable_schema() -> dict[str, dict]:
             )
             if placeholder is dataclasses.MISSING:
                 placeholder = f.default
+            # 有固定取值的字段发成下拉。自由文本框的失败方式是"保存时看不见、聊天时
+            # 才炸" —— 序列化器只校验类型 (str), 所以 `anthropci` 存得进去, 而错误要等到
+            # 下一轮对话建模型时才抛。下拉里选不出错的东西。
+            choices = f.metadata.get("choices")
             rows.append({
                 "key": name,
-                "control": control,
+                "control": "choice" if choices else control,
+                **({"choices": list(choices)} if choices else {}),
                 # 归哪一组。前端据此分段 + 决定"异步轮询"那组默认折不折叠 ——
                 # 判定只此一处, 前端不再按字段名前缀猜 (`poll_` 开头的都算轮询那种猜法
                 # 会在有人加一个叫 `poll_something_else` 的非轮询字段时静默出错)。
