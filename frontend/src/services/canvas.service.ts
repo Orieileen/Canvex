@@ -397,8 +397,18 @@ export const canvasService = {
       image_model: imageModelId,
     }),
   /** 向导第 1 步:curl → 模板。带 task_id 时解析的是"查询任务"那一段。 */
-  wizardParseCurl: (curl: string, poll?: { task_id: string; base_url: string }) =>
-    request.post<CanvasWizardParsed & { poll?: Record<string, unknown> }>(
+  /** 向导第 1 步:提交生成的那段 curl → 请求模板。 */
+  wizardParseCurl: (curl: string) =>
+    request.post<CanvasWizardParsed>(`${IMAGE_PROVIDERS}wizard/parse/`, { curl }),
+  /** 向导第 3 步:查询任务的那段 curl → 模板的 `poll` 段。
+   *
+   *  跟上面同一个端点、**完全不同的返回形状**(后端按有没有 `task_id` 分支),所以拆成
+   *  两个方法而不是一个可选参数 —— 合成一个的话两边的字段都得是可选的,提交那条路上
+   *  每个字段都要判空,而它们其实一定在。
+   *
+   *  `notes` 是后端**猜**了什么就说什么(地址里哪一段是任务 id),调用方要显示出来。 */
+  wizardParsePollCurl: (curl: string, poll: { task_id: string; base_url: string }) =>
+    request.post<{ poll: Record<string, unknown>; notes: string[] }>(
       `${IMAGE_PROVIDERS}wizard/parse/`, { curl, ...poll },
     ),
   /** 向导第 2 / 4 步:拿**还没保存**的配置真发一次。会产生一次真实的生成消耗。 */

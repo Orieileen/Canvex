@@ -280,38 +280,114 @@ _TASK_PLACEHOLDER_RE = re.compile(
 )
 
 
-def _fill_task_id(url: str, task_id: str) -> str:
-    """把查询地址里"任务 id 那一段"换成 `{{task_id}}`, 换不了就抛。
+# 路径里那些**不可能是 id** 的段。判"最后一段是不是任务 id"时先排掉 ——
+# `/v1/tasks/status` 的最后一段是个动作, 不是 id。
+_NOT_AN_ID = frozenset({
+    "status", "state", "result", "results", "info", "detail", "details",
+    "query", "get", "fetch", "poll", "progress", "output", "outputs", "data",
+    "task", "tasks", "job", "jobs", "record", "records", "request", "requests",
+    "generation", "generations", "image", "images", "video", "videos", "feed",
+    "api", "openai", "v1", "v2", "v3", "v4",
+})
 
-    三条路, 按可信度从高到低:
+# 查询串里"这个参数装的就是任务 id"的参数名。参数名是明说的证据, 比按值的形状猜可靠。
+_ID_PARAM_RE = re.compile(r"^(?:task|job|request|record|query)?[_-]?ids?$", re.I)
+
+
+def _looks_like_id(seg: str) -> bool:
+    """这一段像不像一个**具体的**任务 id。
+
+    存在的理由: 文档给的查询 curl 多半带的是一个**真实的示例 id**
+    (apimart 的 `/v1/tasks/task-unified-1757156493-imcg5zqt`), 而不是 `<task_id>`
+    那种占位符。只认占位符的话, 用户对着文档粘完会被顶回来"认不出任务 id 该放哪儿" ——
+    而他手上并没有第二段 curl 可粘, 只能自己去改地址。
+
+    判据是"不像人手写的词": 纯数字(≥4 位), 或者够长(≥8)且带数字或分隔符。
+    宁可漏(纯字母的短 id)也不要错认 —— 漏了会退回那句报错让用户自己写 `{{task_id}}`,
+    错认建出的是一条永远查不到状态的通道, 而那要等第一次真实生成卡在轮询上才显形。
+    """
+    if seg.lower() in _NOT_AN_ID:
+        return False
+    if seg.isdigit():
+        return len(seg) >= 4
+    return len(seg) >= 8 and (any(c.isdigit() for c in seg) or "-" in seg or "_" in seg)
+
+
+def _fill_task_id(url: str, task_id: str) -> tuple[str, str]:
+    """把查询地址里"任务 id 那一段"换成 `{{task_id}}` → (新地址, 一句说明)。换不了就抛。
+
+    五条路, 按可信度从高到低。说明只在**猜**的那两条上给 —— 猜错了必须让用户看得见,
+    否则表现是建出一条永远查不到状态的通道。
+
       1. 地址里出现了**刚跑出来的那个真实 id** —— 精确定位, 不可能误伤;
       2. 用户已经自己写了 `{{task_id}}` —— 什么都不用做;
-      3. 地址里有一个占位符写法 (`<task_id>` 这类) —— 文档里的示例几乎都是这样。
+      3. 占位写法 `<task_id>` / `{task_id}` / `:task_id` —— 意图明确;
+      4. 查询串里有个叫 `task_id` / `id` 的参数 —— 参数名是明说的证据;
+      5. 最后一段路径长得像个 id —— 文档直接给示例 id 时走这条, **是猜**。
 
-    第 3 条只在**路径和查询串**里找。整条 URL 一起找的话 `https:` 会被 `:xxx` 那条命中,
-    把协议头换掉。
+    第 3 条往后只在**路径和查询串**里找。整条 URL 一起找的话 `https:` 会被 `:xxx`
+    那条命中, 把协议头换掉。
     """
     if task_id and task_id in url:
-        return url.replace(task_id, "{{task_id}}")
+        return url.replace(task_id, "{{task_id}}"), ""
     if "{{task_id}}" in url:
-        return url
+        return url, ""
+
     head, sep, tail = url.partition("://")
     host, slash, rest = (tail.partition("/") if sep else ("", "", url))
-    if slash:
-        replaced, n = _TASK_PLACEHOLDER_RE.subn("{{task_id}}", slash + rest, count=1)
-        if n:
-            return f"{head}{sep}{host}{replaced}"
-    raise CurlParseError(
-        f"这段 curl 的地址里认不出任务 id 该放哪儿。它可以是刚跑出来的那个 id "
-        f"({task_id[:16]}…), 也可以是文档里的占位写法 (<task_id> / {{task_id}} / :task_id), "
-        f"或者直接写 {{{{task_id}}}}。"
+    if not slash:
+        raise _cannot_find_task_id(task_id)
+    path_and_query = slash + rest
+    rebuilt = lambda pq: f"{head}{sep}{host}{pq}"          # noqa: E731
+
+    replaced, n = _TASK_PLACEHOLDER_RE.subn("{{task_id}}", path_and_query, count=1)
+    if n:
+        return rebuilt(replaced), ""
+
+    path, qmark, query = path_and_query.partition("?")
+
+    if query:
+        parts = query.split("&")
+        for i, part in enumerate(parts):
+            name, eq, value = part.partition("=")
+            if eq and value and _ID_PARAM_RE.match(name):
+                parts[i] = f"{name}={{{{task_id}}}}"
+                return rebuilt(path + qmark + "&".join(parts)), (
+                    f"查询参数 `{name}` 认成了任务 id。不对的话在下面的高级 JSON 里改。"
+                )
+
+    segments = path.split("/")
+    for i in range(len(segments) - 1, -1, -1):
+        if not segments[i]:
+            continue
+        if _looks_like_id(segments[i]):
+            guessed = segments[i]
+            segments[i] = "{{task_id}}"
+            return rebuilt("/".join(segments) + qmark + query), (
+                f"地址里的 `{guessed}` 认成了任务 id —— 文档的示例 id, 已经换成占位符。"
+                f"认错了的话在下面的高级 JSON 里改。"
+            )
+        break                    # 只看最后一个非空段, 再往前就是 /tasks//v1 这些
+
+    raise _cannot_find_task_id(task_id)
+
+
+def _cannot_find_task_id(task_id: str) -> CurlParseError:
+    """认不出来时那句话。**要能照做** —— 用户手上只有文档那一段 curl, 没有第二段可试。"""
+    return CurlParseError(
+        f"这段 curl 的地址里认不出任务 id 该放哪儿。最省事的办法: 把地址里那段任务 id "
+        f"直接改成 {{{{task_id}}}}。也可以换成刚跑出来的那个 id ({task_id[:16]}…), "
+        f"或者文档里的占位写法 (<task_id> / :task_id)。"
     )
 
 
-def poll_curl_to_section(text: str, *, task_id: str, base_url: str) -> dict:
-    """查询任务的那段 curl + 刚拿到的真实 task_id → 模板的 `poll` 段。
+def poll_curl_to_section(
+    text: str, *, task_id: str, base_url: str,
+) -> tuple[dict, list[str]]:
+    """查询任务的那段 curl + 刚拿到的真实 task_id → (模板的 `poll` 段, 要说给用户的话)。
 
-    任务 id 在地址里怎么定位见 `_fill_task_id`。
+    任务 id 在地址里怎么定位见 `_fill_task_id` —— 它有两条是**猜**的, 猜了就得说出来,
+    否则一个认错的 id 位置要等到第一次真实生成卡在轮询上才显形。
     """
     parsed_url, headers, _body, _form = _scan_tokens(_tokenize(
         "\n".join(line for line in (text or "").splitlines()
@@ -320,7 +396,7 @@ def poll_curl_to_section(text: str, *, task_id: str, base_url: str) -> dict:
     if not parsed_url:
         raise CurlParseError("没找到查询用的 URL")
 
-    url = _fill_task_id(parsed_url, task_id)
+    url, note = _fill_task_id(parsed_url, task_id)
     if url.startswith(base_url):
         url = "{{base_url}}" + url[len(base_url):]
 
@@ -343,4 +419,4 @@ def poll_curl_to_section(text: str, *, task_id: str, base_url: str) -> dict:
         "done": [],
         "failed": ["failed", "error", "cancelled"],
         "result_path": "",
-    }
+    }, ([note] if note else [])

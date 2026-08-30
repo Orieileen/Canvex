@@ -140,10 +140,13 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
     if (!parsed) return;
     setBusy(true);
     try {
-      const { data } = await canvasService.wizardParseCurl(pollCurl, {
+      const { data } = await canvasService.wizardParsePollCurl(pollCurl, {
         task_id: taskId, base_url: parsed.base_url,
       });
-      setPoll(data.poll ?? null);
+      setPoll(data.poll);
+      // 后端猜了地址里哪一段是任务 id 时会带一句说明 —— **必须显示出来**: 猜错的后果
+      // 是一条永远查不到状态的通道, 而那要等第一次真实生成卡在轮询上才显形。
+      data.notes.forEach((n) => toast.info(n, { duration: 12000 }));
       toast.success(t("wizard.pollParsed"));
     } catch (err) {
       toast.error(extractApiError(err, "解析失败"));

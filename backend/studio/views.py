@@ -1202,9 +1202,12 @@ class ChannelWizardParseView(APIView):
         task_id = str(request.data.get("task_id") or "").strip()
         try:
             if task_id:
-                return Response({"poll": poll_curl_to_section(
+                section, notes = poll_curl_to_section(
                     curl, task_id=task_id, base_url=request.data.get("base_url", ""),
-                )})
+                )
+                # notes = "这一段我是猜的"。猜错的后果 (一条永远查不到状态的通道) 要等
+                # 第一次真实生成才显形, 所以必须当场说出来。
+                return Response({"poll": section, "notes": notes})
             return Response(curl_to_template(curl))
         except CurlParseError as exc:
             raise ValidationError({"curl": [str(exc)]}) from exc
