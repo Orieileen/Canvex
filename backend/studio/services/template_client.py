@@ -40,8 +40,10 @@ from studio.services.image_client import (
     BODY_TRUNC,
     ImageChannel,
     _url_to_data_uri,
+    nearest_ratio,
+    parse_ratios,
+    ratio_to_pixels,
     size_to_ratio,
-    size_to_wh,
 )
 from studio.services.listings_utils import _extract_image_bytes_from_item, resolve_image_bytes
 from studio.services.request_template import TemplateError, extract, placeholders, render
@@ -337,12 +339,22 @@ def image_variables(
     尺寸给四种形式是刻意的 —— 各家要的不一样 (兔子要像素 `1024x1024`, apimart 要比例
     `1:1`, 有的要分开的 width / height), 而模板表达不了换算。所以换算在这边做完, 把现成
     的形式都摆出来让用户挑写哪个。
+
+    **先过一遍 `allowed_ratios`**: 画布上那十个比例是固定的, 而各家各模型收的不一样。
+    没填就是不限制 (原样), 填了就把选中的映射到最近的一个 —— 这条兜底管的是工具栏拦不住
+    的那几种情况: agent 自己挑的尺寸, 以及"换了模型之后旧选择失效"。
+
+    `width` / `height` 用 `ratio_to_pixels` 而不是 `size_to_wh`: 画布**只发比例串**, 而
+    后者对比例串是"解析不了" —— 于是这两个占位符一直渲染成空、键整个消失, 一家要
+    width+height 的供应商配得再对也拿不到尺寸, 且没有任何报错。
     """
-    width, height = size_to_wh(size)
+    picked = nearest_ratio(size, parse_ratios(channel.allowed_ratios))
+    width, height = ratio_to_pixels(picked)
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
         "n": n, "resolution": resolution,
-        "size": size, "aspect_ratio": size_to_ratio(size), "width": width, "height": height,
+        "size": picked, "aspect_ratio": size_to_ratio(picked),
+        "width": width, "height": height,
     }
 
 
@@ -350,10 +362,15 @@ def video_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str],
     duration: int, aspect_ratio: str, session: requests.Session | None = None,
 ) -> dict[str, Any]:
-    """喂给 custom_video 模板的变量表。公共部分见 `_base_variables`。"""
+    """喂给 custom_video 模板的变量表。公共部分见 `_base_variables`。
+
+    比例同样过一遍 `allowed_ratios` —— 视频模型的可用比例往往比生图还窄 (常见只有
+    16:9 / 9:16 / 1:1)。
+    """
+    picked = nearest_ratio(aspect_ratio, parse_ratios(channel.allowed_ratios))
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        "duration": duration, "aspect_ratio": aspect_ratio,
+        "duration": duration, "aspect_ratio": picked,
     }
 
 

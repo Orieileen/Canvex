@@ -89,7 +89,21 @@ def diagnose(error: str, *, template: bool = False) -> str:
     if _any(text, "no channel is available", "channel_not_available", "无可用渠道", "无可用的渠道"):
         return "no_channel"
 
-    # ⑤ 模型名 —— 状态码没有专属的一种, 只能看正文, 所以也排在 4xx/5xx 前面。
+    # ⑤ 比例不支持 —— **排在"模型名"前面**: 这类报文里往往同时出现模型名 (apimart 的原话
+    #    是"unsupported image aspect ratio \"9:21\", gemini-3.1-flash-image-preview
+    #    supported ratios: …"), 先判模型名会把人送去改一个完全正确的模型名。
+    #
+    #    实测出来的: 同一家的不同模型收的比例都不一样 —— apimart 的
+    #    gemini-3.1-flash-image-preview 只收 15 种, 而 gpt-image-2 连 `999:998` 都收。
+    #    所以这不是"选错了", 是"这条通道还没告诉我们它收哪几种"。而报文本身就把答案列出来了。
+    if _any(
+        text,
+        "aspect ratio", "aspect_ratio", "unsupported image size", "invalid size",
+        "比例不支持", "不支持的比例", "尺寸不支持",
+    ):
+        return "ratio"
+
+    # ⑥ 模型名 —— 状态码没有专属的一种, 只能看正文, 所以也排在 4xx/5xx 前面。
     if _any(
         text,
         "model_not_found", "invalid model", "model not found", "unknown model",
@@ -97,11 +111,11 @@ def diagnose(error: str, *, template: bool = False) -> str:
     ):
         return "model"
 
-    # ⑥ 供应商自己挂了。**排在上面两条之后**, 见 ④。
+    # ⑦ 供应商自己挂了。**排在上面几条之后**, 见 ④。
     if status is not None and 500 <= status < 600:
         return "provider_down"
 
-    # ⑦ 端点不存在。内置和模板要改的地方不是一处。
+    # ⑧ 端点不存在。内置和模板要改的地方不是一处。
     if status == 404:
         return "endpoint_template" if template else "endpoint"
 
@@ -109,11 +123,11 @@ def diagnose(error: str, *, template: bool = False) -> str:
     #    读超时都包在 "Max retries exceeded …" 里再抛成 requests 的 ConnectionError,
     #    所以先判"连不上"会把这两种全吃掉, 用户拿到"检查 Base URL"而地址根本没问题。
 
-    # ⑧ TLS —— 网络/代理的事, 不是配置。三兄弟里必须排最前, 理由见上。
+    # ⑨ TLS —— 网络/代理的事, 不是配置。三兄弟里必须排最前, 理由见上。
     if _any(text, "sslerror", "ssl:", "certificate", "tlsv1", "handshake"):
         return "tls"
 
-    # ⑨ 读超时 = 连上了但对方半天不回 → 这才是"把超时调大"。**连接**超时不算: 那是根本
+    # ⑩ 读超时 = 连上了但对方半天不回 → 这才是"把超时调大"。**连接**超时不算: 那是根本
     #    没连上, 调超时只会让人多等几秒再看到同一句话, 该去看地址和端口。
     if _any(text, "readtimeout", "read timed out") or (
         _any(text, "timeout", "timed out")
@@ -121,7 +135,7 @@ def diagnose(error: str, *, template: bool = False) -> str:
     ):
         return "timeout"
 
-    # ⑩ 连不上 (含连接超时)。本机地址单独一条 —— 后端跑在容器里, `localhost` 指的是容器
+    # ⑪ 连不上 (含连接超时)。本机地址单独一条 —— 后端跑在容器里, `localhost` 指的是容器
     #    自己, 这是自部署时踩得最多的一个坑, 值得一句专门的话。
     if _any(
         text,
@@ -132,7 +146,7 @@ def diagnose(error: str, *, template: bool = False) -> str:
         local = _any(text, "localhost", "127.0.0.1", "0.0.0.0", "::1")
         return "unreachable_local" if local else "unreachable"
 
-    # ⑪ 其它 4xx: 说不出是哪个字段, 但能说"答案就在上面那段原文里"。
+    # ⑫ 其它 4xx: 说不出是哪个字段, 但能说"答案就在上面那段原文里"。
     if status is not None and 400 <= status < 500:
         return "bad_request"
 

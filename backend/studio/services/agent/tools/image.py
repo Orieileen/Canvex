@@ -43,11 +43,13 @@ from studio.services.image_channels import (
     resolve_model_id,
 )
 from studio.services.image_client import (
-    size_to_ratio,
     ImageChannel,
     ImageClient,
     build_image_client,
     build_probe_client,
+    nearest_ratio,
+    parse_ratios,
+    size_to_ratio,
 )
 from studio.services import channel_health, template_client
 from studio.services.listings_utils import handle_poll_if_needed
@@ -168,6 +170,10 @@ def _single_generation(
             deadline=deadline,
         )
     client = client or build_image_client(channel)
+    # 先把用户选的比例换成这个模型**真的收**的那一个。没填 allowed_ratios 就是原样,
+    # 所以这一行对绝大多数通道是空操作。放在 size_mode 适配**之前**: 火山那张像素表按
+    # 比例查, 查的该是映射之后的那个。
+    size = nearest_ratio(size, parse_ratios(channel.allowed_ratios))
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发

@@ -329,6 +329,12 @@ export interface CanvasImageModelChoice {
    *  配好了却不出现在工具栏里, 而且不报错。 */
   picker: string;
   sort_order: number;
+  /** 这个模型**真的收**哪几种比例(已经是合并过三层配置之后的结果)。空 = 不限制。
+   *
+   *  工具栏的比例选择器按它裁 —— 选不中的东西就不该出现在列表里,那比"选了再收 400"
+   *  好得多。实测 apimart 的 gemini-3.1-flash-image-preview 只收 15 种并会直接拒掉别的,
+   *  而同一家的 gpt-image-2 连 `999:998` 都收,所以这是 per-model 的事实。 */
+  allowed_ratios: string[];
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

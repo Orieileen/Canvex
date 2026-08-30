@@ -96,3 +96,29 @@ class DiagnoseTests(SimpleTestCase):
             diagnose('ValueError: {"request_id":"404000","size":"512x512","note":"429 things"}'),
             "",
         )
+
+
+class RatioDiagnosisTests(SimpleTestCase):
+    """比例不支持。**必须排在"模型名"前面** —— 这类报文里往往同时出现模型名。"""
+
+    def test_apimart_real_message(self):
+        """实测原话。里面有 `gemini-3.1-flash-image-preview` 这个完全正确的模型名,
+        先判模型名会把人送去改它。"""
+        self.assertEqual(diagnose(
+            'HTTP 400: {"error":{"code":"invalid_request_error","message":'
+            '"unsupported image aspect ratio \\"9:21\\", gemini-3.1-flash-image-preview '
+            'supported ratios: 16:9, 1:1, 21:9, 9:16, auto","type":"invalid_request_error"}}'
+        ), "ratio")
+
+    def test_other_phrasings(self):
+        for text in (
+            "HTTP 400: invalid size for this model",
+            "HTTP 400: 该模型不支持的比例",
+            'HTTP 422: {"detail":"unsupported image size"}',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(diagnose(text), "ratio")
+
+    def test_does_not_swallow_plain_model_errors(self):
+        """没提比例的模型名错误还是 model —— 新规则不能把它抢走。"""
+        self.assertEqual(diagnose('HTTP 404: {"error":{"code":"model_not_found"}}'), "model")

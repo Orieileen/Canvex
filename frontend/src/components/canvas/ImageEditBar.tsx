@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -598,6 +599,27 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   const trimmed = prompt.trim();
   const canApply = !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
 
+  // 这个模型**真的收**哪几种比例 —— 后端下发 (已经合并过三层配置)。空 = 不限制。
+  // 选不中的东西就不该出现在列表里: 实测 apimart 的 gemini-3.1-flash-image-preview 只收
+  // 15 种、别的直接 400, 而同一家的 gpt-image-2 什么都收 —— 这是 per-model 的事实, 所以
+  // 只能问后端, 前端写不出一张表来。
+  //
+  // 交集为空时退回完整列表: 模型收的比例可能一个都不在画布这十个里 (4:5 / 8:1 之类),
+  // 那时给一个空下拉是最糟的结果 —— 宁可让用户选、后端兜底映射到最近的一个。
+  const allowedKey = (imageModel.models.find((m) => m.id === imageModel.value)
+    ?.allowed_ratios ?? []).join(",");
+  const sizes = useMemo(() => {
+    const allowed = allowedKey ? allowedKey.split(",") : [];
+    const hit = IMAGE_EDIT_SIZES.filter((s) => allowed.includes(s.value));
+    return hit.length ? hit : IMAGE_EDIT_SIZES;
+  }, [allowedKey]);
+
+  // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到对应 option 会显示成
+  // 空白, 而用户以为自己选了个东西。
+  useEffect(() => {
+    if (!sizes.some((s) => s.value === size)) setSize(sizes[0].value);
+  }, [sizes, size]);
+
   function submitApply() {
     if (!canApply) return;
     const finalPrompt = composePrompt(selection, trimmed);
@@ -651,7 +673,7 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
         disabled={isSubmitting}
         className={selectClass}
       >
-        {IMAGE_EDIT_SIZES.map((s) => (
+        {sizes.map((s) => (
           <option key={s.value} value={s.value}>
             {s.value === "auto" ? t("edit.sizeAuto") : s.label}
           </option>

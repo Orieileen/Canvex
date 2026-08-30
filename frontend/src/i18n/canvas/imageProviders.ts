@@ -130,6 +130,8 @@ export const imageProviders = {
         "Connected, but the provider never answered. Raise the timeout (60–300s is normal for image generation). If this provider is async — it hands back a task id first — you need polling, not a longer timeout.",
       tls:
         "The TLS handshake failed — usually the network or a proxy, not your config. Try another network, or turn the proxy off.",
+      ratio:
+        "This model doesn't take that aspect ratio — but the message below lists the ones it does. Paste them into \"aspect ratios this model accepts\" and the toolbar will only offer those.",
       no_channel:
         "The aggregator has no route for this request — usually the model name isn't enabled for your account or group, occasionally the size tier isn't supported. Check the model name against their docs first; if it's right, check that model's access in their console. (Some aggregators report this as a 5xx, so don't read it as \"their server is down\".)",
       model:
@@ -161,6 +163,8 @@ export const imageProviders = {
       watermark: "not sent unless set explicitly",
       inline_image: "download source URLs and inline as base64",
       size_mode: "pixel = snap to the provider's legal pixel sizes",
+      allowed_ratios:
+        "comma-separated, e.g. 16:9, 1:1, 4:3, 9:16, auto — blank means no limit. Models differ even within one provider, and the toolbar's ratio picker is trimmed to whatever you put here.",
       timeout: "request timeout (s)",
       poll_enabled: "provider returns a task id to poll",
       poll_url: "poll endpoint, blank = Base URL",
@@ -278,6 +282,8 @@ export const imageProviders = {
         "连上了,但对方一直没回。把「超时」调大(生图 60–300 秒都算正常)。如果这家是异步的(先回一个 task_id),那要配轮询,加超时没用。",
       tls:
         "TLS 握手失败 —— 通常是网络或代理的事,不是配置。换个网络、或者把代理关掉再试。",
+      ratio:
+        "这个模型不收这个比例 —— 但下面那段原文把它收的都列出来了。把它们填到「这个模型收哪几种比例」里,工具栏就只会给这些。",
       no_channel:
         "聚合商说这个请求没有可用渠道 —— 通常是这个模型名在你的账号/分组下没开通,偶尔是这个尺寸档它不支持。先照文档核对模型名;确认没错就去供应商后台看这个模型的权限。(有的聚合商把这种情况报成 5xx,别当成\"人家服务器挂了\"。)",
       model:
@@ -307,6 +313,8 @@ export const imageProviders = {
       watermark: "不显式设置就不下发",
       inline_image: "把源图 URL 下载下来转 base64 内联",
       size_mode: "pixel = 归一到供应商的合法像素尺寸",
+      allowed_ratios:
+        "逗号分隔,如 16:9, 1:1, 4:3, 9:16, auto —— 留空 = 不限制。同一家的不同模型收的比例都不一样;填了之后工具栏的比例选择器只列这些。",
       timeout: "请求超时(秒)",
       poll_enabled: "供应商先返 task id 再轮询",
       poll_url: "轮询端点,留空 = Base URL",

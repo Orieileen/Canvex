@@ -89,6 +89,90 @@ def size_to_ratio(size: str) -> str:
     return f"{w // g}:{h // g}"
 
 
+# 比例串 → 像素时, 长边按这个数凑。1024 是各家生图模型都吃得下的常见档位, 而且
+# 面积跟 1024×1024 同量级 —— 换比例不该顺带换掉出图的精细度。
+_RATIO_LONG_EDGE = 1024
+# 不少模型要求边长是 32 的倍数 (latent 是 8 倍下采样再过几层)。凑整比"精确比例"重要:
+# 1344×768 是 16:9 的近似, 而 1365.33×768 根本发不出去。
+_RATIO_STEP = 32
+
+
+def ratio_to_pixels(size: str) -> tuple[int | None, int | None]:
+    """`W:H` 比例 **或** `WxH` 像素 → 一对具体像素。认不出 / "auto" 时给 (None, None)。
+
+    跟 `size_to_wh` 的区别: 那个只认像素串, 比例串对它是"解析不了"。而画布**只会**发比例
+    串 (见前端的 ImageEditSize: auto / 1:1 / 16:9 …), 于是模板里的 `{{width}}` 和
+    `{{height}}` 一直渲染成空、那两个键整个消失 —— 一家要 width+height 的供应商配得再
+    对也拿不到尺寸, 而且没有任何报错。向导的下拉里还列着这两个占位符。
+
+    `size_to_wh` 不动: `size_to_ratio` 建在它上面, 而"比例串原样返回"正是那条路要的 ——
+    这里若让它解析出像素, gcd 化简会把画布上的 `21:9` 变成 `7:3`, 而供应商认的是前者。
+    """
+    w, h = size_to_wh(size)
+    if w is not None and h is not None:
+        return w, h
+    text = (size or "").strip()
+    if ":" not in text:
+        return None, None
+    left, _, right = text.partition(":")
+    try:
+        rw, rh = float(left), float(right)
+    except ValueError:
+        return None, None
+    if rw <= 0 or rh <= 0:
+        return None, None
+    long_edge = _RATIO_LONG_EDGE
+    if rw >= rh:
+        w, h = long_edge, long_edge * rh / rw
+    else:
+        w, h = long_edge * rw / rh, long_edge
+    snap = lambda v: max(_RATIO_STEP, round(v / _RATIO_STEP) * _RATIO_STEP)  # noqa: E731
+    return snap(w), snap(h)
+
+
+def parse_ratios(raw: str) -> list[str]:
+    """`"16:9, 1:1, auto"` → `["16:9", "1:1", "auto"]`。空串 / 全是分隔符 → 空列表。"""
+    return [part.strip() for part in (raw or "").replace("，", ",").split(",") if part.strip()]
+
+
+def _ratio_value(ratio: str) -> float | None:
+    """`"16:9"` → 1.777…。算不出来 (含 "auto") 返回 None。"""
+    w, h = size_to_wh(ratio)
+    if w is None or h is None:
+        left, _, right = (ratio or "").partition(":")
+        try:
+            w, h = float(left), float(right)
+        except ValueError:
+            return None
+    return w / h if h else None
+
+
+def nearest_ratio(want: str, allowed: list[str]) -> str:
+    """用户选的比例 → 这个模型**真的收**的那一个。
+
+    `allowed` 为空 = 不限制, 原样返回 (绝大多数通道都是这样, 这条路不该有开销)。
+
+    为什么要有: 同一家的不同模型吃的比例都不一样 —— 实测 apimart 的
+    gemini-3.1-flash-image-preview 只收 15 种并会 400 拒掉别的, 而 gpt-image-2 连
+    `999:998` 都收。画布上那十个选项是固定的, 所以"选得中但发不出去"必然发生。
+
+    挑"最近的"用**长宽比的比值**而不是字符串: 21:9 和 2:1 是不同的字符串、几乎一样的画面。
+    比不出来的 (auto, 或者写歪了的) 就退回 allowed 里的第一个 —— 宁可给一张能出的图,
+    也不要一个 400。
+    """
+    if not allowed or want in allowed:
+        return want
+    target = _ratio_value(want)
+    if target is None:                       # "auto" 之类: 优先仍然给 auto, 否则给 1:1
+        for fallback in ("auto", "1:1"):
+            if fallback in allowed:
+                return fallback
+        return allowed[0]
+    scored = [(abs(value / target - 1), r) for r in allowed
+              if (value := _ratio_value(r)) is not None]
+    return min(scored)[1] if scored else allowed[0]
+
+
 def bytes_to_data_uri(content: bytes) -> str:
     """原始图片字节 → data:image/...;base64,...(MIME 按字节头嗅探)。
     本地源图内联下发给 provider 时用 —— 免公网 URL / 隧道。"""
@@ -287,6 +371,16 @@ class ImageChannel:
     # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
     size_mode: str = field(default="", metadata={"example": "pixel"})
+    # 这个模型**真的收**哪几种比例, 逗号分隔; 空 = 不限制 (默认, 也是绝大多数通道)。
+    #
+    # 存在的理由: 画布上那十个比例是固定的, 而各家各模型收的不一样 —— apimart 的
+    # gemini-3.1-flash-image-preview 只收 15 种、别的直接 400, 同一家的 gpt-image-2 却
+    # 什么都收。填了之后两件事: 工具栏的比例选择器只列这些, 后端再把漏网的映射到最近的
+    # 一个 (agent 自己挑的尺寸、以及"换了模型之后旧选择失效"都走这条兜底)。
+    #
+    # **放在旋钮里而不是写一张内置表**: 这是 per-model 的事实, 而 overrides 本来就是
+    # per-model 的 —— 同一条通道下两个模型可以各填各的。内置表则永远追不上新模型。
+    allowed_ratios: str = field(default="", metadata={"example": "16:9, 1:1, 4:3, 9:16, auto"})
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False

@@ -249,6 +249,10 @@ _STARTER_ASYNC_VIDEO = {
 # 模板通道读的是同一组 —— 它们的差别在变量表和结果怎么用, 不在这里。
 _TEMPLATE_TUNABLES = frozenset({
     "timeout", "poll_interval", "poll_max_attempts", "poll_max_interval", "poll_timeout",
+    # 模板通道的请求形状全在模板里, 唯独这一项例外 —— 它不是"怎么发", 而是**这个模型收
+    # 哪几种比例**, 一条关于供应商的事实, 模板里表达不了 (模板只会把 {{aspect_ratio}}
+    # 原样填进去)。填了之后工具栏的比例选择器只列这些, 后端再兜底映射到最近的一个。
+    "allowed_ratios",
 })
 
 
@@ -315,6 +319,8 @@ KIND_SPECS: dict[str, _KindSpec] = {
         tunables=frozenset({
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
+            # 视频模型的可用比例往往比生图还窄 —— 常见只有 16:9 / 9:16 / 1:1。
+            "allowed_ratios",
         }),
         picker="video",
         defaults={
@@ -347,7 +353,7 @@ _CONTROLS: dict[type, str] = {str: "text", int: "number", bool: "bool"}
 _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
-        "watermark", "inline_image", "size_mode",
+        "watermark", "inline_image", "size_mode", "allowed_ratios",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({

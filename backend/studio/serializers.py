@@ -21,8 +21,10 @@ from .services.image_channels import (
     KIND_SPECS,
     POSITIVE_TUNABLES,
     TUNABLE_TYPES,
+    channel_for_model,
     kinds_for_kind,
 )
+from .services.image_client import parse_ratios
 from .services.request_template import TemplateError
 from .services.request_template import validate as validate_template
 
@@ -606,9 +608,20 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_picker(self, obj) -> str:
         return KIND_SPECS[obj.provider.kind].picker
 
+    # 这个模型**真的收**哪几种比例。工具栏的比例选择器按它裁 —— 选不中的东西就不该出现
+    # 在列表里, 那比"选了再报 400"好得多。
+    #
+    # 下发的是**合并之后**的值 (kind 默认 → provider.defaults → model.overrides), 不是
+    # 三层原料: 合并规则住在 channel_for_model, 前端再实现一遍必然分叉, 而分叉的表现是
+    # 界面上列出的比例和后端真的会发的那个对不上。
+    allowed_ratios = serializers.SerializerMethodField()
+
+    def get_allowed_ratios(self, obj) -> list[str]:
+        return parse_ratios(channel_for_model(obj).allowed_ratios)
+
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "picker", "sort_order")
+        fields = ("id", "label", "provider_label", "picker", "sort_order", "allowed_ratios")
 
 
 def _skill_error(code: str, message: str, **params: object) -> serializers.ValidationError:
