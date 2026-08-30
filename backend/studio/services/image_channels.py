@@ -251,6 +251,37 @@ _STARTER_GEMINI_IMAGE = {
     "result_path": "",
 }
 
+# apimart 的 seedance 视频 —— 提交 → 轮询, 跟它的生图是同一套任务系统 (`/v1/tasks/{id}`,
+# `data[0].task_id`, status 是 pending/processing/completed/failed/cancelled)。
+#
+# **`result_path` 故意留空。** 文档只给了图像任务的结果示例
+# (`result.images[0].url[0]`), 视频那半只写着"生成的视频对象数组"没给形状 —— 猜一个
+# `videos[0].url` 还是 `videos[0].url[0]` 都是五五开, 而猜错的表现是"轮到 completed 然后
+# 说取不到结果"。留空 = 跑的时候按值的形状自动认 (见 template_client._result), 两种都吃。
+#
+# `resolution` 写死 720p (文档的默认值): 视频那张变量表里没有 resolution 这一项, 而
+# 画布上也没有对应的选择器。要 480p / 1080p 在卡片的模板编辑器里改这一个词。
+_STARTER_APIMART_VIDEO = {
+    "method": "POST",
+    "url": "{{base_url}}/videos/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}",
+        "size": "{{aspect_ratio}}", "duration": "{{duration}}",
+        "resolution": "720p",
+    },
+    "task_id_path": "data[0].task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["completed"],
+        "failed": ["failed", "cancelled"],
+        "result_path": "",
+    },
+}
+
 # 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
 _STARTER_ASYNC_VIDEO = {
     "method": "POST",
@@ -343,7 +374,10 @@ KIND_SPECS: dict[str, _KindSpec] = {
         template=True,
         variables=_VIDEO_VARS,
         picker="video",
-        starters=(("提交 → 轮询 (通用视频)", _STARTER_ASYNC_VIDEO),),
+        starters=(
+            ("提交 → 轮询 (通用视频)", _STARTER_ASYNC_VIDEO),
+            ("apimart seedance", _STARTER_APIMART_VIDEO),
+        ),
         # 视频要跑几分钟, 一次同步 HTTP 里测不完 —— 跟内置 video 通道同一个理由。
         untestable_reason="视频通道没法一键测: 出片要几分钟, 撑不过一次同步请求。配好之后在画布上真发一条最快。",
     ),
@@ -519,6 +553,17 @@ PRESETS: tuple[_Preset, ...] = (
         base_url="https://generativelanguage.googleapis.com/v1beta",
         model="gemini-3-pro-image-preview",
         request_template=_STARTER_GEMINI_IMAGE,
+    ),
+    # apimart 视频。跟它的生图共用一套任务系统, 所以轮询那半跟 apimart_image 一模一样。
+    # 画布上那三个比例 (16:9 / 9:16 / 1:1) 和三个时长 (5 / 10 / 15 秒) 都在 seedance 2.5
+    # 的支持范围内 (比例还支持 4:3 / 3:4 / 21:9 / adaptive, 时长 4~30), 所以不用配
+    # allowed_ratios —— 没有一个选得中却发不出去的。
+    _Preset(
+        key="apimart_video",
+        kind=ImageProvider.Kind.CUSTOM_VIDEO,
+        base_url="https://api.apimart.ai/v1",
+        model="seedance-2.5",
+        request_template=_STARTER_APIMART_VIDEO,
     ),
     # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
     # 这是所有人第一次配它都会填错的一处 (填 fal.ai 得到一个 404)。预设的价值正在这儿。

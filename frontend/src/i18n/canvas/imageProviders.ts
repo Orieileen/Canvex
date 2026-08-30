@@ -73,6 +73,11 @@ export const imageProviders = {
         hint: "Gemini native generateContent — not the OpenAI-compatible layer",
         channel: "Gemini images",
       },
+      apimart_video: {
+        label: "apimart",
+        hint: "api.apimart.ai — seedance-2.5, 720p, async",
+        channel: "apimart video",
+      },
       fal_angle: {
         label: "fal.ai",
         hint: "fal.ai — powers the Change angle panel",
@@ -280,6 +285,11 @@ export const imageProviders = {
         label: "Google 官方",
         hint: "Gemini 原生 generateContent —— 不走 OpenAI 兼容层",
         channel: "Gemini 生图",
+      },
+      apimart_video: {
+        label: "apimart",
+        hint: "api.apimart.ai —— seedance-2.5,720p,异步",
+        channel: "apimart 视频",
       },
       fal_angle: {
         label: "fal.ai",
