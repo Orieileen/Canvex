@@ -24,11 +24,11 @@ export const imageProviders = {
     presets: {
       tuzi_chat: {
         label: "Quick setup: LLM Agent Chat provider",
-        hint: "Agent provider: api.tu-zi.com — powers the chat box and the agent",
+        hint: "api.tu-zi.com — powers the chat box and the agent",
       },
       apimart_image: {
-        label: "Generate images with apimart",
-        hint: "gpt-image-2 via api.apimart.ai — async, already wired up",
+        label: "Quick setup: image generation provider",
+        hint: "api.apimart.ai — async; the request shape is already wired up",
       },
     },
     empty: "No channels yet. Paste a provider's example curl above, or add one by hand. The chat box needs a Chat channel before the agent will run.",
@@ -180,11 +180,11 @@ export const imageProviders = {
     presets: {
       tuzi_chat: {
         label: "快捷配置:llm Agent Chat 供应商",
-        hint: "Agent 供应商:api.tu-zi.com —— 聊天框和 agent 都走它",
+        hint: "api.tu-zi.com —— 聊天框和 agent 都走它",
       },
       apimart_image: {
-        label: "用 apimart 生图",
-        hint: "api.apimart.ai 的 gpt-image-2 —— 异步,请求形状已经配好",
+        label: "快捷配置:生图供应商",
+        hint: "api.apimart.ai —— 异步通道,请求形状已经配好",
       },
     },
     empty: "还没有配置任何通道。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。聊天框要能用,得先加一条「聊天模型」通道。",
