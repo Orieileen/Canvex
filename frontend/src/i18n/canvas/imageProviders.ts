@@ -22,6 +22,7 @@ export const imageProviders = {
     /** 一键预设。**按 preset.key 查** —— 后端加一条预设,这里补两行翻译即可;
      *  漏了只是标签难看(退回显示 key),不是按钮消失。 */
     presetsTitle: "Quick setup",
+    presetDetail: "More settings",
     /** 分组标题。分组由后端下发的 `role` 决定 (见 image_channels.presets_payload),
      *  这里只管怎么念。 */
     presetRole: {
@@ -239,6 +240,7 @@ export const imageProviders = {
     title: "通道配置",
     subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
     presetsTitle: "快捷配置",
+    presetDetail: "细配",
     presetRole: {
       chat: "llm Agent Chat 供应商",
       image: "生图供应商",

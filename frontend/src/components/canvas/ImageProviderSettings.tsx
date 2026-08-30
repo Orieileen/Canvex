@@ -277,6 +277,49 @@ export function ImageProviderSettings({
     return [...seen.entries()];
   }, [presets]);
 
+  /** 预设 → 一份通道草稿。两条路共用: 「只填 key 直接存」和「展开细配」。 */
+  const presetSeed = useCallback(
+    (preset: CanvasChannelPreset): Partial<CanvasImageProvider> => ({
+      kind: preset.kind as CanvasImageProvider["kind"],
+      // 通道名用 `channel` 而不是 `label`: label 是芯片上那几个字 (供应商名), 拿它当
+      // 通道名, 列表里会出现一条叫「OpenAI 官方」的通道 —— 看不出它是聊天还是生图。
+      label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
+      base_url: preset.base_url,
+      defaults: preset.defaults as Values,
+      request_template: preset.request_template,
+      // 一条预设可能带好几十个模型 (apimart 那两条)。label 用模型字符串本身 —— 工具栏
+      // 显示的是「通道名 · 模型名」, 而模型名正是用户在供应商文档里看到的那个词。
+      models: preset.models.map((m, i) => ({
+        id: newLocalId(), label: m, model: m,
+        overrides: {}, enabled: true, sort_order: i,
+      })),
+    }),
+    [t],
+  );
+
+  /** 点了预设之后要填 key 的那一条。**不直接展开一张卡片**: apimart 那两条各带三四十个
+   *  模型, 卡片高 3700px, 「保存」在 key 输入框下面三千多像素 —— 用户得滚过全部模型行
+   *  才存得下去。而预设的全部意义就是"只填一把 key"。 */
+  const [pendingPreset, setPendingPreset] = useState<CanvasChannelPreset | null>(null);
+  const [pendingKey, setPendingKey] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+
+  const savePreset = async () => {
+    if (!pendingPreset || !pendingKey.trim() || savingPreset) return;
+    setSavingPreset(true);
+    try {
+      const draft = {
+        ...emptyProvider(), ...presetSeed(pendingPreset), api_key: pendingKey.trim(),
+      };
+      await canvasService.createImageProvider(providerPayload(draft));
+      toast.success(t("imageProviders.saved"));
+      setPendingPreset(null); setPendingKey("");
+      await reload();
+    } catch (err) {
+      toast.error(extractApiError(err, "save failed"));
+    } finally { setSavingPreset(false); }
+  };
+
   const patchDraft = (id: string, patch: Partial<CanvasImageProvider>) =>
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
 
@@ -394,28 +437,60 @@ export function ImageProviderSettings({
                     {items.map((preset) => (
                       <PresetChip
                         key={preset.key} preset={preset}
-                        onPick={() => addDraft({
-                          kind: preset.kind as CanvasImageProvider["kind"],
-                          // 通道名用 `channel` 而不是 `label`: label 是芯片上那几个字
-                          // (供应商名), 拿它当通道名, 列表里会出现一条叫「OpenAI 官方」
-                          // 的通道 —— 看不出它是聊天还是生图。
-                          label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
-                          base_url: preset.base_url,
-                          defaults: preset.defaults as Values,
-                          request_template: preset.request_template,
-                          // 一条预设可能带好几十个模型 (apimart 视频)。label 用模型
-                          // 字符串本身 —— 工具栏显示的是「通道名 · 模型名」, 而模型名
-                          // 正是用户在供应商文档里看到的那个词。
-                          models: preset.models.map((m, i) => ({
-                            id: newLocalId(), label: m, model: m,
-                            overrides: {}, enabled: true, sort_order: i,
-                          })),
-                        })}
+                        onPick={() => { setPendingPreset(preset); setPendingKey(""); }}
                       />
                     ))}
                   </div>
                 </div>
               ))}
+
+              {/* 点了某条预设 → 就地问一把 key, 存完就出现在下面的列表里。
+                  「细配」是给要先改点什么的人留的后门 —— 它走原来那条路 (展开一张完整
+                  卡片), 只是不再是唯一的路。 */}
+              {pendingPreset && (
+                <form
+                  className="mt-2 rounded-md border border-foreground/20 bg-foreground/[0.03] p-2.5"
+                  onSubmit={(e) => { e.preventDefault(); void savePreset(); }}
+                >
+                  <div className="mb-1.5 text-[11px] text-muted-foreground">
+                    {t(`imageProviders.presets.${pendingPreset.key}.hint`, pendingPreset.base_url)}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={pendingKey}
+                      onChange={(e) => setPendingKey(e.target.value)}
+                      placeholder="sk-…"
+                      autoFocus
+                      className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-foreground/30"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!pendingKey.trim() || savingPreset}
+                      className="flex shrink-0 items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
+                    >
+                      {savingPreset && <Loader2 className="size-3.5 animate-spin" />}
+                      {t("imageProviders.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addDraft(presetSeed(pendingPreset));
+                        setPendingPreset(null); setPendingKey("");
+                      }}
+                      className="shrink-0 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {t("imageProviders.presetDetail")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setPendingPreset(null); setPendingKey(""); }}
+                      className="shrink-0 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {t("sidebar.cancel")}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           )}
 
