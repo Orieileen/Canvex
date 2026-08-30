@@ -367,7 +367,10 @@ export function ImageProviderSettings({
                   key={preset.key} preset={preset}
                   onPick={() => addDraft({
                     kind: preset.kind as CanvasImageProvider["kind"],
-                    label: t(`imageProviders.presets.${preset.key}.label`, preset.key),
+                    // 通道名用 `channel` 而不是 `label`: label 是按钮上那句话
+                    // (「快捷配置:…」), 拿它当通道名, 列表里会出现一条叫
+                    // 「快捷配置:视角重渲染供应商」的通道。
+                    label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
                     base_url: preset.base_url,
                     defaults: preset.defaults as Values,
                     request_template: preset.request_template,

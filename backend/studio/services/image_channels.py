@@ -429,6 +429,19 @@ PRESETS: tuple[_Preset, ...] = (
         model="gpt-image-2",
         request_template=_STARTER_ASYNC_IMAGE,
     ),
+    # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
+    # 这是所有人第一次配它都会填错的一处 (填 fal.ai 得到一个 404)。预设的价值正在这儿。
+    #
+    # 模型名带 `fal-ai/` 前缀是刻意的: fal 把模型名拼进 URL 路径 (见 angle 通道的
+    # base_url_example —— 它只填域名), 所以这一整串就是路径的后半截。
+    _Preset(
+        key="fal_angle",
+        kind=ImageProvider.Kind.ANGLE,
+        base_url="https://fal.run",
+        model="fal-ai/qwen-image-edit-2511-multiple-angles",
+        # 换视角比一次普通生图慢, 180 秒是实测跑下来够用的数。
+        defaults={"timeout": 180},
+    ),
 )
 
 

@@ -25,10 +25,19 @@ export const imageProviders = {
       tuzi_chat: {
         label: "Quick setup: LLM Agent Chat provider",
         hint: "api.tu-zi.com — powers the chat box and the agent",
+        /** 建出来的那条通道叫什么。**不能拿 label 当名字** —— 那是按钮上的话
+         *  (「Quick setup: …」), 而通道名是列表里那一行, 要短、要一眼认出是哪一家。 */
+        channel: "tu-zi chat",
       },
       apimart_image: {
         label: "Quick setup: image generation provider",
         hint: "api.apimart.ai — async; the request shape is already wired up",
+        channel: "apimart images",
+      },
+      fal_angle: {
+        label: "Quick setup: re-angle provider",
+        hint: "fal.ai — powers the Change angle panel",
+        channel: "fal.ai re-angle",
       },
     },
     empty: "No channels yet. Paste a provider's example curl above, or add one by hand. The chat box needs a Chat channel before the agent will run.",
@@ -181,10 +190,17 @@ export const imageProviders = {
       tuzi_chat: {
         label: "快捷配置:llm Agent Chat 供应商",
         hint: "api.tu-zi.com —— 聊天框和 agent 都走它",
+        channel: "tu-zi 聊天",
       },
       apimart_image: {
         label: "快捷配置:生图供应商",
         hint: "api.apimart.ai —— 异步通道,请求形状已经配好",
+        channel: "apimart 生图",
+      },
+      fal_angle: {
+        label: "快捷配置:视角重渲染供应商",
+        hint: "fal.ai —— 「换视角」面板走它",
+        channel: "fal.ai 视角重渲染",
       },
     },
     empty: "还没有配置任何通道。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。聊天框要能用,得先加一条「聊天模型」通道。",
