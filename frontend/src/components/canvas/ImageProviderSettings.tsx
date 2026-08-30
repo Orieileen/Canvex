@@ -403,10 +403,13 @@ export function ImageProviderSettings({
                           base_url: preset.base_url,
                           defaults: preset.defaults as Values,
                           request_template: preset.request_template,
-                          models: [{
-                            id: newLocalId(), label: preset.model, model: preset.model,
-                            overrides: {}, enabled: true, sort_order: 0,
-                          }],
+                          // 一条预设可能带好几十个模型 (apimart 视频)。label 用模型
+                          // 字符串本身 —— 工具栏显示的是「通道名 · 模型名」, 而模型名
+                          // 正是用户在供应商文档里看到的那个词。
+                          models: preset.models.map((m, i) => ({
+                            id: newLocalId(), label: m, model: m,
+                            overrides: {}, enabled: true, sort_order: i,
+                          })),
                         })}
                       />
                     ))}

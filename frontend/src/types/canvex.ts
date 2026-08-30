@@ -377,7 +377,10 @@ export interface CanvasChannelPreset {
    *  分组的话,哪天加一条内置 image 的预设就会自己单开一组。 */
   role: string;
   base_url: string;
-  model: string;
+  /** 这条预设建出来的通道底下挂哪几个模型。**第一个是默认**(工具栏的选择器落在列表
+   *  第一项)。绝大多数只有一个;apimart 视频那条有四十一个 —— 同一家的所有视频模型
+   *  共用一个端点和一套请求形状,差别只在这个字符串。 */
+  models: string[];
   defaults: Record<string, unknown>;
   request_template: Record<string, unknown>;
 }

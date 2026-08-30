@@ -74,7 +74,14 @@ def _is_empty(value: Any) -> bool:
 
     `0` 和 `False` **不算空**: 它们是正经的取值 (n=0 没意义, 但 watermark=false 是这个
     项目里真正踩过的坑 —— 火山默认打水印, 必须显式下发 false, 当成空丢掉就等于没配)。
+
+    **空列表 / 空字典算空**, 跟空串同一个道理: `{{images}}` 在文生图 / 文生视频时渲染成
+    `[]`, 而 `"image_urls": []` 和"没有这个键"对供应商是两句不同的话 —— 有些家会据此
+    判定任务类型 (apimart 的 seedance 就按"有没有参考素材"分文生 / 参考生 / 编辑)。
+    空集合不携带任何信息, 却可能改变对方的行为, 所以按"没填"处理。
     """
+    if isinstance(value, (list, tuple, dict)):
+        return not value
     return value is None or (isinstance(value, str) and not value.strip())
 
 

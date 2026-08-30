@@ -259,16 +259,25 @@ _STARTER_GEMINI_IMAGE = {
 # `videos[0].url` 还是 `videos[0].url[0]` 都是五五开, 而猜错的表现是"轮到 completed 然后
 # 说取不到结果"。留空 = 跑的时候按值的形状自动认 (见 template_client._result), 两种都吃。
 #
-# `resolution` 写死 720p (文档的默认值): 视频那张变量表里没有 resolution 这一项, 而
-# 画布上也没有对应的选择器。要 480p / 1080p 在卡片的模板编辑器里改这一个词。
+# 请求体只留**四十个模型共有的那四个键**。实测 seedance / veo3 / kling / sora / MiniMax
+# 五家文档给的 curl 都是这个形状, 差别只在 model 字符串。
+#
+# `aspect_ratio` 而不是 `size`: seedance 的文档写 `size`, 但注明"也接受字段名
+# aspect_ratio", 而别家只认后者 —— 取交集。
+#
+# **不写 `resolution`**: 各家的取值根本对不上 (seedance 只收 480p/720p/1080p,
+# MiniMax 要 2K, veo3 支持 4k), 写死一个会把别家打成 400。不传时各家用自己的默认。
+#
+# `image_urls` 让图生视频也能用: 画布上选中一张图再生成时它才有值, 文生视频时渲染成
+# 空数组 → 那个键整个消失 (见 request_template 的空值规则)。
 _STARTER_APIMART_VIDEO = {
     "method": "POST",
     "url": "{{base_url}}/videos/generations",
     "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
     "body": {
         "model": "{{model}}", "prompt": "{{prompt}}",
-        "size": "{{aspect_ratio}}", "duration": "{{duration}}",
-        "resolution": "720p",
+        "aspect_ratio": "{{aspect_ratio}}", "duration": "{{duration}}",
+        "image_urls": "{{images}}",
     },
     "task_id_path": "data[0].task_id",
     "poll": {
@@ -472,7 +481,11 @@ class _Preset:
     key: str
     kind: str
     base_url: str
-    model: str
+    # 这条预设建出来的通道底下挂哪几个模型。**第一个是默认**(工具栏的选择器落在列表
+    # 第一项)。绝大多数预设只有一个; apimart 视频那条有四十个 —— 同一家的所有视频模型
+    # 共用一个端点和一套请求形状, 差别只在这个字符串, 所以它们该是一条通道下的几十行,
+    # 而不是几十条通道。
+    models: tuple[str, ...]
     # 只写跟 kind 默认值不同的那几项 —— 跟 _KindSpec.defaults 同一个规矩。
     defaults: dict[str, object] = dataclasses.field(default_factory=dict)
     request_template: dict = dataclasses.field(default_factory=dict)
@@ -484,7 +497,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="tuzi_chat",
         kind=ImageProvider.Kind.CHAT,
         base_url="https://api.tu-zi.com/v1",
-        model="gpt-5",
+        models=("gpt-5",),
     ),
     # 生图。**走模板通道而不是内置那条**: apimart 是异步的、尺寸只吃比例、结果藏在
     # `data.result.images[0].url[0]`, 用内置那十四个旋钮拼不出来 —— 这个项目最早那条
@@ -493,7 +506,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="apimart_image",
         kind=ImageProvider.Kind.CUSTOM_IMAGE,
         base_url="https://api.apimart.ai/v1",
-        model="gpt-image-2",
+        models=("gpt-image-2",),
         request_template=_STARTER_ASYNC_IMAGE,
     ),
     # 官方直连的两家 agent 供应商, 作为 tu-zi 之外的选择。
@@ -505,7 +518,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="openai_chat",
         kind=ImageProvider.Kind.CHAT,
         base_url="https://api.openai.com/v1",
-        model="gpt-5",
+        models=("gpt-5",),
     ),
     # Google 走的是它的 **OpenAI 兼容层** (`/v1beta/openai`), 不是原生的 generateContent
     # —— agent 那条路是 langchain 的 ChatOpenAI, 只会说 OpenAI 协议。路径写到 `openai`
@@ -514,7 +527,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="google_chat",
         kind=ImageProvider.Kind.CHAT,
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        model="gemini-3-pro",
+        models=("gemini-3-pro",),
     ),
     # 国内两家按量付费的 agent 供应商, 都提供 OpenAI 兼容端点。加进来的理由只有一个:
     # **便宜**。形状上跟 OpenAI 那条没有任何区别, 所以这里只是两行表。
@@ -525,13 +538,13 @@ PRESETS: tuple[_Preset, ...] = (
         key="deepseek_chat",
         kind=ImageProvider.Kind.CHAT,
         base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
+        models=("deepseek-chat",),
     ),
     _Preset(
         key="zhipu_chat",
         kind=ImageProvider.Kind.CHAT,
         base_url="https://open.bigmodel.cn/api/paas/v4",
-        model="glm-4.6",
+        models=("glm-4.6",),
     ),
     # OpenAI 官方生图。**allowed_ratios 带右边那一半是必需的** —— gpt-image-1 只认
     # `1024x1024` / `1536x1024` / `1024x1536` / `auto` 这四个具体值, 而 3:2 按长边 1024
@@ -540,7 +553,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="openai_image",
         kind=ImageProvider.Kind.CUSTOM_IMAGE,
         base_url="https://api.openai.com/v1",
-        model="gpt-image-1",
+        models=("gpt-image-1",),
         defaults={"allowed_ratios": "1:1=1024x1024, 3:2=1536x1024, 2:3=1024x1536, auto=auto"},
         request_template=_STARTER_OPENAI_OFFICIAL,
     ),
@@ -551,7 +564,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="google_image",
         kind=ImageProvider.Kind.CUSTOM_IMAGE,
         base_url="https://generativelanguage.googleapis.com/v1beta",
-        model="gemini-3-pro-image-preview",
+        models=("gemini-3-pro-image-preview",),
         request_template=_STARTER_GEMINI_IMAGE,
     ),
     # apimart 视频。跟它的生图共用一套任务系统, 所以轮询那半跟 apimart_image 一模一样。
@@ -562,7 +575,23 @@ PRESETS: tuple[_Preset, ...] = (
         key="apimart_video",
         kind=ImageProvider.Kind.CUSTOM_VIDEO,
         base_url="https://api.apimart.ai/v1",
-        model="seedance-2.5",
+        # 文档 /videos/*/generation 各页主推的模型, 逐个对着这家的 /v1/models 核过。
+        # **不含**那些走独立端点的操作 (veo3 remix、kling motion-control、
+        # MiniMax regeneration / context-ir、wan r2v / videoedit、各家 official 渠道),
+        # 也不含混在同一份目录里的图像模型和 LLM。
+        # 第一个是默认 —— 工具栏的选择器落在列表第一项, 所以把最新那个放最前。
+        models=(
+        "seedance-2.5", "seedance-1-0-pro-fast", "seedance-1-0-pro-quality", "seedance-1-5-pro",
+        "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.0-face",
+        "seedance-2.0-fast-face", "sora-2", "sora-2-pro", "veo3.1-fast",
+        "veo3.1-quality", "veo3.1-lite", "MiniMax-Hailuo-02", "MiniMax-Hailuo-2.3",
+        "MiniMax-Hailuo-2.3-Fast", "MiniMax-H3", "kling-v2-6", "kling-v3", "kling-3.0-turbo",
+        "kling-v3-omni", "kling-video-o1", "wan2.5-preview", "wan2.6", "wan2.6-i2v-flash",
+        "wan2.7", "wan3.0-video", "viduq3", "viduq3-pro", "viduq3-turbo", "viduq3-mix",
+        "flux-3-video", "skyreels-v4-std", "skyreels-v4-fast", "happyhorse-1.0",
+        "happyhorse-1.1", "pixverse-v6", "grok-imagine-video-1.5", "Omni-Flash-Ext",
+        "gemini-omni-flash-preview",
+        ),
         request_template=_STARTER_APIMART_VIDEO,
     ),
     # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
@@ -574,7 +603,7 @@ PRESETS: tuple[_Preset, ...] = (
         key="fal_angle",
         kind=ImageProvider.Kind.ANGLE,
         base_url="https://fal.run",
-        model="fal-ai/qwen-image-edit-2511-multiple-angles",
+        models=("fal-ai/qwen-image-edit-2511-multiple-angles",),
         # 换视角比一次普通生图慢, 180 秒是实测跑下来够用的数。
         defaults={"timeout": 180},
     ),
