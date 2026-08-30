@@ -23,7 +23,7 @@ export const imageProviders = {
      *  漏了只是标签难看(退回显示 key),不是按钮消失。 */
     presets: {
       tuzi_chat: {
-        label: "Chat with tu-zi",
+        label: "Quick setup: LLM Agent Chat provider",
         hint: "Agent provider: api.tu-zi.com — powers the chat box and the agent",
       },
       apimart_image: {
@@ -179,7 +179,7 @@ export const imageProviders = {
     subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
     presets: {
       tuzi_chat: {
-        label: "用兔子聊天",
+        label: "快捷配置:llm Agent Chat 供应商",
         hint: "Agent 供应商:api.tu-zi.com —— 聊天框和 agent 都走它",
       },
       apimart_image: {
