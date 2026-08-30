@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Loader2,
   Plus,
+  Sparkles,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -33,6 +34,7 @@ import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
 import type {
+  CanvasChannelPreset,
   CanvasImageModel,
   CanvasImageProvider,
   CanvasImageProviderKind,
@@ -253,12 +255,15 @@ export function ImageProviderSettings({
     if (Object.keys(tunables).length === 0) {
       canvasService
         .getImageProviderSchema()
-        .then(({ data }) => setTunables(data.tunables))
+        .then(({ data }) => { setTunables(data.tunables); setPresets(data.presets ?? []); })
         .catch(() => setTunables({}));
     }
     // tunables 刻意不进依赖: 它只在还没拿到时拉一次, 进依赖会在 setTunables 后再触发一轮。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, reload]);
+
+  /** 一键预设。后端下发 (见 image_channels.PRESETS) —— 前端不写死任何一家供应商。 */
+  const [presets, setPresets] = useState<CanvasChannelPreset[]>([]);
 
   const patchDraft = (id: string, patch: Partial<CanvasImageProvider>) =>
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -350,6 +355,32 @@ export function ImageProviderSettings({
         </SheetHeader>
 
         <div className="flex flex-col gap-3 p-4">
+          {/* 三档, 从"完全不用想"到"什么都能接":
+                预设   —— 只填一把 key。这两条是项目里真跑通过的组合。
+                向导   —— 别家供应商, 粘一段 curl, 零 JSON。
+                手动   —— 什么都自己填 (下面那个「新建通道」)。
+              预设排最前面: 新用户的第一个问题不是"我想怎么配", 是"我怎么开始"。 */}
+          {presets.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {presets.map((preset) => (
+                <PresetButton
+                  key={preset.key} preset={preset}
+                  onPick={() => addDraft({
+                    kind: preset.kind as CanvasImageProvider["kind"],
+                    label: t(`imageProviders.presets.${preset.key}.label`, preset.key),
+                    base_url: preset.base_url,
+                    defaults: preset.defaults as Values,
+                    request_template: preset.request_template,
+                    models: [{
+                      id: newLocalId(), label: preset.model, model: preset.model,
+                      overrides: {}, enabled: true, sort_order: 0,
+                    }],
+                  })}
+                />
+              ))}
+            </div>
+          )}
+
           {/* 建通道只有这一个入口。这里原来还并排放着一个「从 curl 示例导入」—— 同样
               写着"粘一段 curl", 但它是把 curl 猜成内置通道那十四个旋钮、而且从不验证,
               粘完人就落在十四个输入框里。两个入口只是让人选错, 删了。 */}
@@ -423,6 +454,33 @@ export function ImageProviderSettings({
         </AlertDialogContent>
       </AlertDialog>
     </Sheet>
+  );
+}
+
+/** 一键预设按钮。点一下 = 一张填好 base_url / 模型 / 请求形状的草稿, 只剩 key 要填。
+ *
+ *  **它不是"内置供应商"**: 存进库之后就是一条普通通道, 跟手配出来的没有区别, 随便改
+ *  随便删。所以这里也不该有任何一家供应商的特殊逻辑 —— 名字、说明、去哪儿拿 key 全是
+ *  按 `preset.key` 查的翻译, 查不到就退回显示 key 本身。 */
+function PresetButton({ preset, onPick }: { preset: CanvasChannelPreset; onPick: () => void }) {
+  const { t } = useTranslation("canvasUi");
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className="group flex items-center gap-2.5 rounded-md border border-border px-3 py-2.5 text-left transition-colors hover:border-foreground/30 hover:bg-foreground/5"
+    >
+      <Sparkles className="size-4 shrink-0 text-muted-foreground group-hover:text-foreground" strokeWidth={2} />
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-medium">
+          {t(`imageProviders.presets.${preset.key}.label`, preset.key)}
+        </span>
+        <span className="block truncate text-[11px] text-muted-foreground">
+          {t(`imageProviders.presets.${preset.key}.hint`, preset.base_url)}
+        </span>
+      </span>
+      <Plus className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+    </button>
   );
 }
 

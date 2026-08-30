@@ -348,6 +348,19 @@ export interface CanvasImageProviderTestResult {
  *  `mapping` 是给界面渲染成"这个键 = 提示词 / 尺寸 / 固定值"那张表的 —— 占位符是**猜**
  *  的(按键名 + 值的形状),所以必须让用户能逐行改。`var` 为空 = 认不出来,原样当固定值
  *  发给供应商,那通常正是对的。 */
+/** 一键预设:一张预先填好 base_url / 模型 / 请求形状的通道草稿,用户只剩 key 要填。
+ *  由后端下发(image_channels.PRESETS)—— **前端不写死任何一家供应商**。
+ *
+ *  存进库之后就是一条普通通道,跟手配出来的没有区别。名字和说明按 `key` 查翻译。 */
+export interface CanvasChannelPreset {
+  key: string;
+  kind: string;
+  base_url: string;
+  model: string;
+  defaults: Record<string, unknown>;
+  request_template: Record<string, unknown>;
+}
+
 export interface CanvasWizardMapping {
   /** 在请求体里的位置,如 `body.size` / `input.image_urls[0]`。 */
   path: string;

@@ -76,6 +76,7 @@ from .services.request_template import TemplateError
 from .services.template_client import TemplateRequestError
 from .services.image_channels import (
     KIND_SPECS,
+    presets_payload,
     UNTESTABLE_FALLBACK,
     channel_for_model,
     tunable_schema,
@@ -1184,7 +1185,9 @@ class ImageProviderSchemaView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        return Response({"tunables": tunable_schema()})
+        # presets 跟 tunables 同一个端点: 前端**同时**要这两样才能画出面板 (顶上的一键
+        # 预设按钮 + 下面每张卡片的表单), 分两个端点只是多一次往返和一次加载态。
+        return Response({"tunables": tunable_schema(), "presets": presets_payload()})
 
 
 class ChannelWizardParseView(APIView):

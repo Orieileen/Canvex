@@ -19,6 +19,18 @@ export const imageProviders = {
     title: "Channels",
     subtitle:
       "Endpoint, key and request shape for every channel — image, angle, video and the chat model. Configured here, not in the backend env.",
+    /** 一键预设。**按 preset.key 查** —— 后端加一条预设,这里补两行翻译即可;
+     *  漏了只是标签难看(退回显示 key),不是按钮消失。 */
+    presets: {
+      tuzi_chat: {
+        label: "Chat with tu-zi",
+        hint: "gpt-5 via api.tu-zi.com — powers the chat box and the agent",
+      },
+      apimart_image: {
+        label: "Generate images with apimart",
+        hint: "gpt-image-2 via api.apimart.ai — async, already wired up",
+      },
+    },
     empty: "No channels yet. Paste a provider's example curl above, or add one by hand. The chat box needs a Chat channel before the agent will run.",
     add: "Add channel",
     addModel: "Add model",
@@ -161,6 +173,16 @@ export const imageProviders = {
   zh: {
     title: "通道配置",
     subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
+    presets: {
+      tuzi_chat: {
+        label: "用兔子聊天",
+        hint: "api.tu-zi.com 的 gpt-5 —— 聊天框和 agent 都走它",
+      },
+      apimart_image: {
+        label: "用 apimart 生图",
+        hint: "api.apimart.ai 的 gpt-image-2 —— 异步,请求形状已经配好",
+      },
+    },
     empty: "还没有配置任何通道。可以在上方粘一段供应商文档里的示例 curl,或手动新建一个。聊天框要能用,得先加一条「聊天模型」通道。",
     add: "新建通道",
     addModel: "添加模型",

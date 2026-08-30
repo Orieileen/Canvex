@@ -379,6 +379,62 @@ _GROUP_ORDER[_FALLBACK_GROUP] = len(_TUNABLE_GROUPS)
 UNTESTABLE_FALLBACK = "这种通道还没有测试探针 —— 直接在对应的面板里跑一次即可。"
 
 
+# ─────────────────────────── 一键预设 ───────────────────────────
+#
+# **不是"内置供应商"** —— 加一条预设不会让代码认识这家的任何特殊之处, 它只是把
+# "base_url + 模型名 + 请求形状"这三样预先填好, 用户只剩一把 key 要填。存进库之后就是
+# 一条**普通通道**, 跟手配出来的一模一样, 随便改随便删。
+#
+# 为什么值得有: 新用户面对的第一个问题不是"我想怎么配", 而是"我怎么开始"。而这两条是
+# 这个项目里**唯二被真实跑通过**的组合 —— 有它们, 从零到画布上出图只差一把 key。
+#
+# 加一条新预设 = 在下面的元组里加一行。**不要**为此在别处写任何分支。
+
+
+@dataclasses.dataclass(frozen=True)
+class _Preset:
+    """一条能直接下发给前端的通道草稿。"""
+
+    # 稳定标识。前端拿它查翻译 (名字 / 一句说明 / 去哪儿拿 key), 所以改名字不用动这里。
+    key: str
+    kind: str
+    base_url: str
+    model: str
+    # 只写跟 kind 默认值不同的那几项 —— 跟 _KindSpec.defaults 同一个规矩。
+    defaults: dict[str, object] = dataclasses.field(default_factory=dict)
+    request_template: dict = dataclasses.field(default_factory=dict)
+
+
+PRESETS: tuple[_Preset, ...] = (
+    # 聊天(= agent)。tu-zi 的 gpt-5 是这个项目一直在用的那条。
+    _Preset(
+        key="tuzi_chat",
+        kind=ImageProvider.Kind.CHAT,
+        base_url="https://api.tu-zi.com/v1",
+        model="gpt-5",
+    ),
+    # 生图。**走模板通道而不是内置那条**: apimart 是异步的、尺寸只吃比例、结果藏在
+    # `data.result.images[0].url[0]`, 用内置那十四个旋钮拼不出来 —— 这个项目最早那条
+    # 「主通道」就是这么坏掉的。模板这条是真跑通过的形状。
+    _Preset(
+        key="apimart_image",
+        kind=ImageProvider.Kind.CUSTOM_IMAGE,
+        base_url="https://api.apimart.ai/v1",
+        model="gpt-image-2",
+        request_template=_STARTER_ASYNC_IMAGE,
+    ),
+)
+
+
+def presets_payload() -> list[dict]:
+    """预设表 → 前端能直接变成一张草稿卡片的形状。
+
+    跟 `tunable_schema()` 一样**只下发结构, 不下发文案**: 名字和说明是翻译, 前端按
+    `key` 查, 查不到就退回显示 key —— 漏一条翻译只是标签难看, 而不是按钮消失。
+    """
+    return [dataclasses.asdict(preset) for preset in PRESETS]
+
+
 def tunable_schema() -> dict[str, dict]:
     """前端配置表单的**全部按 kind 分的规则** —— 从 KIND_SPECS + ImageChannel 派生。
 

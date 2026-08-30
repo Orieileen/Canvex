@@ -22,6 +22,7 @@ import type {
   CanvasSkillWrite,
   CanvasWizardParsed,
   CanvasWizardProbe,
+  CanvasChannelPreset,
   CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
@@ -419,9 +420,13 @@ export const canvasService = {
     request_template: Record<string, unknown>;
     poll?: Record<string, unknown>; task_id?: string;
   }) => request.post<CanvasWizardProbe>(`${IMAGE_PROVIDERS}wizard/probe/`, body),
-  /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
+  /** 画配置面板要的两样:字段表(后端从 ImageChannel 的字段声明派生)和一键预设。
+   *  同一个端点是因为**两样都拿到才画得出面板**,分开只是多一次往返和一次加载态。 */
   getImageProviderSchema: () =>
-    request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),
+    request.get<{
+      tunables: Record<string, CanvasKindSpec>;
+      presets?: CanvasChannelPreset[];
+    }>(`${IMAGE_PROVIDERS}schema/`),
   /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
   /** 工具栏选择器的列表 —— 不含凭据。 */
   listImageModels: () => request.get<CanvasImageModelChoice[]>(IMAGE_MODELS),
