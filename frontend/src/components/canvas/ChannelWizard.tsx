@@ -25,7 +25,7 @@ import type {
  * curl 长得一模一样, 差别只在回包。所以第 2 步必须真发一次。
  */
 
-type Step = "paste" | "probe" | "poll" | "done";
+type Step = "paste" | "probe" | "poll" | "confirm" | "done";
 
 interface ChannelWizardProps {
   /** 建好了 —— 把预填好的通道草稿交给面板, 由它插进列表等用户点保存。 */
@@ -46,9 +46,13 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
   const [busy, setBusy] = useState(false);
   /** 建哪种通道。默认生图 —— 绝大多数人是为它来的。 */
   const [kind, setKind] = useState("custom_image");
-  /** 向导能建的 = 模板类通道。**由后端下发的 spec.template 决定, 不按 kind 名字判** ——
-   *  加第三种模板通道时这一行自动跟上 (面板里那几处判定用的也是同一条规则)。 */
-  const templateKinds = Object.keys(specs).filter((k) => specs[k]?.template);
+  /** 向导能建的 = 所有还能新建的通道。**由后端下发的 creatable 决定, 不按 kind 名字判**
+   *  —— 老的 image / video 是 false, 加新通道类型时这一行自动跟上。 */
+  const templateKinds = Object.keys(specs).filter((k) => specs[k]?.creatable);
+  /** 这种通道要不要请求模板。**不要的那几种 (聊天 / 换视角) 走一条短得多的路**:
+   *  它们除了 base_url + key + 模型名什么都不填, 而这三样一段 curl 里全都有 ——
+   *  没有"哪个键对应哪个占位符"要映射, 也没有"结果在回包哪个位置"要跑一次问出来。 */
+  const needsTemplate = specs[kind]?.template ?? true;
   /** 这种 kind 的占位符表, 去掉向导自己会填的那几个。见 AUTO_VARS。 */
   const varChoices = (specs[kind]?.variables ?? []).filter((v) => !AUTO_VARS.has(v));
 
@@ -101,7 +105,9 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
       setMapping(data.mapping);
       setApiKey(data.api_key ?? "");
       data.notes.forEach((n) => toast.info(n, { duration: 8000 }));
-      setStep("probe");
+      // 不需要模板的通道 (聊天 / 换视角) 到此为止 —— 后面那两步 (映射、试跑) 问的都是
+      // 模板的事。它们要的三样已经在手上了, 剩下的只是让用户确认一眼。
+      setStep(needsTemplate ? "probe" : "confirm");
     } catch (err) {
       toast.error(extractApiError(err, "解析失败"));
     } finally { setBusy(false); }
@@ -201,7 +207,9 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
       label: channelName(parsed.base_url, t(`wizard.nameFor.${kind}`, "")),
       base_url: parsed.base_url,
       api_key: apiKey,
-      request_template: parsed.template,
+      // 不需要模板的通道存一个空对象。存着那份解析出来的模板不会有人读, 但会让卡片上
+      // 冒出一个模板编辑器 (表单按 spec.template 分流), 看起来像配错了。
+      request_template: needsTemplate ? parsed.template : {},
       models: parsed.model
         ? [{ id: `new-${Date.now()}`, label: parsed.model, model: parsed.model,
              overrides: {}, enabled: true, sort_order: 0 }]
@@ -339,6 +347,27 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
               />
             </>
           )}
+        </>
+      )}
+
+      {/* 聊天 / 换视角走的那条短路: 没有模板要拼, 只把 curl 里拆出来的三样摆出来确认。
+          key 单独给一个输入框 —— 文档里的示例几乎都是 `<token>` 那种占位符, 拆不出真的。 */}
+      {step === "confirm" && parsed && (
+        <>
+          <Row label="Base URL">{parsed.base_url}</Row>
+          <Row label={t("wizard.model")}>{parsed.model || "—"}</Row>
+          <label className="mt-2 block text-[11px] text-muted-foreground">API key</label>
+          <input
+            value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-foreground/30"
+          />
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            {t(`wizard.confirmHint.${kind}`, { defaultValue: t("wizard.confirmHint.chat") })}
+          </p>
+          <WizardButtons
+            busy={busy} disabled={!apiKey.trim()} onRun={finish}
+            runLabel={t("wizard.create")} onCancel={() => setStep("paste")}
+          />
         </>
       )}
 

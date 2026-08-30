@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  Plus,
   Sparkles,
   Trash2,
   Zap,
@@ -129,7 +128,9 @@ const relTime = (iso: string, lang: string) => {
 const emptyProvider = (): CanvasImageProvider => ({
   id: "",
   label: "",
-  kind: "image",
+  // 手动新建 = 建一条**自定义模板**通道。老的 image / video 两种不再能新建 (schema 里
+  // creatable=false) —— 它们是模板通道出现之前的形状, 而 custom_* 能表达的严格更多。
+  kind: "custom_image",
   request_template: {},
   base_url: "",
   api_key: "",
@@ -365,11 +366,19 @@ export function ImageProviderSettings({
         </SheetHeader>
 
         <div className="flex flex-col gap-3 p-4">
-          {/* 三档, 从"完全不用想"到"什么都能接":
-                预设   —— 只填一把 key。这两条是项目里真跑通过的组合。
-                向导   —— 别家供应商, 粘一段 curl, 零 JSON。
-                手动   —— 什么都自己填 (下面那个「新建通道」)。
-              预设排最前面: 新用户的第一个问题不是"我想怎么配", 是"我怎么开始"。 */}
+          {/* 两档:
+                预设 —— 认识的那几家, 点一下只填 key。
+                向导 —— 别家, 粘一段 curl。**四种还能新建的通道它都能建**: 要模板的
+                        (custom_image / custom_video) 走完整流程, 不要模板的
+                        (chat / angle) 走一条两步的短路。
+              预设排最前面: 新用户的第一个问题不是"我想怎么配", 是"我怎么开始"。
+
+              这里原来还有第三档「新建通道」—— 一张空白卡片, 什么都自己填。删掉的理由:
+              上面两档合起来已经没有它够不着的东西了。聊天和换视角除了 base_url + key +
+              模型名什么都不配, 而那三样一段 curl 里全都有; 老的 image / video 两种确实
+              只有它能建, 但那两种已经标成不可新建 (creatable=false) —— custom_* 能表达
+              的严格更多, 最后一处差距 (火山那种写死的像素表) 在 allowed_ratios 支持
+              `比例=要发的值` 之后也没了。 */}
           {presetRoles.length > 0 && (
             <div className="rounded-md border border-border p-2.5">
               <div className="mb-2 text-[11px] font-medium text-muted-foreground">
@@ -439,14 +448,6 @@ export function ImageProviderSettings({
             />
           ))}
 
-          <button
-            type="button"
-            onClick={() => addDraft()}
-            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
-          >
-            <Plus className="size-4" strokeWidth={2} />
-            {t("imageProviders.add")}
-          </button>
         </div>
       </SheetContent>
 
@@ -700,9 +701,13 @@ function ProviderCard({
                 onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
                 className={inputCls}
               >
-                {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
-                    多一项 (只需补一条 i18n 文案)。 */}
-                {kinds.map((k) => (
+                {/* kind 列表 = schema payload 的键, 但**只列还能新建的** (后端的
+                    creatable, 见 image_channels._KindSpec)。加通道类型时后端加一行,
+                    这里自动多一项 (只需补一条 i18n 文案)。
+
+                    库里存量的 image / video 不会因此被困住: 这个下拉只在 isNew 时渲染,
+                    存过的通道压根没有它 —— 类型由头部那个徽标显示, 而那一处不筛。 */}
+                {kinds.filter((k) => tunables[k]?.creatable).map((k) => (
                   <option key={k} value={k}>{kindLabel(t, k)}</option>
                 ))}
               </select>

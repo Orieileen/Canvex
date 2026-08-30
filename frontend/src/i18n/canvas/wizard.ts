@@ -2,13 +2,21 @@ export const wizard = {
   en: {
   start: "Set up from a curl example",
   title: "New channel from curl",
-  step: { paste: "1 / 3 · paste", probe: "2 / 3 · try it", poll: "3 / 3 · polling", done: "done" },
+  step: { paste: "1 / 3 · paste", probe: "2 / 3 · try it", poll: "3 / 3 · polling",
+          confirm: "2 / 2 · check", done: "done" },
   /** 建哪种通道的短标签。**只在向导的选择行上用** —— 卡片上的徽标是完整名字
    *  (imageProviders.kindCustom_image), 那里放得下, 这里放不下。 */
-  kindShort: { custom_image: "Image", custom_video: "Video" },
+  kindShort: { custom_image: "Image", custom_video: "Video", chat: "Chat", angle: "Angle" },
+  /** 聊天 / 换视角那条短路上的一句话 —— 说清楚"为什么只问这三样就够了"。 */
+  confirmHint: {
+    chat: "A chat channel only needs these three — the request shape is fixed, so there is no template to fill in. It must be a key that supports OpenAI-style tool calling.",
+    angle: "The Angle channel only needs these three — the request body is the camera coordinates from the cube, not something you configure.",
+  },
   /** 默认名字里那个词: 「apimart images」。见 ChannelWizard 的 channelName。 */
-  nameFor: { custom_image: "images", custom_video: "video" },
+  nameFor: { custom_image: "images", custom_video: "video", chat: "chat", angle: "angle" },
   pasteHint: {
+    chat: "Paste any chat-completions curl for this provider — we only take the endpoint, the key and the model name out of it.",
+    angle: "Paste any curl for this provider — we only take the endpoint, the key and the model name out of it.",
     custom_image:
       "Paste the image-generation curl from your provider's docs. We turn it into the request; the response half we work out by actually running it.",
     custom_video:
@@ -46,10 +54,17 @@ export const wizard = {
   zh: {
   start: "从一段 curl 开始配",
   title: "从 curl 新建通道",
-  step: { paste: "1 / 3 · 粘贴", probe: "2 / 3 · 试跑", poll: "3 / 3 · 轮询", done: "完成" },
-  kindShort: { custom_image: "图片", custom_video: "视频" },
-  nameFor: { custom_image: "生图", custom_video: "视频" },
+  step: { paste: "1 / 3 · 粘贴", probe: "2 / 3 · 试跑", poll: "3 / 3 · 轮询",
+          confirm: "2 / 2 · 确认", done: "完成" },
+  kindShort: { custom_image: "图片", custom_video: "视频", chat: "聊天", angle: "换视角" },
+  confirmHint: {
+    chat: "聊天通道只要这三样 —— 请求形状是固定的,没有模板要填。这把 key 必须支持 OpenAI 那套工具调用。",
+    angle: "换视角通道只要这三样 —— 请求体是方块上的相机坐标,不是要你配的东西。",
+  },
+  nameFor: { custom_image: "生图", custom_video: "视频", chat: "聊天", angle: "换视角" },
   pasteHint: {
+    chat: "把这家任意一段 chat 的 curl 粘进来 —— 我们只从里面取端点、key 和模型名三样。",
+    angle: "把这家任意一段 curl 粘进来 —— 我们只从里面取端点、key 和模型名三样。",
     custom_image:
       "把供应商文档里那段生图的 curl 粘进来。请求那一半从它来;响应那一半靠真跑一次问出来。",
     custom_video:

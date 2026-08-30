@@ -276,6 +276,12 @@ export interface CanvasImageProvider {
  *  请求发出去之前就拦下来, 后端改了等于没改。 */
 export interface CanvasKindSpec {
   tunables: CanvasTunableSpec[];
+  /** 还能不能**新建**这种通道。false = 已有的照常编辑照常用,只是建不出新的。
+   *
+   *  给 image / video 用 —— 模板通道出现之前的老形状(十六个 / 七个旋钮),而
+   *  custom_image / custom_video 能表达的严格更多。不是删掉那两种 kind:库里可能还存着,
+   *  而"存在但打不开"比多一个选项糟得多。 */
+  creatable: boolean;
   /** false = 这种通道的 base_url 可以留空 (chat 留空 = OpenAI 官方端点)。 */
   requires_base_url: boolean;
   base_url_example: string;

@@ -98,6 +98,17 @@ class _KindSpec:
     # testable=False 时告诉用户该怎么验。空 = 用通用兜底文案。
     untestable_reason: str = ""
 
+    # 还能不能**新建**这种通道。False = 已经有的照常能编辑能用, 只是界面上建不出新的。
+    #
+    # 给 image / video 用: 它们是模板通道出现之前的形状 (十六个 / 七个旋钮), 而
+    # custom_image / custom_video 能表达的严格更多 —— 最后一处差距 (火山那种「比例 → 写死
+    # 的像素表」, 以前只有 size_mode=pixel 那段硬编码能做) 在 allowed_ratios 支持
+    # `比例=要发的值` 之后也没了。
+    #
+    # **不是删掉那两种 kind**: 库里可能还存着 (比如从 .env 迁移来的), 而"存在但打不开"
+    # 比多一个选项糟得多。
+    creatable: bool = True
+
     # 工具栏上的哪个选择器列这种通道。`image` / `angle` / `video`, 空 = 不进任何选择器
     # (chat 是全局一条, 没有工具栏入口)。
     #
@@ -275,7 +286,9 @@ _TEMPLATE_TUNABLES = frozenset({
 
 
 KIND_SPECS: dict[str, _KindSpec] = {
-    ImageProvider.Kind.IMAGE: _KindSpec(tunables=_TUNABLE_FIELDS, testable=True, picker="image"),
+    ImageProvider.Kind.IMAGE: _KindSpec(
+        tunables=_TUNABLE_FIELDS, testable=True, picker="image", creatable=False,
+    ),
     ImageProvider.Kind.ANGLE: _KindSpec(
         tunables=frozenset({"timeout"}),
         base_url_example="https://fal.run",
@@ -335,6 +348,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         untestable_reason="视频通道没法一键测: 出片要几分钟, 撑不过一次同步请求。配好之后在画布上真发一条最快。",
     ),
     ImageProvider.Kind.VIDEO: _KindSpec(
+        creatable=False,
         tunables=frozenset({
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
@@ -602,6 +616,7 @@ def tunable_schema() -> dict[str, dict]:
         rows.sort(key=lambda r: _GROUP_ORDER[r["group"]])
         out[str(kind)] = {
             "tunables": rows,
+            "creatable": spec.creatable,
             "requires_base_url": spec.requires_base_url,
             "base_url_example": spec.base_url_example,
             "testable": spec.testable,
