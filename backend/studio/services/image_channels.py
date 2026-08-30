@@ -378,7 +378,16 @@ KIND_SPECS: dict[str, _KindSpec] = {
         # 会稳定报"轮询了 9 次还没完成"。退避到 180 秒之后总墙钟才跟内置那条对得上。
         defaults={
             "timeout": 60, "poll_interval": 20,
-            "poll_max_attempts": 9, "poll_max_interval": 180,
+            # 20 次 × 退避 (20→40→80→160→180…) ≈ 50 分钟。
+            #
+            # **实测定的数**: apimart 的 seedance-2.0-fast 出一条 5 秒视频用了 301 秒 /
+            # 5 轮 —— 而那是这一家最快的档。同门的 seedance-2.5 能出 30 秒 1080p, 慢上
+            # 三五倍很正常, 原来那 9 次 (≈17 分钟) 会在它跑完之前就宣布"轮询完了还没结果",
+            # 而那条视频**已经扣过费了**。
+            #
+            # 给得宽的道理跟 poll_max_attempts 那条一样: 这不是超时, 一轮只是一个便宜的
+            # GET; 真正兜底的是单轮的 poll_timeout 和同步调用方的 deadline。
+            "poll_max_attempts": 20, "poll_max_interval": 180,
         },
         template=True,
         variables=_VIDEO_VARS,
