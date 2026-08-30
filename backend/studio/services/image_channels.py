@@ -562,6 +562,26 @@ class _Preset:
     request_template: dict = dataclasses.field(default_factory=dict)
 
 
+# 这几个模型**只会文生图** —— 传 `image_urls` 必失败。所以它们不在 apimart 生图预设里。
+#
+# 为什么是"删掉"而不是"加个旋钮筛一下": 画布的「图像」标签**必须先选中一张图**才能用
+# (后端 `image` 是必填字段), 所以这三个从工具栏根本没有能用的路径。留在列表里的唯一
+# 效果是让人选中它、然后吃一个报错。
+#
+# 三种报错还各不相同, 其中一种完全看不出跟"不吃源图"有关系:
+#   imagen-4.0-apimart    文档: 「仅支持文生图,不支持图生图 / 参考图」
+#                         传了 → google_imagen4 currently supports text-to-image only
+#   grok-imagine-2.0-ext  文档: 「仅文生图」, 参考图 → 400 invalid_image_input
+#   z-image-turbo         文档参数表里根本没有 image_urls。传了 → 上游(通义 DashScope)
+#                         回 `Field 'text' is required in content item.` —— 这句话跟真实
+#                         原因隔着两层翻译, 谁都猜不到。实测复现过: 同一个请求体去掉
+#                         image_urls 就成功出图。
+#
+# **别再加回来**: test_presets 里有一条会红。真要支持它们, 得先给 ImageChannel 加一个
+# "收不收源图"的旋钮, 让「图像」标签在有选中图时把这类模型筛掉 —— 那是另一件事。
+_TEXT_ONLY_IMAGE_MODELS = ("imagen-4.0-apimart", "grok-imagine-2.0-ext", "z-image-turbo")
+
+
 # 每个生图模型**文档写明**收哪几种比例。逐页抄的 (docs.apimart.ai 的
 # /cn/api-reference/images/<族>/generation, 每族一页, 下面按族分段)。
 #
@@ -573,8 +593,10 @@ class _Preset:
 #   gpt-image-2、seedream-4-5 / 4-0、flux-2-max / -pro / -flex、flux-kontext-max / -pro
 #
 # **`auto` 要单独盯**: 画布的默认档就是 auto (跟源图比例)。收不了它的模型必须写清楚,
-# 否则选择器会摆一个"默认就选中、一发就 400"的选项 —— grok-imagine-2.0-ext 正是这样
-# (实测原话 `unsupported \`size\` for grok-imagine-2.0-ext: auto`)。
+# 否则选择器会摆一个"默认就选中、一发就 400"的选项。qwen 四个、wan2.7 两个、
+# grok-imagine-1.5-apimart 都收不了 auto。(实测过一条原话, 来自已经因为只能文生图而被
+# 移出名单的 grok-imagine-2.0-ext: `unsupported \`size\` for grok-imagine-2.0-ext: auto`
+# —— 这类模型是真的会 400, 不是静默回退。)
 _APIMART_IMAGE_RATIOS: dict[str, str] = {
     # ── /images/gpt-image-1 ── 文档只列 1:1 / 3:2 / 2:3, **没提 auto**。
     # auto 是实测补的: 这家不校验 size, 直接把它透传给 OpenAI, 而上游的报错原文把支持的
@@ -590,9 +612,6 @@ _APIMART_IMAGE_RATIOS: dict[str, str] = {
     "gemini-3.1-flash-lite-image-ext": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
     "gemini-3-pro-image-preview": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
     "gemini-2.5-flash-image-preview": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
-    # ── /images/imagen-4.0-apimart ── 只有五档, 而且**列表外的会被静默回退成 16:9**
-    # (文档原话, 不报错)。这一条不填的代价就是"选了 21:9, 出来是 16:9, 没有任何提示"。
-    "imagen-4.0-apimart": "1:1, 4:3, 3:4, 16:9, 9:16",
     # ── /images/seedream-5-0-pro ── 文档原话「列表外的宽高比(如 9:21)直接返回 400,
     # **不会静默回退成 1:1**」。
     "seedream-5-0-pro": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
@@ -603,13 +622,9 @@ _APIMART_IMAGE_RATIOS: dict[str, str] = {
     "qwen-image-3.0-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
     "qwen-image-2.0": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
     "qwen-image-2.0-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
-    # ── /images/z-image-turbo ── 跟 qwen 同一组七档
-    "z-image-turbo": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
     # ── /images/wan2.7-image ── 同样七档 (另有 1K/2K/4K 档位关键字, 那是画质不是比例)
     "wan2.7-image": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
     "wan2.7-image-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
-    # ── /images/grok-imagine-2.0-ext ── 白名单七档, **auto 会 400** (文档点名, 实测确认)
-    "grok-imagine-2.0-ext": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
     # ── /images/grok-imagine 正文 ── 只有五档, 没有 4:3 / 3:4
     "grok-imagine-1.5-apimart": "1:1, 3:2, 2:3, 16:9, 9:16",
     # ── /images/grok-imagine 的「官方模型」章节 ── **这两个把比例放在 `aspect_ratio`
@@ -784,15 +799,17 @@ PRESETS: tuple[_Preset, ...] = (
         #
         # **不含** midjourney (它自己一套 API 和任务系统, `/images/midjourney/*`),
         # 也不含各家的 `-official` 渠道 (走独立端点页)。
+        #
+        # **也不含只会文生图的那三个** —— 见 _TEXT_ONLY_IMAGE_MODELS。
         # 第一个是默认 —— gpt-image-2 是这条预设一直验着的那个。
         models=(
             "gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gemini-3.1-flash-image-preview",
             "gemini-3.1-flash-lite-image", "gemini-3.1-flash-lite-image-ext",
             "gemini-3-pro-image-preview", "gemini-2.5-flash-image-preview",
-            "imagen-4.0-apimart", "seedream-5-0-pro", "seedream-5-0-lite", "seedream-4-5",
+            "seedream-5-0-pro", "seedream-5-0-lite", "seedream-4-5",
             "seedream-4-0", "flux-2-max", "flux-2-pro", "flux-2-flex", "flux-kontext-max",
             "flux-kontext-pro", "qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.0-pro",
-            "qwen-image-2.0", "z-image-turbo", "grok-imagine-2.0-ext",
+            "qwen-image-2.0",
             "grok-imagine-image-2.0", "grok-imagine-image-quality", "grok-imagine-image",
             "grok-imagine-1.5-apimart", "grok-imagine-1.5-edit-apimart",
             "grok-imagine-1.0-apimart", "grok-imagine-1.0-edit-apimart", "wan2.7-image-pro",

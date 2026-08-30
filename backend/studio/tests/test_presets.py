@@ -12,6 +12,7 @@ from django.test import SimpleTestCase
 
 from studio.services.image_channels import (
     _APIMART_IMAGE_RATIOS,
+    _TEXT_ONLY_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
@@ -165,13 +166,24 @@ class ApimartImagePresetTests(SimpleTestCase):
             with self.subTest(model=model):
                 self.assertNotIn(model, _APIMART_IMAGE_RATIOS)
 
+    def test_text_only_models_stay_out_of_the_preset(self):
+        """只会文生图的模型不进这条预设 —— 画布的「图像」标签必须先选中一张图, 所以它们
+        从工具栏根本没有能用的路径, 留着只会让人选中再吃一个报错 (其中 z-image-turbo 那句
+        `Field 'text' is required in content item.` 跟真实原因隔着两层翻译)。
+
+        真要支持它们, 先给 ImageChannel 加一个"收不收源图"的旋钮再说 —— 别直接加回名单。"""
+        for model in _TEXT_ONLY_IMAGE_MODELS:
+            with self.subTest(model=model):
+                self.assertNotIn(model, self.preset.models)
+                self.assertNotIn(model, _APIMART_IMAGE_RATIOS)
+
     def test_auto_is_excluded_where_the_provider_rejects_it(self):
         """画布的默认档就是 auto。收不了它的模型必须排除, 否则选择器摆着一个默认选中、
         一发就 400 的选项 (grok-imagine-2.0-ext 实测原话: unsupported `size` … auto)。"""
         from studio.services.image_client import parse_ratios
 
-        for model in ("grok-imagine-2.0-ext", "qwen-image-3.0", "z-image-turbo",
-                      "wan2.7-image", "imagen-4.0-apimart", "grok-imagine-1.5-apimart"):
+        for model in ("qwen-image-3.0", "qwen-image-3.0-pro", "qwen-image-2.0",
+                      "wan2.7-image", "wan2.7-image-pro", "grok-imagine-1.5-apimart"):
             with self.subTest(model=model):
                 self.assertNotIn("auto", parse_ratios(_APIMART_IMAGE_RATIOS[model]))
 
@@ -190,12 +202,12 @@ class ApimartImagePresetTests(SimpleTestCase):
 
     def test_unsupported_pick_snaps_to_nearest(self):
         """选择器已经筛过一遍, 这条兜底管 agent 自己挑的尺寸和"换模型之后旧选择失效"。
-        imagen 只有五档, 21:9 不在里面 —— 不兜底的话它会被**静默回退成 16:9**, 而那正是
-        我们想让用户看见的那一步。"""
+        qwen-image-3.0 只有七档, 21:9 不在里面 —— 我们把它落到 16:9, 而不是让供应商
+        自己去猜(有的家会静默回退, 有的直接 400)。"""
         from studio.services import template_client
 
         variables = template_client.image_variables(
-            _channel(self.preset, "imagen-4.0-apimart"),
+            _channel(self.preset, "qwen-image-3.0"),
             prompt="p", image_urls=[], size="21:9", n=1,
         )
         self.assertEqual(variables["size"], "16:9")
