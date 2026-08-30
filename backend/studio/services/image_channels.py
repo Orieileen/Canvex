@@ -195,7 +195,9 @@ _STARTER_OPENAI_IMAGE_MULTI = {
     "url": "{{base_url}}/images/generations",
     "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
     "body": {
-        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{aspect_ratio}}",
+        # 见 _STARTER_APIMART_IMAGE 里同一处的注释 —— `{{size}}` 才是"要发进 size 的
+        # 那个值", 写 `{{aspect_ratio}}` 会让 allowed_ratios 的映射那一半静默失效。
+        "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{size}}",
         "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
     },
     "result_path": "data[0]",
@@ -219,6 +221,42 @@ _STARTER_ASYNC_IMAGE = {
     "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
     "body": {
         "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{aspect_ratio}}",
+        "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
+    },
+    "task_id_path": "data[0].task_id",
+    "poll": {
+        "method": "GET",
+        "url": "{{base_url}}/tasks/{{task_id}}",
+        "headers": {"Authorization": "Bearer {{api_key}}"},
+        "status_path": "data.status",
+        "done": ["completed", "succeeded", "success", "done"],
+        "failed": ["failed", "error", "cancelled"],
+        "result_path": "data.result.images[0].url[0]",
+    },
+}
+
+# apimart 生图。形状跟通用异步起点一模一样, 只多一个 `aspect_ratio` 键。
+#
+# **为什么两个键都发**: 这家 33 个生图模型里 31 个把比例放在 `size`, 而 grok 那两个官方
+# 渠道 (grok-imagine-image / -image-quality) 放在 `aspect_ratio` —— 跟视频那边
+# resolution / mode 是同一类分歧 (见 _STARTER_APIMART_VIDEO)。
+#
+# 这次没有再加一个 `ratio_param` 旋钮, 而是两个键填同一个值: 视频那边 resolution 和 mode
+# 的**取值**不同 (720p vs std), 必须二选一; 这里两个键的取值完全一样, 多发一个不会有歧义。
+# 实测这家忽略不认识的键 (给 grok-imagine-2.0-ext 塞一个不存在的键, 它照样只报 size 那个
+# 错), 所以那 31 个模型收到 aspect_ratio 也没有影响。
+_STARTER_APIMART_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/images/generations",
+    "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
+    "body": {
+        "model": "{{model}}", "prompt": "{{prompt}}",
+        # `size` 吃 {{size}} 而不是 {{aspect_ratio}}: 前者是 allowed_ratios 里"=" 右边
+        # 那个**实际要发的值**, 后者永远是比例。两者现在恰好相同 (apimart 直接收比例,
+        # 表里没有一条写了右半边), 但写成后者的话, 哪天给某个模型配上 `16:9=1920x1080`
+        # 会静默地不生效 —— 而那正是 allowed_ratios 那一半存在的理由。
+        # `aspect_ratio` 键则永远给比例: 读它的是 grok 那两个官方渠道, 它们只认比例。
+        "size": "{{size}}", "aspect_ratio": "{{aspect_ratio}}",
         "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
     },
     "task_id_path": "data[0].task_id",
@@ -524,6 +562,69 @@ class _Preset:
     request_template: dict = dataclasses.field(default_factory=dict)
 
 
+# 每个生图模型**文档写明**收哪几种比例。逐页抄的 (docs.apimart.ai 的
+# /cn/api-reference/images/<族>/generation, 每族一页, 下面按族分段)。
+#
+# **只写画布这十个里的**: `allowed_ratios` 是拿去**筛**画布那十档的 (auto / 1:1 / 4:3 /
+# 3:4 / 3:2 / 2:3 / 16:9 / 9:16 / 21:9 / 9:21), 跟时长、画质"照它列"不同。模型支持而画布
+# 没有的 (4:5、5:4、2:1、1:8 …) 写进来也没地方显示。
+#
+# **十档全收的模型直接留空** —— 空 = 不限制, 少一行要维护的数据。留空的是:
+#   gpt-image-2、seedream-4-5 / 4-0、flux-2-max / -pro / -flex、flux-kontext-max / -pro
+#
+# **`auto` 要单独盯**: 画布的默认档就是 auto (跟源图比例)。收不了它的模型必须写清楚,
+# 否则选择器会摆一个"默认就选中、一发就 400"的选项 —— grok-imagine-2.0-ext 正是这样
+# (实测原话 `unsupported \`size\` for grok-imagine-2.0-ext: auto`)。
+_APIMART_IMAGE_RATIOS: dict[str, str] = {
+    # ── /images/gpt-image-1 ── 文档只列 1:1 / 3:2 / 2:3, **没提 auto**。
+    # auto 是实测补的: 这家不校验 size, 直接把它透传给 OpenAI, 而上游的报错原文把支持的
+    # 值全列了出来 —— "Supported sizes are 1024x1024, 1024x1536, 1536x1024, and auto"。
+    # (那次探测 credits_cost 为 0, 没花钱。)
+    "gpt-image-1": "auto, 1:1, 3:2, 2:3",
+    "gpt-image-1.5": "auto, 1:1, 3:2, 2:3",
+    # ── gemini 系 (/images/gemini-3.1-flash 、 -lite 、 gemini-3-pro 、 gemini-2.5-flash)
+    # 四页给的比例集合一样, **都没有 9:21** (有 21:9)。3.1-flash 另有 1:4 / 4:1 / 1:8 /
+    # 8:1, 画布没有这几档, 不用写。
+    "gemini-3.1-flash-image-preview": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    "gemini-3.1-flash-lite-image": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    "gemini-3.1-flash-lite-image-ext": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    "gemini-3-pro-image-preview": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    "gemini-2.5-flash-image-preview": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    # ── /images/imagen-4.0-apimart ── 只有五档, 而且**列表外的会被静默回退成 16:9**
+    # (文档原话, 不报错)。这一条不填的代价就是"选了 21:9, 出来是 16:9, 没有任何提示"。
+    "imagen-4.0-apimart": "1:1, 4:3, 3:4, 16:9, 9:16",
+    # ── /images/seedream-5-0-pro ── 文档原话「列表外的宽高比(如 9:21)直接返回 400,
+    # **不会静默回退成 1:1**」。
+    "seedream-5-0-pro": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    # ── /images/seedream-5-lite ── 文档单独标注「不支持 9:21」
+    "seedream-5-0-lite": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16, 21:9",
+    # ── /images/qwen-image-3.0 、 /images/qwen-image ── 七档, 没有 auto 也没有超宽
+    "qwen-image-3.0": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    "qwen-image-3.0-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    "qwen-image-2.0": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    "qwen-image-2.0-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    # ── /images/z-image-turbo ── 跟 qwen 同一组七档
+    "z-image-turbo": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    # ── /images/wan2.7-image ── 同样七档 (另有 1K/2K/4K 档位关键字, 那是画质不是比例)
+    "wan2.7-image": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    "wan2.7-image-pro": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    # ── /images/grok-imagine-2.0-ext ── 白名单七档, **auto 会 400** (文档点名, 实测确认)
+    "grok-imagine-2.0-ext": "1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    # ── /images/grok-imagine 正文 ── 只有五档, 没有 4:3 / 3:4
+    "grok-imagine-1.5-apimart": "1:1, 3:2, 2:3, 16:9, 9:16",
+    # ── /images/grok-imagine 的「官方模型」章节 ── **这两个把比例放在 `aspect_ratio`
+    # 而不是 `size`**, 见 _STARTER_APIMART_IMAGE。允许值里另有 9:19.5 / 20:9 / 2:1 这些
+    # 画布没有的。
+    "grok-imagine-image": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    "grok-imagine-image-quality": "auto, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16",
+    # ── 没有文档页的, 一律不写 = 不限制 = 跟这个功能之前一样 ──
+    # grok-imagine-image-2.0 / grok-imagine-1.5-edit-apimart /
+    # grok-imagine-1.0-apimart / grok-imagine-1.0-edit-apimart
+    # 这四个在 /v1/models 里都真实存在, 但 docs.apimart.ai 上没有对应的页。**宁可不填**:
+    # 照着邻居猜一份的话, 猜窄了会把能用的比例从选择器里抹掉, 而那种错没有任何症状。
+}
+
+
 # 每个视频模型**文档写明**支持的时长(秒)。逐页抄的, 不是猜的。
 #
 # **只列跟画布那三档 (5/10/15) 不一样的**: 一致的留空 = 不限制, 少一行要维护的数据。
@@ -697,7 +798,10 @@ PRESETS: tuple[_Preset, ...] = (
             "grok-imagine-1.0-apimart", "grok-imagine-1.0-edit-apimart", "wan2.7-image-pro",
             "wan2.7-image",
         ),
-        request_template=_STARTER_ASYNC_IMAGE,
+        model_overrides={
+            m: {"allowed_ratios": r} for m, r in _APIMART_IMAGE_RATIOS.items()
+        },
+        request_template=_STARTER_APIMART_IMAGE,
     ),
     # 官方直连的两家 agent 供应商, 作为 tu-zi 之外的选择。
     #

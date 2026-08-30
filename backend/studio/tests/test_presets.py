@@ -6,9 +6,12 @@
 才看得出来。同一类错误在这条分支上已经犯过一次 (`grok-imagine-video-1.5` ←→
 `grok-imagine-1.5-video-apimart`)。
 """
+import dataclasses
+
 from django.test import SimpleTestCase
 
 from studio.services.image_channels import (
+    _APIMART_IMAGE_RATIOS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
@@ -127,3 +130,89 @@ class ApimartVideoPresetTests(SimpleTestCase):
         names = placeholders(_STARTER_ASYNC_VIDEO)
         self.assertIn("resolution", names)
         self.assertIn("mode", names)
+
+
+class ApimartImagePresetTests(SimpleTestCase):
+    """生图那半: 比例是拿去**筛**画布那十档的, 所以每一项都必须是画布真的有的那十个之一
+    —— 写一个画布没有的 (`4:5`) 不会报错, 只是永远筛不中, 而症状是"这个模型的选择器少了
+    一档"。"""
+
+    # 画布工具栏上的十档 —— 抄自前端的 `IMAGE_EDIT_SIZES` (hooks/use-image-edit.ts)。
+    # **故意抄一份而不是从后端某处引用**: 后端没有这张表, 它纯粹是界面的事。抄在测试里
+    # 的作用正是"画布加减一档时这里会红" —— 那时预设表也确实需要跟着看一眼。
+    CANVAS_RATIOS = frozenset({
+        "auto", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "9:21",
+    })
+
+    def setUp(self):
+        self.preset = _preset("apimart_image")
+
+    def test_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_IMAGE_RATIOS), set(self.preset.models))
+
+    def test_every_ratio_is_one_the_canvas_offers(self):
+        from studio.services.image_client import parse_ratios
+
+        for model, raw in _APIMART_IMAGE_RATIOS.items():
+            for ratio in parse_ratios(raw):
+                with self.subTest(model=model, ratio=ratio):
+                    self.assertIn(ratio, self.CANVAS_RATIOS)
+
+    def test_models_that_take_everything_are_left_blank(self):
+        """十档全收的不写进表里 —— 空 = 不限制。写一份"刚好等于全集"的列表只是多一处
+        要跟着画布改的数据。"""
+        for model in ("gpt-image-2", "seedream-4-5", "flux-2-max", "flux-kontext-pro"):
+            with self.subTest(model=model):
+                self.assertNotIn(model, _APIMART_IMAGE_RATIOS)
+
+    def test_auto_is_excluded_where_the_provider_rejects_it(self):
+        """画布的默认档就是 auto。收不了它的模型必须排除, 否则选择器摆着一个默认选中、
+        一发就 400 的选项 (grok-imagine-2.0-ext 实测原话: unsupported `size` … auto)。"""
+        from studio.services.image_client import parse_ratios
+
+        for model in ("grok-imagine-2.0-ext", "qwen-image-3.0", "z-image-turbo",
+                      "wan2.7-image", "imagen-4.0-apimart", "grok-imagine-1.5-apimart"):
+            with self.subTest(model=model):
+                self.assertNotIn("auto", parse_ratios(_APIMART_IMAGE_RATIOS[model]))
+
+    def test_both_ratio_keys_carry_the_same_value(self):
+        """31 个模型读 `size`, grok 那两个官方渠道读 `aspect_ratio` —— 取值一样, 所以两个
+        键都发。实测这家忽略不认识的键。"""
+        from studio.services import template_client
+
+        channel = _channel(self.preset, "grok-imagine-image")
+        variables = template_client.image_variables(
+            channel, prompt="p", image_urls=[], size="16:9", n=1,
+        )
+        body = render(self.preset.request_template["body"], variables)
+        self.assertEqual(body["size"], "16:9")
+        self.assertEqual(body["aspect_ratio"], "16:9")
+
+    def test_unsupported_pick_snaps_to_nearest(self):
+        """选择器已经筛过一遍, 这条兜底管 agent 自己挑的尺寸和"换模型之后旧选择失效"。
+        imagen 只有五档, 21:9 不在里面 —— 不兜底的话它会被**静默回退成 16:9**, 而那正是
+        我们想让用户看见的那一步。"""
+        from studio.services import template_client
+
+        variables = template_client.image_variables(
+            _channel(self.preset, "imagen-4.0-apimart"),
+            prompt="p", image_urls=[], size="21:9", n=1,
+        )
+        self.assertEqual(variables["size"], "16:9")
+
+    def test_size_key_honours_the_ratio_map(self):
+        """`allowed_ratios` 的 "=" 右半边是"实际要发的值"。模板里那个键必须吃 `{{size}}`
+        —— 吃 `{{aspect_ratio}}` 的话映射会**静默失效**, 而两者在没配映射时一模一样,
+        所以这个错平时看不出来。"""
+        from studio.services import template_client
+
+        channel = dataclasses.replace(
+            _channel(self.preset, "gpt-image-2"),
+            allowed_ratios="1:1=1024x1024, 16:9",
+        )
+        variables = template_client.image_variables(
+            channel, prompt="p", image_urls=[], size="1:1", n=1,
+        )
+        body = render(self.preset.request_template["body"], variables)
+        self.assertEqual(body["size"], "1024x1024")        # 映射生效
+        self.assertEqual(body["aspect_ratio"], "1:1")      # 比例那一半不受影响
