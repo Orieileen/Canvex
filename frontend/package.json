@@ -8,6 +8,7 @@
     "dev": "npm run sync:canvex-assets && vite",
     "build": "npm run sync:canvex-assets && vite build",
     "lint": "eslint .",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "postinstall": "npm run sync:canvex-assets"
   },

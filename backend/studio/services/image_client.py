@@ -16,6 +16,7 @@ ImageProvider/ImageModel (services/image_channels.py)。本模块只负责把它
 
 import base64
 import functools
+import math
 import logging
 from dataclasses import asdict, dataclass, field, fields
 from math import gcd
@@ -193,6 +194,14 @@ def _resolution_value(tier: str) -> float | None:
     text = (tier or "").strip().lower()
     if not text:
         return None
+    # `NMP` = N 百万像素 (flux-2 用这个计)。换成"边长"才能跟 1K/2K/4K 排在同一根轴上:
+    # 1MP = 1024², 4MP = 2048² —— 所以 4MP 落在 2K 附近, 而不是 4K 附近。照字面读成 4
+    # 的话它会排到 0.5K 前面, 于是"选 2K"会挑中 flux 最小的那一档。
+    if text.endswith("mp"):
+        try:
+            return 1024.0 * math.sqrt(float(text[:-2]))
+        except ValueError:
+            return None
     unit = 1000.0 if text.endswith("k") else 1.0
     head = text.rstrip("pk").strip()
     try:

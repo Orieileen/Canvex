@@ -12,6 +12,7 @@ from django.test import SimpleTestCase
 
 from studio.services.image_channels import (
     _APIMART_IMAGE_RATIOS,
+    _APIMART_IMAGE_RESOLUTIONS,
     _TEXT_ONLY_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_MODE_MODELS,
@@ -228,3 +229,102 @@ class ApimartImagePresetTests(SimpleTestCase):
         body = render(self.preset.request_template["body"], variables)
         self.assertEqual(body["size"], "1024x1024")        # 映射生效
         self.assertEqual(body["aspect_ratio"], "1:1")      # 比例那一半不受影响
+
+
+class ApimartImageResolutionTests(SimpleTestCase):
+    """生图的画质档。跟比例相反, 这里是**照它列**而不是拿它筛画布那三档 —— 各家有
+    `0.5K` / `1.5K` / `3K`, flux-2 干脆按百万像素计, 画布那三档筛完要么残缺要么全空。"""
+
+    def setUp(self):
+        self.preset = _preset("apimart_image")
+
+    def test_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_IMAGE_RESOLUTIONS), set(self.preset.models))
+
+    def test_every_tier_is_parseable(self):
+        """认不出的档 (`_resolution_value` 给 None) 排不了序也挑不了最近的 —— 表现是
+        换模型时静默落到列表第一项, 也就是最便宜那一档。"""
+        from studio.services.image_client import _resolution_value, parse_resolutions
+
+        for model, raw in _APIMART_IMAGE_RESOLUTIONS.items():
+            tiers = parse_resolutions(raw)
+            self.assertTrue(tiers, model)
+            for tier in tiers:
+                with self.subTest(model=model, tier=tier):
+                    self.assertIsNotNone(_resolution_value(tier))
+
+    def test_tiers_are_listed_low_to_high(self):
+        """选择器照这个顺序列, 而"落到最近的一档"平手时取低的 —— 顺序乱了这两条都会
+        给出让人意外的结果。"""
+        from studio.services.image_client import _resolution_value, parse_resolutions
+
+        for model, raw in _APIMART_IMAGE_RESOLUTIONS.items():
+            values = [_resolution_value(t) for t in parse_resolutions(raw)]
+            with self.subTest(model=model):
+                self.assertEqual(values, sorted(values))
+
+    def test_template_sends_the_tier(self):
+        """模板里没有 `resolution` 这个键的话, 工具栏那个画质旋钮是个死的 —— 画布照档位
+        预留占位框, 而供应商压根没收到档位。"""
+        from studio.services import template_client
+
+        variables = template_client.image_variables(
+            _channel(self.preset, "seedream-4-5"),
+            prompt="p", image_urls=[], size="1:1", n=1, resolution="2K",
+        )
+        body = render(self.preset.request_template["body"], variables)
+        self.assertEqual(body["resolution"], "2K")
+
+    def test_unsupported_tier_snaps_to_nearest(self):
+        """seedream-4-5 明写不支持 1K; seedream-5-0-pro 传 3K/4K 直接 400。"""
+        from studio.services import template_client
+
+        for model, want, expect in [
+            ("seedream-4-5", "1K", "2K"),          # 没有 1K → 最近的是 2K
+            ("seedream-5-0-pro", "4K", "2K"),      # 封顶 2K
+            ("seedream-5-0-lite", "1K", "2K"),     # 没有 1K
+            ("gemini-2.5-flash-image-preview", "4K", "1K"),   # 只有一档
+            ("flux-2-max", "2K", "4MP"),           # 4MP = 2048² ≈ 2K
+        ]:
+            with self.subTest(model=model, want=want):
+                variables = template_client.image_variables(
+                    _channel(self.preset, model),
+                    prompt="p", image_urls=[], size="1:1", n=1, resolution=want,
+                )
+                self.assertEqual(variables["resolution"], expect)
+
+    def test_undeclared_models_pass_the_canvas_tier_through(self):
+        """文档里没有 resolution 的那几个 (gpt-image-1 / flux-kontext / grok-imagine-1.5),
+        照样把画布选的档发出去。
+
+        **这是实测定的, 不是想当然**: 一开始写的是"不该发这个键", 但拿 gpt-image-1 真发了
+        一条 —— 它把字段透传给 OpenAI(最严的那个上游), 任务照样 completed 出图。这家
+        忽略不认识的键(另有一次探测: 塞一个完全不存在的键, 它只报别的错)。
+
+        所以留着透传是对的: 空的 allowed_resolutions 意思是"我们没这个模型的档位数据",
+        不是"这个模型没有档位"。硬改成不发, 会让手写模板的通道白白少一个能用的旋钮。"""
+        from studio.services import template_client
+
+        for model in ("gpt-image-1", "flux-kontext-pro", "grok-imagine-1.5-apimart"):
+            with self.subTest(model=model):
+                variables = template_client.image_variables(
+                    _channel(self.preset, model),
+                    prompt="p", image_urls=[], size="1:1", n=1, resolution="2K",
+                )
+                body = render(self.preset.request_template["body"], variables)
+                self.assertEqual(body["resolution"], "2K")
+
+    def test_declared_models_only_ever_send_a_tier_they_declared(self):
+        """报了档位的模型, 发出去的一定在它自己那张表里 —— 这条才是这批数据的价值所在。"""
+        from studio.services import template_client
+        from studio.services.image_client import parse_resolutions
+
+        for model, raw in _APIMART_IMAGE_RESOLUTIONS.items():
+            tiers = parse_resolutions(raw)
+            for want in ("1K", "2K", "4K"):        # 画布只会发这三个
+                with self.subTest(model=model, want=want):
+                    variables = template_client.image_variables(
+                        _channel(self.preset, model),
+                        prompt="p", image_urls=[], size="1:1", n=1, resolution=want,
+                    )
+                    self.assertIn(variables["resolution"], tiers)

@@ -190,3 +190,19 @@ class NearestResolutionTests(SimpleTestCase):
         self.assertEqual(parse_resolutions("480p, 720p, 1080p"), ["480p", "720p", "1080p"])
         self.assertEqual(parse_resolutions("720p，1080p"), ["720p", "1080p"])   # 全角逗号
         self.assertEqual(parse_resolutions(""), [])
+
+    def test_megapixel_tiers_sort_by_edge_not_by_the_bare_number(self):
+        """flux-2 按**百万像素**计档 (1MP / 2MP / 3MP / 4MP)。照字面读成 1~4 的话,
+        4MP 会排到 0.5K 前面 —— 于是"选 2K"挑中的是它最小的那一档。换算成边长才对:
+        1MP = 1024², 4MP = 2048², 所以 4MP 落在 2K 附近。"""
+        flux = ["1MP", "2MP", "3MP", "4MP"]
+        self.assertEqual(nearest_resolution("2K", flux), "4MP")     # 2048² ≈ 2K
+        self.assertEqual(nearest_resolution("1K", flux), "1MP")     # 1024² = 1K
+        self.assertEqual(nearest_resolution("4K", flux), "4MP")     # 封顶
+
+    def test_half_k_and_one_and_a_half_k_parse(self):
+        """gemini-3.1-flash 有 0.5K, seedream-5-0-pro 有 1.5K —— 画布那三档里都没有。"""
+        self.assertEqual(nearest_resolution("2K", ["1K", "1.5K", "2K"]), "2K")
+        self.assertEqual(nearest_resolution("4K", ["1K", "1.5K", "2K"]), "2K")
+        self.assertEqual(nearest_resolution("0.5K", ["0.5K", "1K", "2K", "4K"]), "0.5K")
+        self.assertEqual(nearest_resolution("1K", ["2K", "3K", "4K"]), "2K")   # lite 没有 1K

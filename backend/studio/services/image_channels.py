@@ -198,6 +198,7 @@ _STARTER_OPENAI_IMAGE_MULTI = {
         # 见 _STARTER_APIMART_IMAGE 里同一处的注释 —— `{{size}}` 才是"要发进 size 的
         # 那个值", 写 `{{aspect_ratio}}` 会让 allowed_ratios 的映射那一半静默失效。
         "model": "{{model}}", "prompt": "{{prompt}}", "size": "{{size}}",
+        "resolution": "{{resolution}}",
         "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
     },
     "result_path": "data[0]",
@@ -257,6 +258,9 @@ _STARTER_APIMART_IMAGE = {
         # 会静默地不生效 —— 而那正是 allowed_ratios 那一半存在的理由。
         # `aspect_ratio` 键则永远给比例: 读它的是 grok 那两个官方渠道, 它们只认比例。
         "size": "{{size}}", "aspect_ratio": "{{aspect_ratio}}",
+        # 画质档。空 = 键消失 = 用供应商默认。没有它的话工具栏那个 1K/2K/4K 是个死旋钮:
+        # 画布照档位预留占位框, 而供应商压根没收到档位。
+        "resolution": "{{resolution}}",
         "n": "{{n}}", "image_urls": "{{images}}", "response_format": "url",
     },
     "task_id_path": "data[0].task_id",
@@ -579,6 +583,59 @@ class _Preset:
 #
 # **别再加回来**: test_presets 里有一条会红。真要支持它们, 得先给 ImageChannel 加一个
 # "收不收源图"的旋钮, 让「图像」标签在有选中图时把这类模型筛掉 —— 那是另一件事。
+# 每个生图模型**文档写明**收哪几个画质档, 由低到高。逐页抄的。
+#
+# 跟比例那张表相反, 这里是**"照它列"而不是"拿它筛"** —— 跟视频画质同一个道理: 画布只有
+# 1K/2K/4K 三档, 而各家有 0.5K、1.5K、3K, flux 干脆用 MP 计。筛完只会剩下残缺的几档。
+#
+# 没有这个参数的模型留空 (= 不下发这个键): gpt-image-1 / -1.5、flux-kontext 两个、
+# grok-imagine-1.5-apimart。另外四个没有文档页的 grok 也留空。
+_APIMART_IMAGE_RESOLUTIONS: dict[str, str] = {
+    # ── /images/gpt-image-2 ── 文档写的是小写
+    "gpt-image-2": "1k, 2k, 4k",
+    # ── /images/gemini-3.1-flash ── 唯一有 0.5K 预览档的
+    "gemini-3.1-flash-image-preview": "0.5K, 1K, 2K, 4K",
+    # ── /images/gemini-3.1-flash 的 -lite 页 ── 文档原话「**Lite 只支持 1K**。传 2K /
+    # 4K / 0.5K 会被**静默降级为 1K**, 不会报错, 也不会真正输出高分辨率。前端 UI 无需
+    # 暴露分辨率选项。」—— 最后那句就是这张表存在的理由。
+    "gemini-3.1-flash-lite-image": "1K",
+    "gemini-3.1-flash-lite-image-ext": "1K",
+    # ── /images/gemini-3-pro ──
+    "gemini-3-pro-image-preview": "1K, 2K, 4K",
+    # ── /images/gemini-2.5-flash ── 文档只列了 1K 这一档
+    "gemini-2.5-flash-image-preview": "1K",
+    # ── /images/seedream-5-0-pro ── 有个 1.5K, 文档说「与 1K **同价**, 画质更好, 无特殊
+    # 理由建议优先用 1.5K」。传 3K / 4K 返回 400。
+    "seedream-5-0-pro": "1K, 1.5K, 2K",
+    # ── /images/seedream-5-lite ── 有 3K, 而且**不支持 1K**
+    "seedream-5-0-lite": "2K, 3K, 4K",
+    # ── /images/seedream-4.5 ── 文档明写「不支持 1K」
+    "seedream-4-5": "2K, 4K",
+    # ── /images/seedream-4 ──
+    "seedream-4-0": "1K, 2K, 4K",
+    # ── /images/flux-2 ── **单位不一样**: 按百万像素计, 1MP = 1,048,576 px。
+    # 文档给了别名 (1K=2MP、2K=3MP、4K=4MP), 但那些别名名不副实 —— 它的「1K」实际是
+    # 2MP≈1448²。所以这里**照它自己的写法列**, 别把画布那三个名字套上去。
+    # 「其他值会导致任务失败」, 所以这一行不能留空。
+    "flux-2-max": "1MP, 2MP, 3MP, 4MP",
+    "flux-2-pro": "1MP, 2MP, 3MP, 4MP",
+    "flux-2-flex": "1MP, 2MP, 3MP, 4MP",
+    # ── /images/qwen-image-3.0 、 /images/qwen-image ── 只有两档
+    "qwen-image-3.0": "1K, 2K",
+    "qwen-image-3.0-pro": "1K, 2K",
+    "qwen-image-2.0": "1K, 2K",
+    "qwen-image-2.0-pro": "1K, 2K",
+    # ── /images/grok-imagine 的「官方模型」章节 ── 表格里写着「默认值 1k; 允许值 1k 或 2k」
+    "grok-imagine-image": "1k, 2k",
+    "grok-imagine-image-quality": "1k, 2k",
+    # ── /images/wan2.7-image ── pro 的 4K **只在文生图(非组图)时**可用, 图像编辑封顶 2K;
+    # 标准版所有场景都只到 2K。画布这条路一定带源图 = 图像编辑, 所以 pro 这里也只写到 2K
+    # —— 列一个在本产品里永远选不中的 4K, 等于摆一个一选就错的档。
+    "wan2.7-image-pro": "1K, 2K",
+    "wan2.7-image": "1K, 2K",
+}
+
+
 _TEXT_ONLY_IMAGE_MODELS = ("imagen-4.0-apimart", "grok-imagine-2.0-ext", "z-image-turbo")
 
 
@@ -816,7 +873,12 @@ PRESETS: tuple[_Preset, ...] = (
             "wan2.7-image",
         ),
         model_overrides={
-            m: {"allowed_ratios": r} for m, r in _APIMART_IMAGE_RATIOS.items()
+            m: {
+                **({"allowed_ratios": _APIMART_IMAGE_RATIOS[m]} if m in _APIMART_IMAGE_RATIOS else {}),
+                **({"allowed_resolutions": _APIMART_IMAGE_RESOLUTIONS[m]}
+                   if m in _APIMART_IMAGE_RESOLUTIONS else {}),
+            }
+            for m in (_APIMART_IMAGE_RATIOS.keys() | _APIMART_IMAGE_RESOLUTIONS.keys())
         },
         request_template=_STARTER_APIMART_IMAGE,
     ),

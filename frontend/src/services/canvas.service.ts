@@ -282,7 +282,8 @@ export interface ImageEditCreatePayload {
   prompt?: string;
   cutout?: boolean;
   size?: string;
-  resolution?: "1K" | "2K" | "4K";
+  /** 画质档。取值随模型而定 (`1K` / `1.5K` / `3K` / `2MP` …), 不是封闭联合。 */
+  resolution?: string;
   n?: 1 | 2 | 4;
   /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条启用的通道。 */
   imageModelId?: string;

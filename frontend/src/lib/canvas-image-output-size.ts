@@ -1,3 +1,5 @@
+import { resolutionEdgePx } from "@/lib/canvas-resolution";
+
 /**
  * Predict the pixel size an image generation / edit job will produce, so the
  * pre-generation placeholder can reserve a box the size of the RESULT, not the
@@ -25,8 +27,9 @@ export function imageEditOutputSize(
   resolution: string | undefined,
   source: { width: number; height: number },
 ): { width: number; height: number } {
-  const upper = (resolution ?? "").toUpperCase();
-  const edge = upper === "4K" ? 4096 : upper === "1K" ? 1024 : 2048; // tier edge
+  // 档位 → 边长像素。以前是写死的三分支 (4K/1K/其余 2048), 而现在档位由供应商文档
+  // 决定 —— `0.5K` / `1.5K` / `3K` / `2MP` 全都会落到 else 里被当成 2K。
+  const edge = resolutionEdgePx(resolution);
   const budget = edge * edge; // pixel-area budget, kept constant across aspects
 
   const aspect = parseAspect(size);

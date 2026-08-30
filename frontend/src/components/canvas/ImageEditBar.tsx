@@ -54,6 +54,7 @@ import {
   IMAGE_EDIT_RESOLUTIONS,
   IMAGE_EDIT_SIZES,
   type ImageEditCount,
+  DEFAULT_IMAGE_RESOLUTION,
   type ImageEditResolution,
   type ImageEditSize,
 } from "@/hooks/use-image-edit";
@@ -597,8 +598,10 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
-  const [resolution, setResolution] = useState<ImageEditResolution>("2K");
+  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
   const [n, setN] = useState<ImageEditCount>(1);
+  const resolutions = useModelResolutions(imageModel);
+  useResolutionFallback(resolutions, resolution, setResolution);
 
   const isMulti = multiImageCount > 0;
   const trimmed = prompt.trim();
@@ -687,11 +690,12 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
       <Divider />
       <select
         value={resolution}
-        onChange={(e) => setResolution(e.target.value as ImageEditResolution)}
+        onChange={(e) => setResolution(e.target.value)}
         disabled={isSubmitting}
         className={selectClass}
+        title={t("edit.resolutionTitle")}
       >
-        {IMAGE_EDIT_RESOLUTIONS.map((r) => (
+        {resolutions.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
@@ -729,6 +733,32 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
       </IconButton>
     </form>
   );
+}
+
+/** 这个模型**真的收**哪几个画质档 —— 后端下发 (已合并三层配置)。没报就用画布那三档。
+ *
+ *  跟比例不同, 这里是**照它列**而不是拿它去筛画布那三档: seedream-5-0-lite 只有
+ *  2K/3K/4K, seedream-5-0-pro 有个 1.5K, flux-2 按 `1MP`~`4MP` 计 —— 画布那三档筛完
+ *  要么残缺要么全空。 */
+function useModelResolutions(picker: ChannelPicker): string[] {
+  const key = (picker.models.find((m) => m.id === picker.value)
+    ?.allowed_resolutions ?? []).join(",");
+  return useMemo(
+    () => (key ? key.split(",") : (IMAGE_EDIT_RESOLUTIONS as string[])),
+    [key],
+  );
+}
+
+/** 换了模型之后旧的档可能不在新列表里 —— select 的 value 找不到 option 会显示空白。
+ *  落到**最近的一档**而不是第一档: 第一档是最便宜的那个 (列表由低到高), 从 4K 换到
+ *  seedream-5-0-pro (1K/1.5K/2K) 会直接掉到 1K, 而最近的是 2K。 */
+function useResolutionFallback(
+  tiers: string[], value: string, set: (v: string) => void,
+) {
+  useEffect(() => {
+    if (tiers.includes(value)) return;
+    set(nearestResolution(value, tiers));
+  }, [tiers, value, set]);
 }
 
 // ─── Video panel ────────────────────────────────────────────────────────────
@@ -788,12 +818,8 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   useEffect(() => {
     if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
   }, [ratios, aspectRatio]);
-  // 画质落到**最近的一档**而不是第一档: 第一档是最便宜的那个 (列表由低到高), 从
-  // seedance-2.0 的 1080p 换到 -fast (只有 480p/720p) 会直接掉到 480p, 而最近的是 720p。
-  useEffect(() => {
-    if (!resolutions.length || resolutions.includes(resolution)) return;
-    setResolution(nearestResolution(resolution, resolutions));
-  }, [resolutions, resolution]);
+  // 跟生图那两个面板同一条规则 (见 useResolutionFallback): 落到最近的一档而不是第一档。
+  useResolutionFallback(resolutions, resolution, setResolution);
 
   function submitGenerate() {
     if (!canGenerate) return;
@@ -974,7 +1000,11 @@ interface SplitPanelProps {
  *  tweaks, switch to the Image tab. */
 function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
   const { t } = useTranslation("canvasUi");
-  const [resolution, setResolution] = useState<ImageEditResolution>("2K");
+  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
+  // 拆分的两条 leg 跟「图像」标签走同一个模型, 所以档位也照它报的列 —— 否则在这里选
+  // 一个 4K, 而 inpaint 那条 leg 的模型只到 2K。
+  const resolutions = useModelResolutions(imageModel);
+  useResolutionFallback(resolutions, resolution, setResolution);
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (isSubmitting) return;
@@ -988,11 +1018,12 @@ function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
       <Divider />
       <select
         value={resolution}
-        onChange={(e) => setResolution(e.target.value as ImageEditResolution)}
+        onChange={(e) => setResolution(e.target.value)}
         disabled={isSubmitting}
         className={selectClass}
+        title={t("edit.resolutionTitle")}
       >
-        {IMAGE_EDIT_RESOLUTIONS.map((r) => (
+        {resolutions.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
