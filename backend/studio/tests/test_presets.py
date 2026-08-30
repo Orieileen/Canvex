@@ -14,6 +14,7 @@ from studio.services.image_channels import (
     _APIMART_IMAGE_RATIOS,
     _APIMART_IMAGE_RESOLUTIONS,
     _TEXT_ONLY_IMAGE_MODELS,
+    _UNDOCUMENTED_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_RATIOS,
     _APIMART_VIDEO_MODE_MODELS,
@@ -178,6 +179,34 @@ class ApimartImagePresetTests(SimpleTestCase):
             with self.subTest(model=model):
                 self.assertNotIn(model, self.preset.models)
                 self.assertNotIn(model, _APIMART_IMAGE_RATIOS)
+
+    def test_undocumented_models_stay_out_of_the_preset(self):
+        """docs.apimart.ai 上没有页的模型不进这条预设。
+
+        预设的全部意义是"只填一把 key, 剩下的都对好了" —— 一个连收哪些比例、哪些画质、
+        收不收源图都不知道的模型混在里面, 破坏的正是这个承诺, 而且它跟旁边配好的模型
+        长得一模一样, 用户分辨不出哪几个是我们心里没底的。
+
+        也别照邻居猜一份填上: grok 这一族内部就不一致 —— 有文档的三个里
+        grok-imagine-1.5-apimart 收五个比例、没有画质档, grok-imagine-image 收八个比例、
+        有 1k/2k, 连比例放哪个键都不一样 (size vs aspect_ratio)。"""
+        for model in _UNDOCUMENTED_IMAGE_MODELS:
+            with self.subTest(model=model):
+                self.assertNotIn(model, self.preset.models)
+                self.assertNotIn(model, _APIMART_IMAGE_RATIOS)
+                self.assertNotIn(model, _APIMART_IMAGE_RESOLUTIONS)
+
+    def test_every_model_is_accounted_for(self):
+        """每个留在名单里的模型, 要么在某张约束表里, 要么在下面这个"核过, 确实不限制"
+        的白名单里。
+
+        **这条守的是"有人加了个模型但没加数据"** —— 那种模型在界面上跟配好的一模一样,
+        只有生成失败时才暴露, 而这条预设正是为了不让人撞上这个。"""
+        # 核过文档, 确实两样都不限制的:
+        #   flux-kontext-max / -pro —— 十个比例全收, 且文档里根本没有 resolution 参数
+        unconstrained = {"flux-kontext-max", "flux-kontext-pro"}
+        covered = set(_APIMART_IMAGE_RATIOS) | set(_APIMART_IMAGE_RESOLUTIONS) | unconstrained
+        self.assertEqual(set(self.preset.models) - covered, set())
 
     def test_auto_is_excluded_where_the_provider_rejects_it(self):
         """画布的默认档就是 auto。收不了它的模型必须排除, 否则选择器摆着一个默认选中、

@@ -639,6 +639,27 @@ _APIMART_IMAGE_RESOLUTIONS: dict[str, str] = {
 _TEXT_ONLY_IMAGE_MODELS = ("imagen-4.0-apimart", "grok-imagine-2.0-ext", "z-image-turbo")
 
 
+# 这四个 grok 生图模型在 /v1/models 里真实存在, 但 docs.apimart.ai 上**没有对应的页**
+# —— 49 页文档 (19 页生图 + 30 页视频) 里一次都没提到过它们。所以不在预设里。
+#
+# 为什么不留着"不填约束"了事: 这条预设的全部意义就是"用户只填一把 key, 剩下的都对好了"。
+# 一个连收哪些比例、哪些画质、收不收源图都不知道的模型混在里面, 破坏的正是这个承诺 ——
+# 而且它跟旁边那些配好的模型长得一模一样, 用户没法分辨哪几个是"我们心里没底"的。
+#
+# 上一轮那三个只会文生图的模型就是这么暴露的: 没有数据 = 撞上去才知道。
+#
+# **别照着邻居猜一份填上**: grok 这一族内部就不一致 —— 有文档的三个里,
+# grok-imagine-1.5-apimart 收五个比例、没有画质档, 而 grok-imagine-image 收八个比例、
+# 有 1k/2k 两档, 连比例放哪个键都不一样 (size vs aspect_ratio)。猜窄了会把能用的档从
+# 选择器里抹掉, 而那种错没有任何症状。
+#
+# 要加回来的前提是文档出了页, 或者拿真 key 一个个探出来。test_presets 里有一条会红。
+_UNDOCUMENTED_IMAGE_MODELS = (
+    "grok-imagine-image-2.0", "grok-imagine-1.5-edit-apimart",
+    "grok-imagine-1.0-apimart", "grok-imagine-1.0-edit-apimart",
+)
+
+
 # 每个生图模型**文档写明**收哪几种比例。逐页抄的 (docs.apimart.ai 的
 # /cn/api-reference/images/<族>/generation, 每族一页, 下面按族分段)。
 #
@@ -894,6 +915,7 @@ PRESETS: tuple[_Preset, ...] = (
         # 也不含各家的 `-official` 渠道 (走独立端点页)。
         #
         # **也不含只会文生图的那三个** —— 见 _TEXT_ONLY_IMAGE_MODELS。
+        # **也不含没有文档页的那四个 grok** —— 见 _UNDOCUMENTED_IMAGE_MODELS。
         # 第一个是默认 —— gpt-image-2 是这条预设一直验着的那个。
         models=(
             "gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gemini-3.1-flash-image-preview",
@@ -903,10 +925,8 @@ PRESETS: tuple[_Preset, ...] = (
             "seedream-4-0", "flux-2-max", "flux-2-pro", "flux-2-flex", "flux-kontext-max",
             "flux-kontext-pro", "qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.0-pro",
             "qwen-image-2.0",
-            "grok-imagine-image-2.0", "grok-imagine-image-quality", "grok-imagine-image",
-            "grok-imagine-1.5-apimart", "grok-imagine-1.5-edit-apimart",
-            "grok-imagine-1.0-apimart", "grok-imagine-1.0-edit-apimart", "wan2.7-image-pro",
-            "wan2.7-image",
+            "grok-imagine-image-quality", "grok-imagine-image", "grok-imagine-1.5-apimart",
+            "wan2.7-image-pro", "wan2.7-image",
         ),
         model_overrides={
             m: {
