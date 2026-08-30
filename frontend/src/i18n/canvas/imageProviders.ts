@@ -24,7 +24,7 @@ export const imageProviders = {
     presets: {
       tuzi_chat: {
         label: "Chat with tu-zi",
-        hint: "gpt-5 via api.tu-zi.com — powers the chat box and the agent",
+        hint: "Agent provider: api.tu-zi.com — powers the chat box and the agent",
       },
       apimart_image: {
         label: "Generate images with apimart",
@@ -180,7 +180,7 @@ export const imageProviders = {
     presets: {
       tuzi_chat: {
         label: "用兔子聊天",
-        hint: "api.tu-zi.com 的 gpt-5 —— 聊天框和 agent 都走它",
+        hint: "Agent 供应商:api.tu-zi.com —— 聊天框和 agent 都走它",
       },
       apimart_image: {
         label: "用 apimart 生图",
