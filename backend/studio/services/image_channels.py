@@ -222,6 +222,24 @@ _STARTER_ASYNC_IMAGE = {
     },
 }
 
+# Google Gemini 的**原生**生图 —— `models/<模型>:generateContent`, 不是 OpenAI 那套。
+#
+# 三处跟别家都不一样, 每一处都是硬编码的适配器接不了的:
+#   - 认证在 `x-goog-api-key` 头里, 不是 `Authorization: Bearer`
+#   - 模型名拼在 URL 里, 而且后面还跟一个 `:generateContent`
+#   - 提示词埋在 `contents[].parts[].text` 两层数组下面
+#
+# **`result_path` 故意留空。** Gemini 常常先回一段文字再回图, 于是图在 `parts[0]` 还是
+# `parts[1]` 取决于这一次它想不想说话 —— 写死任一个都会间歇性失败。留空 = 跑的时候按值
+# 的形状自动认 (见 template_client._result)。
+_STARTER_GEMINI_IMAGE = {
+    "method": "POST",
+    "url": "{{base_url}}/models/{{model}}:generateContent",
+    "headers": {"x-goog-api-key": "{{api_key}}", "Content-Type": "application/json"},
+    "body": {"contents": [{"parts": [{"text": "{{prompt}}"}]}]},
+    "result_path": "",
+}
+
 # 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
 _STARTER_ASYNC_VIDEO = {
     "method": "POST",
@@ -296,6 +314,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             ("OpenAI 兼容 · 多张源图", _STARTER_OPENAI_IMAGE_MULTI),
             ("OpenAI 兼容 · 异步 (提交 + 轮询)", _STARTER_ASYNC_IMAGE),
             ("fal.run (模型在 URL、Key 认证)", _STARTER_FAL),
+            ("Google Gemini 官方 (generateContent)", _STARTER_GEMINI_IMAGE),
         ),
         testable=True,
     ),
@@ -448,6 +467,27 @@ PRESETS: tuple[_Preset, ...] = (
         kind=ImageProvider.Kind.CHAT,
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         model="gemini-3-pro",
+    ),
+    # OpenAI 官方生图。**allowed_ratios 带右边那一半是必需的** —— gpt-image-1 只认
+    # `1024x1024` / `1536x1024` / `1024x1536` / `auto` 这四个具体值, 而 3:2 按长边 1024
+    # 算出来是 `1024x672`, 发过去就是 400。这正是 `比例=要发的值` 那个写法存在的理由。
+    _Preset(
+        key="openai_image",
+        kind=ImageProvider.Kind.CUSTOM_IMAGE,
+        base_url="https://api.openai.com/v1",
+        model="gpt-image-1",
+        defaults={"allowed_ratios": "1:1=1024x1024, 3:2=1536x1024, 2:3=1024x1536, auto=auto"},
+        request_template=_STARTER_OPENAI_OFFICIAL,
+    ),
+    # Google 官方生图。**这条走原生 generateContent, 不是 OpenAI 兼容层** —— 兼容层那边
+    # 的 `/images/generations` 是给 Imagen 的, 而 Gemini 系的图是 generateContent 出的。
+    # 形状上的三处特殊见 _STARTER_GEMINI_IMAGE。
+    _Preset(
+        key="google_image",
+        kind=ImageProvider.Kind.CUSTOM_IMAGE,
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-3-pro-image-preview",
+        request_template=_STARTER_GEMINI_IMAGE,
     ),
     # 换视角。**base_url 是 fal.run 而不是 fal.ai** —— 公司叫 fal.ai, 接口在 fal.run,
     # 这是所有人第一次配它都会填错的一处 (填 fal.ai 得到一个 404)。预设的价值正在这儿。

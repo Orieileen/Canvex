@@ -6,7 +6,12 @@
 """
 from django.test import SimpleTestCase
 
-from studio.services.image_client import nearest_ratio, parse_ratios, ratio_to_pixels
+from studio.services.image_client import (
+    nearest_ratio,
+    parse_ratio_map,
+    parse_ratios,
+    ratio_to_pixels,
+)
 
 GEMINI = parse_ratios(
     "16:9, 1:1, 1:4, 1:8, 21:9, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, auto"
@@ -66,3 +71,35 @@ class RatioToPixelsTests(SimpleTestCase):
         for raw in ("auto", "", "abc", "1:0"):
             with self.subTest(raw=raw):
                 self.assertEqual(ratio_to_pixels(raw), (None, None))
+
+
+class RatioMapTests(SimpleTestCase):
+    """`比例=要发的值`。有些家只收一张写死的像素表, 而那些像素**不是**按比例算出来的 ——
+    OpenAI 的 gpt-image-1 只认 1024x1024 / 1536x1024 / 1024x1536, 而 3:2 按长边 1024 算
+    出来是 1024x672, 发过去就是 400。"""
+
+    OPENAI = "1:1=1024x1024, 3:2=1536x1024, 2:3=1024x1536, auto=auto"
+
+    def test_maps_ratio_to_send_value(self):
+        self.assertEqual(parse_ratio_map(self.OPENAI), {
+            "1:1": "1024x1024", "3:2": "1536x1024",
+            "2:3": "1024x1536", "auto": "auto",
+        })
+
+    def test_bare_ratio_maps_to_itself(self):
+        """**绝大多数供应商走这条** (apimart 直接收 `16:9`) —— 不能因为加了映射就变。"""
+        self.assertEqual(parse_ratio_map("16:9, 1:1, auto"),
+                         {"16:9": "16:9", "1:1": "1:1", "auto": "auto"})
+
+    def test_parse_ratios_returns_only_the_canvas_half(self):
+        """工具栏的选择器和 nearest_ratio 只关心比例本身。"""
+        self.assertEqual(parse_ratios(self.OPENAI), ["1:1", "3:2", "2:3", "auto"])
+
+    def test_empty_and_junk(self):
+        for raw in ("", "   ", ",,", None):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_ratio_map(raw), {})
+
+    def test_full_width_comma(self):
+        """中文文档里逗号常常是全角的, 而复制粘贴是这个框最主要的填写方式。"""
+        self.assertEqual(list(parse_ratio_map("16:9，1:1")), ["16:9", "1:1"])

@@ -41,6 +41,7 @@ from studio.services.image_client import (
     ImageChannel,
     _url_to_data_uri,
     nearest_ratio,
+    parse_ratio_map,
     parse_ratios,
     ratio_to_pixels,
     size_to_ratio,
@@ -127,7 +128,7 @@ def execute(
 
     poll = tpl.get("poll")
     if not poll:
-        return _pick(payload, tpl.get("result_path", ""), "提交")
+        return _result(payload, tpl.get("result_path", ""), "提交")
 
     task_id = _pick(payload, tpl.get("task_id_path", ""), "提交", noun="task_id")
     if not isinstance(task_id, (str, int)) or str(task_id).strip() == "":
@@ -184,7 +185,7 @@ def _poll(
         last_status = status
         logger.info("template poll: attempt=%d/%d status=%s", attempt + 1, attempts, status)
         if status in done:
-            return _pick(payload, poll.get("result_path", ""), "轮询")
+            return _result(payload, poll.get("result_path", ""), "轮询")
         if status in failed:
             raise TemplateRequestError(
                 f"供应商报告任务失败 (status={status}): "
@@ -211,6 +212,29 @@ def _budget_exhausted(attempts_done: int, last_status: str) -> str:
         f"**不要据此改配置**: 提交和轮询都正常, 只是这家出图慢。直接在画布上真发一次, "
         f"那条路径没有这个时间限制。"
     )
+
+
+def _result(payload: Any, path: str, what: str) -> Any:
+    """回包 → 结果那一项。`result_path` 留空时**跑一次自动认**, 而不是把整个回包交出去。
+
+    留空是合法配置而不是漏填: 有些家结果的位置**每次都不一样** —— Gemini 的
+    `generateContent` 会先回一段文字再回图, 于是图在 `parts[0]` 还是 `parts[1]` 取决于
+    这一次它想不想说话。写死任一个都会间歇性失败。
+
+    用的是向导里那套 `find_result_paths` (按值的形状认: http 地址 / data URI / base64),
+    所以它和"跑一次自动认结果"是同一段逻辑, 不是第二份。
+
+    填了路径就照填的走 —— 自动认只在**没得选**的时候兜底, 不去覆盖用户的明确指定。
+    """
+    if path.strip():
+        return _pick(payload, path, what)
+    hits = find_result_paths(payload)
+    if not hits:
+        raise TemplateRequestError(
+            f"{what}: 回包里没找到任何像图/视频的东西 (模板没写 `result_path`, "
+            f"所以是自动找的)。回包: {str(payload)[:BODY_TRUNC]}"
+        )
+    return _pick(payload, hits[0][0], what)
 
 
 def _pick(payload: Any, path: str, what: str, *, noun: str = "结果") -> Any:
@@ -348,12 +372,16 @@ def image_variables(
     后者对比例串是"解析不了" —— 于是这两个占位符一直渲染成空、键整个消失, 一家要
     width+height 的供应商配得再对也拿不到尺寸, 且没有任何报错。
     """
-    picked = nearest_ratio(size, parse_ratios(channel.allowed_ratios))
-    width, height = ratio_to_pixels(picked)
+    ratios = parse_ratio_map(channel.allowed_ratios)
+    picked = nearest_ratio(size, list(ratios))
+    # `size` 发的是**这家要的那个值**, `aspect_ratio` 永远是比例。两者可能不同 ——
+    # OpenAI 的 3:2 要发 `1536x1024`。没配映射时两者相同, 跟以前一模一样。
+    sent = ratios.get(picked, picked)
+    width, height = ratio_to_pixels(sent)
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
         "n": n, "resolution": resolution,
-        "size": picked, "aspect_ratio": size_to_ratio(picked),
+        "size": sent, "aspect_ratio": size_to_ratio(picked),
         "width": width, "height": height,
     }
 

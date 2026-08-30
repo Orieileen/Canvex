@@ -44,6 +44,16 @@ export const imageProviders = {
         hint: "Gemini via its OpenAI-compatible endpoint — chat box and agent",
         channel: "Gemini chat",
       },
+      openai_image: {
+        label: "Quick setup: OpenAI images",
+        hint: "api.openai.com — gpt-image-1, sizes already mapped",
+        channel: "OpenAI images",
+      },
+      google_image: {
+        label: "Quick setup: Google images",
+        hint: "Gemini native generateContent — not the OpenAI-compatible layer",
+        channel: "Gemini images",
+      },
       fal_angle: {
         label: "Quick setup: re-angle provider",
         hint: "fal.ai — powers the Change angle panel",
@@ -216,6 +226,16 @@ export const imageProviders = {
         label: "快捷配置:Google 官方直连",
         hint: "Gemini,走它的 OpenAI 兼容端点 —— 聊天框和 agent 都走它",
         channel: "Gemini 聊天",
+      },
+      openai_image: {
+        label: "快捷配置:OpenAI 官方生图",
+        hint: "api.openai.com —— gpt-image-1,尺寸映射已经配好",
+        channel: "OpenAI 生图",
+      },
+      google_image: {
+        label: "快捷配置:Google 官方生图",
+        hint: "Gemini 原生 generateContent —— 不走 OpenAI 兼容层",
+        channel: "Gemini 生图",
       },
       fal_angle: {
         label: "快捷配置:视角重渲染供应商",

@@ -130,9 +130,39 @@ def ratio_to_pixels(size: str) -> tuple[int | None, int | None]:
     return snap(w), snap(h)
 
 
+def parse_ratio_map(raw: str) -> dict[str, str]:
+    """`"1:1=1024x1024, 16:9"` → `{"1:1": "1024x1024", "16:9": "16:9"}`。
+
+    左边是**画布上的比例**, 右边是**这家要我们填进 size 字段的东西**。省略右边 = 两者
+    相同 (绝大多数供应商, 比如 apimart 直接收 `16:9`)。
+
+    为什么要有右边: 有些家只收一张写死的像素表, 而且那些像素**不是**按比例算出来的 ——
+    OpenAI 的 gpt-image-1 只认 `1024x1024` / `1536x1024` / `1024x1536`, 而 3:2 按 1024
+    长边算出来是 `1024x672`, 发过去就是 400。火山那张 `resolution → 合法像素` 表也是同一
+    类东西 (内置通道靠 `size_mode=pixel` 里一段硬编码解决, 模板通道一直没有等价物)。
+
+    合成一个字段而不是再加一个: 这两件事永远一起出现 —— 一家会挑比例的供应商, 正是会
+    规定该发什么值的那一家。分成两个字段就必然出现"填了一边"的半配置状态。
+    """
+    out: dict[str, str] = {}
+    for part in (raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        ratio, _, send = part.partition("=")
+        ratio = ratio.strip()
+        if ratio:
+            out[ratio] = send.strip() or ratio
+    return out
+
+
 def parse_ratios(raw: str) -> list[str]:
-    """`"16:9, 1:1, auto"` → `["16:9", "1:1", "auto"]`。空串 / 全是分隔符 → 空列表。"""
-    return [part.strip() for part in (raw or "").replace("，", ",").split(",") if part.strip()]
+    """`"16:9, 1:1=1024x1024"` → `["16:9", "1:1"]` —— 只要**画布上那一半**。
+
+    工具栏的选择器和 `nearest_ratio` 都只关心比例本身; 右边那个"实际要发的值"是渲染模板
+    时才用的 (见 `parse_ratio_map`)。
+    """
+    return list(parse_ratio_map(raw))
 
 
 def _ratio_value(ratio: str) -> float | None:
@@ -372,6 +402,8 @@ class ImageChannel:
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
     size_mode: str = field(default="", metadata={"example": "pixel"})
     # 这个模型**真的收**哪几种比例, 逗号分隔; 空 = 不限制 (默认, 也是绝大多数通道)。
+    # 每一项可以写成 `比例=要发的值` —— 有些家只收一张写死的像素表, 而那些像素不是按比例
+    # 算出来的 (OpenAI: `3:2` 要发 `1536x1024`)。省略右边 = 原样发比例。见 parse_ratio_map。
     #
     # 存在的理由: 画布上那十个比例是固定的, 而各家各模型收的不一样 —— apimart 的
     # gemini-3.1-flash-image-preview 只收 15 种、别的直接 400, 同一家的 gpt-image-2 却
