@@ -421,6 +421,15 @@ export function ImageProviderSettings({
               粘完人就落在十四个输入框里。两个入口只是让人选错, 删了。 */}
           <ChannelWizard onReady={(seed) => addDraft(seed)} specs={tunables} />
 
+          <button
+            type="button"
+            onClick={() => addDraft()}
+            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
+          >
+            <Plus className="size-4" strokeWidth={2} />
+            {t("imageProviders.add")}
+          </button>
+
           {loading && (
             <div className="flex justify-center py-8 text-muted-foreground">
               <Loader2 className="size-5 animate-spin" />
@@ -449,14 +458,6 @@ export function ImageProviderSettings({
             />
           ))}
 
-          <button
-            type="button"
-            onClick={() => addDraft()}
-            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
-          >
-            <Plus className="size-4" strokeWidth={2} />
-            {t("imageProviders.add")}
-          </button>
         </div>
       </SheetContent>
 
