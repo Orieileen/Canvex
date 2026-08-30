@@ -612,6 +612,22 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_picker(self, obj) -> str:
         return KIND_SPECS[obj.provider.kind].picker
 
+    @staticmethod
+    def _channel(obj):
+        """这一行合并好的通道, **一行只算一次**。
+
+        下面三个字段全要它, 而 `channel_for_model` 每次都要把三层配置合并一遍、建一个
+        dataclass, 还会为无法识别的键各记一条 warning —— apimart 那两条预设一共七十来个
+        模型, 算三遍就是两百多次合并和三倍的重复日志, 而每次打开工具栏都要拉这张表。
+        缓存挂在行对象上 (它只活到这次响应结束), 不是进程级的 —— 配置改完下一次请求
+        重新算。
+        """
+        chan = getattr(obj, "_merged_channel", None)
+        if chan is None:
+            chan = channel_for_model(obj)
+            obj._merged_channel = chan
+        return chan
+
     # 这个模型**真的收**哪几种比例。工具栏的比例选择器按它裁 —— 选不中的东西就不该出现
     # 在列表里, 那比"选了再报 400"好得多。
     #
@@ -621,7 +637,7 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     allowed_ratios = serializers.SerializerMethodField()
 
     def get_allowed_ratios(self, obj) -> list[str]:
-        return parse_ratios(channel_for_model(obj).allowed_ratios)
+        return parse_ratios(self._channel(obj).allowed_ratios)
 
     # 这个模型**真的收**哪几个时长(秒)。空 = 用画布自己那三档。
     #
@@ -630,7 +646,7 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     allowed_durations = serializers.SerializerMethodField()
 
     def get_allowed_durations(self, obj) -> list[int]:
-        return parse_durations(channel_for_model(obj).allowed_durations)
+        return parse_durations(self._channel(obj).allowed_durations)
 
     # 这个模型**真的收**哪几个画质档, 由低到高。空 = 这个模型没有画质旋钮, 工具栏就不显示
     # 那个下拉 (= 按供应商自己的默认出片, 也就是这个功能之前的行为)。
@@ -640,7 +656,7 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     allowed_resolutions = serializers.SerializerMethodField()
 
     def get_allowed_resolutions(self, obj) -> list[str]:
-        return parse_resolutions(channel_for_model(obj).allowed_resolutions)
+        return parse_resolutions(self._channel(obj).allowed_resolutions)
 
     class Meta:
         model = ImageModel

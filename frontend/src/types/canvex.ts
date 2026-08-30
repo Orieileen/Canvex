@@ -437,6 +437,12 @@ export interface CanvasWizardProbe {
    *  异步和同步供应商的示例 curl 长得一模一样,差别只在回包。 */
   is_async?: boolean;
   task_id_path?: string;
+  /** `task_id_path` 那一层上**真实的那个值**。向导第 3 步全靠它(拿它去查任务、拿它在
+   *  查询地址里定位该换成 `{{task_id}}` 的那一段)。
+   *
+   *  由后端读出来而不是前端再走一遍回包 —— 那会是第二份"哪个键是任务 id"的规则,而两份
+   *  必然分叉:一家把它叫 `id` / `request_id` 的供应商会让前端拿到空串。 */
+  task_id?: string;
   /** 轮询探针才有 */
   status_path?: string;
   status?: string;

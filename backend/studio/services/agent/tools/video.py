@@ -28,8 +28,10 @@ from studio.services.image_channels import KIND_SPECS, require_channel, resolve_
 from studio.services import channel_health, template_client
 from studio.services.image_client import (
     ImageChannel,
-    nearest_resolution,
-    parse_resolution_map,
+    nearest_duration,
+    parse_durations,
+    resolve_ratio,
+    resolve_resolution,
 )
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
@@ -230,18 +232,26 @@ def generate_video(
 def _submit(job: VideoJob, cfg: ImageChannel) -> str:
     endpoint = f"{cfg.base_url.rstrip('/')}/videos/generations"
 
+    # 时长和比例先过一遍这个模型**真的收**的那张表 —— 跟模板通道那条路 (见
+    # template_client.video_variables) 同一条规则, 也跟 KIND_SPECS[VIDEO] 里放出
+    # allowed_ratios / allowed_durations 两个旋钮的承诺对得上。没填就是不限制, 原样发,
+    # 所以对存量通道是空操作。
+    #
+    # **不能只靠工具栏筛**: agent 的 generate_video 自己挑秒数 (`duration: int = 5`),
+    # 而画布上那三档还是粘在 localStorage 里的 —— 两条都绕过选择器, 表现是供应商回一句
+    # invalid duration, 跟"通道配错了"看起来一模一样。
     body: dict[str, Any] = {
         "model": cfg.model,
         "prompt": job.prompt,
-        "duration": job.duration,
-        "aspect_ratio": job.aspect_ratio or "16:9",
+        "duration": nearest_duration(job.duration, parse_durations(cfg.allowed_durations)),
+        "aspect_ratio": resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1],
     }
     # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
     # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
     if job.resolution and cfg.allowed_resolutions:
-        tiers = parse_resolution_map(cfg.allowed_resolutions)
-        picked = nearest_resolution(job.resolution, list(tiers))
-        body[cfg.resolution_param or "resolution"] = tiers.get(picked, picked)
+        body[cfg.resolution_param or "resolution"] = resolve_resolution(
+            cfg.allowed_resolutions, job.resolution,
+        )[1]
     if job.image_urls:
         # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网
         # URL 原样传 + 可达性预检(防 provider 拿不到 reference 时静默走纯文生视频)。
@@ -253,7 +263,7 @@ def _submit(job: VideoJob, cfg: ImageChannel) -> str:
 
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",
-        endpoint, cfg.model, job.duration, job.aspect_ratio, len(job.image_urls or []),
+        endpoint, cfg.model, body["duration"], body["aspect_ratio"], len(job.image_urls or []),
     )
     resp = _session.post(
         endpoint,

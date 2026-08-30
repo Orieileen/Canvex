@@ -10,12 +10,9 @@
 到底、一条通到一半, 界面上并排放两个入口只是让人选错。
 """
 import json
-import logging
 import re
 import shlex
 from urllib.parse import urlparse, urlunparse
-
-logger = logging.getLogger(__name__)
 
 # 端点那一段: `/<组>/<动作>` 或裸 `/generations`。各家常见的都在这:
 #   images/generations  images/edits  videos/generations  chat/completions
@@ -103,28 +100,11 @@ def _scan_tokens(tokens: list[str]) -> tuple[str, dict, str, dict]:
     return url, headers, body, form
 
 
-def _api_key_from_headers(headers: dict) -> str:
-    """从 Authorization / x-api-key 取 key。文档示例里通常是 `$YOUR_API_KEY` 这类占位符,
-    识别出来就不要往表单里填 —— 填了用户会以为已经配好。"""
-    raw = headers.get("authorization") or headers.get("x-api-key") or ""
-    raw = re.sub(r"^Bearer\s+", "", raw.strip(), flags=re.I)
-    if not raw:
-        return ""
-    placeholder = (
-        raw.startswith("$")
-        or raw.startswith("<")
-        or "YOUR" in raw.upper()
-        or "API_KEY" in raw.upper()
-        or set(raw) <= {"x", "X", "*", ".", "-"}
-    )
-    return "" if placeholder else raw
-
-
 # ─────────────────────── curl → 请求模板 ───────────────────────
 #
-# 上面那套 `parse_curl` 是把 curl 猜成**内置通道的十四个旋钮**; 这里是把 curl 变成
-# **模板通道的请求模板**。后者其实更直接 —— curl 本身就是一个请求, 不需要"这个差异对应
-# 哪个开关"那层映射, 只需要决定哪些值该变成占位符。
+# curl 本身就是一个请求, 所以这条路是直的 —— 不需要"这个差异对应哪个开关"那层映射,
+# 只需要决定哪些值该变成占位符。(删掉的那套 `parse_curl` 走的是另一条: 把 curl 猜成
+# 内置通道的十四个旋钮, 见模块顶上。)
 #
 # 存在的理由: 让人手写模板 JSON 是不现实的。`data.result.images[0].url[0]` 这种路径
 # 连写代码的人都是跑一次看回包才知道的。而用户**已经有**请求那一半 —— 供应商文档里

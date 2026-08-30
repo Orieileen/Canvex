@@ -90,10 +90,13 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
     const next = mapping.map((m) => (m.path === row.path ? { ...m, var: nextVar } : m));
     setMapping(next);
     const body = structuredClone(parsed.template.body ?? {}) as Record<string, unknown>;
-    const segs = row.path.split(".");
-    let node: Record<string, unknown> = body;
-    for (const seg of segs.slice(0, -1)) node = node?.[seg] as Record<string, unknown>;
-    if (node) node[segs[segs.length - 1]] = nextVar ? `{{${nextVar}}}` : row.sample;
+    const segs = pathSegments(row.path);
+    let node: unknown = body;
+    for (const seg of segs.slice(0, -1)) node = (node as Record<string, unknown>)?.[seg];
+    if (node && typeof node === "object") {
+      (node as Record<string, unknown>)[segs[segs.length - 1]] =
+        nextVar ? `{{${nextVar}}}` : row.sample;
+    }
     setParsed({ ...parsed, template: { ...parsed.template, body } });
   };
 
@@ -131,7 +134,11 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
         setStep("done");
       } else if (data.is_async) {
         // **这一步是这个向导最值钱的地方**: 文档里看不出来这家是异步的。
-        setTaskId(String(pickTaskId(data.raw) ?? ""));
+        // 任务 id 用**后端**从回包里读出来的那个 (见 template_client.probe_template)。
+        // 前端原来自己走一遍回包, 那是第二份"哪个键是任务 id"的规则 —— 它只认
+        // `task_id` / `job_id`, 于是一家把它叫 `id` 或 `request_id` 的供应商会让这里
+        // 拿到空串, 而空串会让下一步的 parse 接口走错分支 (它按 task_id 有没有值分流)。
+        setTaskId(data.task_id ?? "");
         setParsed({
           ...parsed,
           template: { ...parsed.template, task_id_path: data.task_id_path ?? "" },
@@ -147,6 +154,13 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
 
   const parsePoll = async () => {
     if (!parsed) return;
+    // 没有 task_id 就不能解析查询那一段: 后端按 `task_id` 有没有值分流 (有 = 解析 poll
+    // 段, 没有 = 当成又一段提交 curl), 而后者会回一份没有 `poll` 的东西 —— 界面上看起来
+    // 像成功了, 实际什么都没往前走。
+    if (!taskId) {
+      toast.error(t("wizard.noTaskId"), { duration: 12000 });
+      return;
+    }
     setBusy(true);
     try {
       const { data } = await canvasService.wizardParsePollCurl(pollCurl, {
@@ -445,20 +459,14 @@ function channelName(baseUrl: string, kindWord: string): string {
   return kindWord ? `${core} ${kindWord}` : core;
 }
 
-function pickTaskId(raw: unknown): string | undefined {
-  const seen: string[] = [];
-  const walk = (n: unknown) => {
-    if (Array.isArray(n)) n.forEach(walk);
-    else if (n && typeof n === "object") {
-      for (const [k, v] of Object.entries(n as Record<string, unknown>)) {
-        if (/task_?id|job_?id/i.test(k) && (typeof v === "string" || typeof v === "number")) {
-          seen.push(String(v));
-        } else walk(v);
-      }
-    }
-  };
-  walk(raw);
-  return seen[0];
+/** `contents[0].parts[0].text` → `["contents","0","parts","0","text"]`。
+ *
+ *  后端的 mapping 路径对数组用的是 `[i]` (见 curl_import._templatize), 所以**不能只按
+ *  `.` 切**: 那样第一段会变成字面量 `"contents[0]"`, 在 body 里找不到, 于是改一行嵌在
+ *  数组里的映射会静默地什么都不做 —— 下拉变了, 模板没变。Gemini 那种
+ *  `contents[].parts[].text` 的请求体正是这个形状。 */
+function pathSegments(path: string): string[] {
+  return path.match(/[^.[\]]+/g) ?? [];
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {

@@ -249,6 +249,32 @@ def nearest_resolution(want: str, allowed: list[str]) -> str:
     return min(scored)[2] if scored else allowed[0]
 
 
+# ── 「挑一个这个模型真的收的值」的那三步 ──────────────────────────────────────
+#
+# 三步永远一起出现: 解析成 `显示值 → 要发的值` 的表 → 挑最近的一个 → 查出要发的那半。
+# 抄开的话第三步最容易掉 —— 它对没写 `=` 右半边的通道是空操作, 所以**漏了也看不出来**,
+# 只有配了映射的那一家会静默地发错值。实测掉过一次: video_variables 就少了这一步。
+def resolve_ratio(raw: str, want: str) -> tuple[str, str]:
+    """`(选择器里那个比例, 要发出去的那个值)`。没配 allowed_ratios 时两者都是 `want`。"""
+    ratios = parse_ratio_map(raw)
+    picked = nearest_ratio(want, list(ratios))
+    return picked, ratios.get(picked, picked)
+
+
+def resolve_resolution(raw: str, want: str) -> tuple[str, str]:
+    """`(选择器里那个画质档, 要发出去的那个值)` —— 可灵显示 `1080P` 而要发 `pro`。
+
+    **空进空出**: 没选画质 = 不下发这个键 = 用供应商的默认。少了这一条,
+    `nearest_resolution("", …)` 会退回列表第一项 —— 一条没人碰过画质旋钮的请求会突然
+    带上一个档位, 而那是替用户做了决定。
+    """
+    if not (want or "").strip():
+        return "", ""
+    tiers = parse_resolution_map(raw)
+    picked = nearest_resolution(want, list(tiers))
+    return picked, tiers.get(picked, picked)
+
+
 def parse_durations(raw: str) -> list[int]:
     """`"4, 8, 12"` → `[4, 8, 12]`。认不出的项跳过, 空串 → 空列表 (= 不限制)。"""
     out: list[int] = []

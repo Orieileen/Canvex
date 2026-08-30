@@ -146,6 +146,19 @@ class ResolutionDiagnosisTests(SimpleTestCase):
             "resolution",
         )
 
+    def test_mode_does_not_swallow_model(self):
+        """`"invalid mode" in "invalid model"` 是真的 —— 而 mode 那条排在"模型名"前面。
+        纯子串匹配会把每一句 `invalid model` 判成"画质档不对", 送人去改一个跟报错毫无
+        关系的字段。"""
+        for text in (
+            'HTTPError: 400 Bad Request for https://x/v1/images/generations: '
+            '{"error":{"message":"Invalid model: gpt-image-9"}}',
+            'HTTPError: 400 Bad Request for https://x/v1/images/generations: '
+            '{"error":{"message":"unknown model: foo"}}',
+        ):
+            with self.subTest(text=text[-60:]):
+                self.assertEqual(diagnose(text), "model")
+
     def test_plain_bad_request_is_not_a_resolution_problem(self):
         self.assertNotEqual(
             diagnose('HTTPError: 400 Bad Request for https://x/v1/videos/generations: '

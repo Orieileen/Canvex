@@ -41,7 +41,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai — 33 image models, async, request shape wired up",
+        hint: "api.apimart.ai — 26 image models, async, request shape wired up",
         channel: "apimart images",
       },
       openai_chat: {
@@ -260,7 +260,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai —— 33 个生图模型,异步,请求形状已经配好",
+        hint: "api.apimart.ai —— 26 个生图模型,异步,请求形状已经配好",
         channel: "apimart 生图",
       },
       openai_chat: {

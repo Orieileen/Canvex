@@ -47,8 +47,7 @@ from studio.services.image_client import (
     ImageClient,
     build_image_client,
     build_probe_client,
-    nearest_ratio,
-    parse_ratios,
+    resolve_ratio,
     size_to_ratio,
 )
 from studio.services import channel_health, template_client
@@ -173,12 +172,19 @@ def _single_generation(
     # 先把用户选的比例换成这个模型**真的收**的那一个。没填 allowed_ratios 就是原样,
     # 所以这一行对绝大多数通道是空操作。放在 size_mode 适配**之前**: 火山那张像素表按
     # 比例查, 查的该是映射之后的那个。
-    size = nearest_ratio(size, parse_ratios(channel.allowed_ratios))
+    picked, sent = resolve_ratio(channel.allowed_ratios, size)
+    size = picked
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
     elif channel.poll_enabled:
         size = size_to_ratio(size)
+    # `比例=要发的值` 的右半边 (OpenAI 的 `3:2=1536x1024`)。**最后覆盖**, 因为它比上面
+    # 那两条适配更具体 —— 用户明说了这家要填什么, 而 `size_mode=pixel` 的像素表和
+    # `poll_enabled` 的"归一成比例串"都是我们替他猜的。没写右半边时 `sent`
+    # 就是 picked 本身, 这一行不动任何东西 (模板通道那半在 template_client 里同理)。
+    if sent != picked:
+        size = sent
 
     response = client.generate(
         prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,

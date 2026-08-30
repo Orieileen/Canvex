@@ -73,16 +73,20 @@ class ChatProtocolTests(SimpleTestCase):
                 self.assertTrue(hasattr(model, "bind_tools"))
 
     def test_anthropic_shape_and_tool_calling(self):
-        srv = HTTPServer(("127.0.0.1", 8913), _Handler)
+        # 端口要 0 让内核分配, 别写死一个数: 写死的那个在 CI 上迟早撞上别人 (或者上一次
+        # 跑剩的 TIME_WAIT), 表现是这条测试偶发 EADDRINUSE —— 跟协议本身毫无关系。
+        srv = HTTPServer(("127.0.0.1", 0), _Handler)
+        port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             model = CHAT_PROTOCOLS["anthropic"](
-                api_key="sk-ant-fake", base_url="http://127.0.0.1:8913",
+                api_key="sk-ant-fake", base_url=f"http://127.0.0.1:{port}",
                 model="claude-test", max_retries=1, timeout=10, callbacks=[],
             )
             reply = model.bind_tools([paint]).invoke("给我画一只橘猫")
         finally:
             srv.shutdown()
+            srv.server_close()      # shutdown 只停循环, 不放监听套接字
 
         seen = _Handler.seen
         self.assertEqual(seen["path"], "/v1/messages")

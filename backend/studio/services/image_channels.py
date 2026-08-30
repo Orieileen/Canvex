@@ -566,6 +566,18 @@ class _Preset:
     request_template: dict = dataclasses.field(default_factory=dict)
 
 
+def _sparse_overrides(model: str, **tables: dict[str, str]) -> dict[str, str]:
+    """`model` 在哪几张约束表里有数据, 就收哪几个键; 没有的跳过。
+
+    存在的理由: 这些表是**稀疏**的 —— 跟画布默认一致的模型故意不写进去, 空 = 不限制。
+    所以每个字段都得写一遍 `**({"字段": 表[m]} if m in 表 else {})`, 而约束轴现在有四条
+    (比例/时长/画质/画质键名), 两条预设加起来这个句式出现五次。抄第六次的时候, 抄错表名
+    或者漏掉 else 分支都不会报错 —— 这些字典是在 import 时构造好的, 错了只是某个模型
+    静默地少一份约束。
+    """
+    return {field: table[model] for field, table in tables.items() if model in table}
+
+
 # 这几个模型**只会文生图** —— 传 `image_urls` 必失败。所以它们不在 apimart 生图预设里。
 #
 # 为什么是"删掉"而不是"加个旋钮筛一下": 画布的「图像」标签**必须先选中一张图**才能用
@@ -588,8 +600,13 @@ class _Preset:
 # 跟比例那张表相反, 这里是**"照它列"而不是"拿它筛"** —— 跟视频画质同一个道理: 画布只有
 # 1K/2K/4K 三档, 而各家有 0.5K、1.5K、3K, flux 干脆用 MP 计。筛完只会剩下残缺的几档。
 #
-# 没有这个参数的模型留空 (= 不下发这个键): gpt-image-1 / -1.5、flux-kontext 两个、
-# grok-imagine-1.5-apimart。另外四个没有文档页的 grok 也留空。
+# 文档里没有 resolution 这个参数的模型留空: gpt-image-1 / -1.5、flux-kontext 两个、
+# grok-imagine-1.5-apimart。
+#
+# **留空 ≠ 不下发这个键。** 留空的意思是"我们没有这个模型的档位数据", 画布照样把它选的
+# 那一档原样发过去 —— 实测过: 给 gpt-image-1 发 `resolution: 2K` (它把字段透传给 OpenAI,
+# 最严的那个上游), 任务照样完成出图。这家忽略不认识的键。硬改成不发, 会让手写模板的通道
+# 白白少一个能用的旋钮。见 test_undeclared_models_pass_the_canvas_tier_through。
 _APIMART_IMAGE_RESOLUTIONS: dict[str, str] = {
     # ── /images/gpt-image-2 ── 文档写的是小写
     "gpt-image-2": "1k, 2k, 4k",
@@ -929,11 +946,11 @@ PRESETS: tuple[_Preset, ...] = (
             "wan2.7-image-pro", "wan2.7-image",
         ),
         model_overrides={
-            m: {
-                **({"allowed_ratios": _APIMART_IMAGE_RATIOS[m]} if m in _APIMART_IMAGE_RATIOS else {}),
-                **({"allowed_resolutions": _APIMART_IMAGE_RESOLUTIONS[m]}
-                   if m in _APIMART_IMAGE_RESOLUTIONS else {}),
-            }
+            m: _sparse_overrides(
+                m,
+                allowed_ratios=_APIMART_IMAGE_RATIOS,
+                allowed_resolutions=_APIMART_IMAGE_RESOLUTIONS,
+            )
             for m in (_APIMART_IMAGE_RATIOS.keys() | _APIMART_IMAGE_RESOLUTIONS.keys())
         },
         request_template=_STARTER_APIMART_IMAGE,
@@ -1025,12 +1042,15 @@ PRESETS: tuple[_Preset, ...] = (
         ),
         model_overrides={
             m: {
+                # 画质档这一张是**满的** (41 行), 所以无条件取; 其余三张是稀疏的。
                 "allowed_resolutions": r,
+                **_sparse_overrides(
+                    m,
+                    allowed_durations=_APIMART_VIDEO_DURATIONS,
+                    allowed_ratios=_APIMART_VIDEO_RATIOS,
+                ),
+                # 这一条的来源是个元组而不是"模型 → 值"的表, 所以不走 _sparse_overrides。
                 **({"resolution_param": "mode"} if m in _APIMART_VIDEO_MODE_MODELS else {}),
-                **({"allowed_durations": _APIMART_VIDEO_DURATIONS[m]}
-                   if m in _APIMART_VIDEO_DURATIONS else {}),
-                **({"allowed_ratios": _APIMART_VIDEO_RATIOS[m]}
-                   if m in _APIMART_VIDEO_RATIOS else {}),
             }
             for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },

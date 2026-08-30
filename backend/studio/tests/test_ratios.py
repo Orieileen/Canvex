@@ -13,6 +13,8 @@ from studio.services.image_client import (
     parse_durations,
     parse_resolution_map,
     parse_resolutions,
+    resolve_ratio,
+    resolve_resolution,
     parse_ratio_map,
     parse_ratios,
     ratio_to_pixels,
@@ -206,3 +208,32 @@ class NearestResolutionTests(SimpleTestCase):
         self.assertEqual(nearest_resolution("4K", ["1K", "1.5K", "2K"]), "2K")
         self.assertEqual(nearest_resolution("0.5K", ["0.5K", "1K", "2K", "4K"]), "0.5K")
         self.assertEqual(nearest_resolution("1K", ["2K", "3K", "4K"]), "2K")   # lite 没有 1K
+
+
+class ResolveHelpersTests(SimpleTestCase):
+    """`resolve_ratio` / `resolve_resolution` —— 「解析成表 → 挑最近的 → 查出要发的那半」
+    这三步的唯一实现。四个调用点以前各抄一份, 而**第三步最容易掉**: 它对没写 `=` 右半边
+    的通道是空操作, 所以漏了看不出来, 只有配了映射的那一家会静默发错值。
+    video_variables 就掉过一次。"""
+
+    def test_no_mapping_means_both_halves_are_the_same(self):
+        self.assertEqual(resolve_ratio("16:9, 1:1", "1:1"), ("1:1", "1:1"))
+        self.assertEqual(resolve_resolution("1K, 2K", "2K"), ("2K", "2K"))
+
+    def test_mapping_splits_shown_from_sent(self):
+        """OpenAI 只认写死的像素表; 可灵把画质叫 mode。"""
+        self.assertEqual(resolve_ratio("3:2=1536x1024", "3:2"), ("3:2", "1536x1024"))
+        self.assertEqual(
+            resolve_resolution("720P=std, 1080P=pro", "1080p"), ("1080P", "pro"),
+        )
+
+    def test_unconfigured_channel_is_a_no_op(self):
+        """绝大多数通道没填这两项 —— 原样返回, 这条路不该有任何行为。"""
+        self.assertEqual(resolve_ratio("", "21:9"), ("21:9", "21:9"))
+        self.assertEqual(resolve_resolution("", "4K"), ("4K", "4K"))
+
+    def test_resolution_is_empty_in_empty_out(self):
+        """没选画质 = 不下发这个键。少了这条, 空串会退回列表第一项 —— 等于替用户挑了
+        一档。比例那半没有对应规则: 画布永远会给一个比例。"""
+        self.assertEqual(resolve_resolution("1K, 2K", ""), ("", ""))
+        self.assertEqual(resolve_resolution("1K, 2K", "   "), ("", ""))

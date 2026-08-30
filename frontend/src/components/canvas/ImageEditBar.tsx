@@ -614,16 +614,18 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   //
   // 交集为空时退回完整列表: 模型收的比例可能一个都不在画布这十个里 (4:5 / 8:1 之类),
   // 那时给一个空下拉是最糟的结果 —— 宁可让用户选、后端兜底映射到最近的一个。
-  const allowedKey = (imageModel.models.find((m) => m.id === imageModel.value)
-    ?.allowed_ratios ?? []).join(",");
+  const allowedRatios = useModelAllowed(imageModel, "allowed_ratios");
   const sizes = useMemo(() => {
-    const allowed = allowedKey ? allowedKey.split(",") : [];
-    const hit = IMAGE_EDIT_SIZES.filter((s) => allowed.includes(s.value));
+    const hit = IMAGE_EDIT_SIZES.filter((s) => allowedRatios.includes(s.value));
     return hit.length ? hit : IMAGE_EDIT_SIZES;
-  }, [allowedKey]);
+  }, [allowedRatios]);
 
   // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到对应 option 会显示成
   // 空白, 而用户以为自己选了个东西。
+  //
+  // 取第一项而不是"最近的一个": IMAGE_EDIT_SIZES 的头两项是 auto 和 1:1, 而后端
+  // `nearest_ratio` 对 auto 这种算不出比值的值也正是"优先 auto, 否则 1:1"。两边同一个
+  // 结果, 不需要在前端再实现一遍比值数学。
   useEffect(() => {
     if (!sizes.some((s) => s.value === size)) setSize(sizes[0].value);
   }, [sizes, size]);
@@ -735,17 +737,31 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   );
 }
 
-/** 这个模型**真的收**哪几个画质档 —— 后端下发 (已合并三层配置)。没报就用画布那三档。
+/** 这个模型在某条约束轴上报了哪些值 —— 后端下发 (已合并三层配置)。空数组 = 没报。
  *
- *  跟比例不同, 这里是**照它列**而不是拿它去筛画布那三档: seedream-5-0-lite 只有
- *  2K/3K/4K, seedream-5-0-pro 有个 1.5K, flux-2 按 `1MP`~`4MP` 计 —— 画布那三档筛完
- *  要么残缺要么全空。 */
+ *  **只做"读出来 + 稳定成一个数组"这一件事。** 四条轴拿到数组之后做的事不一样: 比例是
+ *  拿它去**筛**画布那几档, 时长和画质是**照它列**; 旧选择失效时有的落到最近的一档、有的
+ *  取第一项。把那些差别也塞进这个 hook, 它就变成一个四参数的开关, 而每个面板真正在做
+ *  什么反而看不出来了 —— 所以差别留在调用处。
+ *
+ *  返回值按逗号串 memo: 后端每次都发新数组, 直接用它当依赖会让下面的 useMemo/useEffect
+ *  每次渲染都重跑。 */
+function useModelAllowed(
+  picker: ChannelPicker,
+  field: "allowed_ratios" | "allowed_durations" | "allowed_resolutions",
+): string[] {
+  const key = (picker.models.find((m) => m.id === picker.value)?.[field] ?? []).join(",");
+  return useMemo(() => (key ? key.split(",") : []), [key]);
+}
+
+/** 画质档: 没报就退回画布那三档。**照它列**而不是拿它筛 —— seedream-5-0-lite 只有
+ *  2K/3K/4K, seedream-5-0-pro 有个 1.5K, flux-2 按 `1MP`~`4MP` 计, 画布那三档筛完要么
+ *  残缺要么全空。 */
 function useModelResolutions(picker: ChannelPicker): string[] {
-  const key = (picker.models.find((m) => m.id === picker.value)
-    ?.allowed_resolutions ?? []).join(",");
+  const tiers = useModelAllowed(picker, "allowed_resolutions");
   return useMemo(
-    () => (key ? key.split(",") : (IMAGE_EDIT_RESOLUTIONS as string[])),
-    [key],
+    () => (tiers.length ? tiers : (IMAGE_EDIT_RESOLUTIONS as string[])),
+    [tiers],
   );
 }
 
@@ -793,28 +809,28 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   // 时长跟比例的处理不一样: 比例是拿它去**筛**画布那三档, 时长是**照它列**。因为各家
   // 收的秒数差得离谱 —— veo3 固定 8 秒、sora 只收 4/8/12/16/20, 画布那三档 (5/10/15)
   // 一个都不在里面, 筛完会是个空下拉。照它列则显示「8 秒」, 诚实且能用。
-  const picked = videoModel.models.find((m) => m.id === videoModel.value);
-  const durKey = (picked?.allowed_durations ?? []).join(",");
-  const ratioKey = (picked?.allowed_ratios ?? []).join(",");
-  const resKey = (picked?.allowed_resolutions ?? []).join(",");
+  const allowedDurations = useModelAllowed(videoModel, "allowed_durations");
+  const allowedRatios = useModelAllowed(videoModel, "allowed_ratios");
   const durations = useMemo(() => {
-    const allowed = durKey ? durKey.split(",").map(Number).filter(Number.isFinite) : [];
+    const allowed = allowedDurations.map(Number).filter(Number.isFinite);
     return allowed.length ? allowed : (VIDEO_DURATIONS as number[]);
-  }, [durKey]);
+  }, [allowedDurations]);
   const ratios = useMemo(() => {
-    const allowed = ratioKey ? ratioKey.split(",") : [];
-    const hit = VIDEO_ASPECT_RATIOS.filter((r) => allowed.includes(r));
+    const hit = VIDEO_ASPECT_RATIOS.filter((r) => allowedRatios.includes(r));
     return hit.length ? hit : VIDEO_ASPECT_RATIOS;
-  }, [ratioKey]);
+  }, [allowedRatios]);
   // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
   // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
-  const resolutions = useMemo(() => (resKey ? resKey.split(",") : []), [resKey]);
+  const resolutions = useModelAllowed(videoModel, "allowed_resolutions");
 
   // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
   // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。
   useEffect(() => {
     if (!durations.includes(duration)) setDuration(nearestDuration(duration, durations));
   }, [durations, duration]);
+  // 比例取第一项 (16:9) 而不是"最近的一个": 后端 `nearest_ratio` 按长宽比的**比值**挑,
+  // 前端要一致就得把那套比值数学再实现一遍。而这里挑出来的值本身是合法的, 后端会原样
+  // 放行 —— 两边不会打架, 只是"1:1 换到只收横竖的模型"时后端若自己挑会挑 9:16。
   useEffect(() => {
     if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
   }, [ratios, aspectRatio]);

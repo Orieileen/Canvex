@@ -42,16 +42,17 @@ from studio.services.image_client import (
     ImageChannel,
     _url_to_data_uri,
     nearest_duration,
-    nearest_ratio,
-    nearest_resolution,
     parse_durations,
-    parse_ratio_map,
-    parse_ratios,
-    parse_resolution_map,
     ratio_to_pixels,
+    resolve_ratio,
+    resolve_resolution,
     size_to_ratio,
 )
-from studio.services.listings_utils import _extract_image_bytes_from_item, resolve_image_bytes
+from studio.services.listings_utils import (
+    _extract_image_bytes_from_item,
+    budget_exhausted_message,
+    resolve_image_bytes,
+)
 from studio.services.request_template import TemplateError, extract, placeholders, render
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,9 @@ def _poll(
             wait = min(wait * 2, max_wait)
         # 睡完再判: 这样"还剩 2 秒"时不会再发一个必然来不及的请求。
         if deadline is not None and time.monotonic() >= deadline:
-            raise TemplateRequestError(_budget_exhausted(attempt, last_status))
+            # 话跟内置轮询那条**共用一份** (见 listings_utils.budget_exhausted_message):
+            # 抄两份的下场是其中一份哪天被改成一句会被 channel_diagnosis 误认的话。
+            raise TemplateRequestError(budget_exhausted_message(attempt, last_status))
         payload = _request(
             # 轮询默认 **GET** (提交那一次才默认 POST): 状态端点几乎都是 GET, 而模板里
             # 漏写 `method` 时发一个 POST 换回来的 405 跟"模板哪里写错了"毫无关系。
@@ -201,21 +204,6 @@ def _poll(
         f"最后看到的状态是 `{last_status or '(取不到)'}`。要么把 poll_max_attempts / "
         f"poll_interval / poll_max_interval 调大, 要么检查模板里的 `status_path` 和 "
         f"`done` 写对了没有。"
-    )
-
-
-def _budget_exhausted(attempts_done: int, last_status: str) -> str:
-    """撞上 deadline 时那句话。
-
-    **它不等于"这条通道配错了"** —— 恰恰相反, 走到这里说明提交成功、轮询也在正常返回
-    状态, 只是这家比一次同步测试能等的时间更慢。所以话要从这一句开始说, 否则用户会去改
-    一个没问题的配置。
-    """
-    return (
-        f"这条通道跑得通, 但比这次测试能等的时间更慢 —— 轮询了 {attempts_done} 次, "
-        f"最后看到的状态是 `{last_status or '(取不到)'}`, 时间预算用完了。"
-        f"**不要据此改配置**: 提交和轮询都正常, 只是这家出图慢。直接在画布上真发一次, "
-        f"那条路径没有这个时间限制。"
     )
 
 
@@ -359,23 +347,6 @@ def _base_variables(
     }
 
 
-def _resolution_for(channel: ImageChannel, want: str) -> str:
-    """用户选的画质档 → 这个模型**真的收**的那个值。没配 `allowed_resolutions` = 原样。
-
-    返回的是**要发出去的那个值**而不是显示的那个 —— 可灵那四个模型显示 `1080P` 但要发
-    `pro` (见 parse_resolution_map)。
-
-    **空进空出**: 没选画质 = 不下发这个键 = 用供应商的默认。少了这一行的话,
-    `nearest_resolution("", …)` 会退回列表第一项 —— 一条没人碰过画质旋钮的请求会突然
-    带上一个档位, 而那是替用户做了决定。
-    """
-    if not (want or "").strip():
-        return ""
-    tiers = parse_resolution_map(channel.allowed_resolutions)
-    picked = nearest_resolution(want, list(tiers))
-    return tiers.get(picked, picked)
-
-
 def image_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
     n: int = 1, resolution: str = "", session: requests.Session | None = None,
@@ -394,15 +365,13 @@ def image_variables(
     后者对比例串是"解析不了" —— 于是这两个占位符一直渲染成空、键整个消失, 一家要
     width+height 的供应商配得再对也拿不到尺寸, 且没有任何报错。
     """
-    ratios = parse_ratio_map(channel.allowed_ratios)
-    picked = nearest_ratio(size, list(ratios))
     # `size` 发的是**这家要的那个值**, `aspect_ratio` 永远是比例。两者可能不同 ——
     # OpenAI 的 3:2 要发 `1536x1024`。没配映射时两者相同, 跟以前一模一样。
-    sent = ratios.get(picked, picked)
+    picked, sent = resolve_ratio(channel.allowed_ratios, size)
     width, height = ratio_to_pixels(sent)
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        "n": n, "resolution": _resolution_for(channel, resolution),
+        "n": n, "resolution": resolve_resolution(channel.allowed_resolutions, resolution)[1],
         "size": sent, "aspect_ratio": size_to_ratio(picked),
         "width": width, "height": height,
     }
@@ -418,21 +387,26 @@ def video_variables(
     比例同样过一遍 `allowed_ratios` —— 视频模型的可用比例往往比生图还窄 (常见只有
     16:9 / 9:16 / 1:1)。
 
+    `size` / `aspect_ratio` 的分工同 `image_variables`: 前者是要发的值, 后者永远是比例。
+
     **画质档两个占位符只填一个**: 同一件事在 apimart 有两个键名 (37 个模型叫
     `resolution`, 可灵那 4 个叫 `mode`), 而模板是每条通道一份、模型有 41 个。所以两个都
     摆出来, 由 `channel.resolution_param` 决定填哪个, 另一个渲染成空 → 那个键整个消失。
     """
-    picked = nearest_ratio(aspect_ratio, parse_ratios(channel.allowed_ratios))
+    picked, sent = resolve_ratio(channel.allowed_ratios, aspect_ratio)
     # 时长同样过一遍。选择器已经按 allowed_durations 列过一次, 这里管它拦不住的:
     # agent 自己挑的秒数, 以及"换了模型之后 localStorage 里那个旧选择失效"。
     secs = nearest_duration(duration, parse_durations(channel.allowed_durations))
-    tier = _resolution_for(channel, resolution)
+    tier = resolve_resolution(channel.allowed_resolutions, resolution)[1]
     # 认不出的键名退回 `resolution` 而不是谁都不填: 下拉框拦得住手填的通道, 拦不住
     # model.overrides 里的一行 JSON —— 而"谁都不填"的表现是画质旋钮静默失效。
     param = channel.resolution_param if channel.resolution_param in RESOLUTION_PARAM_CHOICES else "resolution"
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        "duration": secs, "aspect_ratio": picked,
+        # 跟生图那张表同一个分工: `aspect_ratio` 永远是比例, `size` 是**这家要的那个值**
+        # (`allowed_ratios` 里 `=` 右半边)。没配映射时两者相同。视频这边以前只有前者,
+        # 于是那半个字段在视频通道上是个静默的空操作。
+        "duration": secs, "aspect_ratio": picked, "size": sent,
         **{name: (tier if name == param else "") for name in RESOLUTION_PARAM_CHOICES},
     }
 
@@ -548,6 +522,7 @@ def probe_template(
         timeout=channel.timeout, what="试跑",
     )
     hits = find_result_paths(payload)
+    task_id_path = "" if hits else _find_task_id_path(payload)
     return {
         "raw": payload,
         "candidates": [{"path": p, "preview": d} for p, d in hits],
@@ -560,8 +535,27 @@ def probe_template(
         "result_path": hits[0][0] if hits else "",
         "is_async": (not hits) and looks_like_task(payload),
         # 异步时下一步要用的: 提交回来的任务 id 在哪一层。
-        "task_id_path": "" if hits else _find_task_id_path(payload),
+        "task_id_path": task_id_path,
+        # …以及那一层上**真实的那个值**。向导的第 3 步全靠它 (拿它去查任务、拿它在查询
+        # 地址里定位该换成 `{{task_id}}` 的那一段)。
+        #
+        # **由后端给, 别让前端再走一遍回包**: 那样就是第二份"哪个键是任务 id"的规则, 而
+        # 两份必然分叉 —— 前端那份原来只认 `task_id` / `job_id`, 于是一家把它叫 `id` 或
+        # `request_id` 的供应商 (这里认得) 会让向导拿到空 id, 而空 id 会让下一步的
+        # parse 接口走错分支、回一份没有 `poll` 段的东西, 界面上还弹一个成功提示。
+        "task_id": _value_at(payload, task_id_path),
     }
+
+
+def _value_at(payload: Any, path: str) -> str:
+    """路径上的标量值, 取不到就空串。`extract("")` 会把整个回包还回来, 所以空路径先挡掉。"""
+    if not path:
+        return ""
+    try:
+        value = extract(payload, path)
+    except TemplateError:
+        return ""
+    return str(value).strip() if isinstance(value, (str, int)) else ""
 
 
 def _first_http(payload: Any, hits: list[tuple[str, str]]) -> str:

@@ -39,6 +39,17 @@ def _any(text: str, *needles: str) -> bool:
     return any(n in text for n in needles)
 
 
+# 可灵那四个模型把画质叫 `mode`, 而且**是异步校验的** —— 提交那一下回 200 带 task_id,
+# 任务立刻转 failed, 原话是 `mode value 'bogus' is invalid`。实测出来的: 只认 resolution
+# 那几个词的话, 这条会落到最后的"供应商说请求有问题", 而那句提示指不出该改哪个字段。
+#
+# **必须是词边界, 不能用子串**: `"invalid mode" in "invalid model"` 是真的 —— 而这条规则
+# 排在"模型名"前面, 所以纯子串匹配会把每一句 `invalid model` / `unsupported model` 都
+# 判成"画质档不对", 把人送去改一个跟报错毫无关系的字段。这正是本模块顶上那句
+# "一句猜错的'多半是 X'比没有更糟"说的情况。
+_MODE_RE = re.compile(r"\b(?:invalid|unsupported)\s+mode\b|\bmode\s+value\b")
+
+
 def diagnose(error: str, *, template: bool = False) -> str:
     """报错原文 → 诊断 code (认不出 = 空串)。
 
@@ -113,12 +124,7 @@ def diagnose(error: str, *, template: bool = False) -> str:
         text,
         "invalid_resolution", "invalid resolution", "unsupported resolution",
         "resolution is not supported", "分辨率不支持", "不支持的分辨率",
-        # 可灵那四个模型把画质叫 `mode`, 而且**是异步校验的** —— 提交那一下回 200 带
-        # task_id, 任务立刻转 failed, 原话是 `mode value 'bogus' is invalid`。实测出来的:
-        # 只认 resolution 那几个词的话, 这条会落到最后的"供应商说请求有问题", 而那句提示
-        # 指不出该改哪个字段。
-        "invalid mode", "mode value", "unsupported mode",
-    ):
+    ) or _MODE_RE.search(text):
         return "resolution"
 
     # ⑥ 模型名 —— 状态码没有专属的一种, 只能看正文, 所以也排在 4xx/5xx 前面。

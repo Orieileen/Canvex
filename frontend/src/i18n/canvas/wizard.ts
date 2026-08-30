@@ -36,9 +36,13 @@ export const wizard = {
     image_base64: "source image (downloaded, base64)",
     images_base64: "source images (downloaded, base64)",
     duration: "duration",
+    /** 可灵那几个模型把画质档叫 `mode` —— 视频的变量表里两个键都有, 每次只填一个。 */
+    mode: "quality tier (Kling's `mode`)",
   },
   probe: "Try it once",
   probeCost: "sends a real request — costs one generation",
+  noTaskId:
+    "We couldn't find the task id in that response, so there is nothing to query with. Open the advanced JSON editor and fill in `task_id_path` and the `poll` section by hand.",
   noImage:
     "The response came back but there is no image in it and it doesn't look like a task either. Check the model name, or open the advanced JSON editor.",
   isAsync:
@@ -84,9 +88,12 @@ export const wizard = {
     image_base64: "源图(下载后 base64)",
     images_base64: "源图(下载后 base64,数组)",
     duration: "时长",
+    mode: "画质档位(可灵那几个叫 `mode`)",
   },
   probe: "试跑一次",
   probeCost: "会真发一次请求,消耗一次生成额度",
+  noTaskId:
+    "回包里没认出任务 id,拿不到东西去查任务。打开下面的高级 JSON 编辑器,手动填 `task_id_path` 和 `poll` 段。",
   noImage:
     "回包收到了,但里面既没有图、也不像一张任务受理单。检查一下模型名,或者打开下面的高级 JSON 编辑器手动调。",
   isAsync:

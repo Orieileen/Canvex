@@ -1090,6 +1090,14 @@ function TunableEditor({
                   onChange={(e) => set(f.key, e.target.value)}
                   className={inputCls}
                 >
+                  {/* 取值表里没有空串时补一项「未设置」。**不补的话下拉是空白的** ——
+                      `shown` 对没设过的旋钮就是 "", 而 select 的 value 找不到对应
+                      option 时浏览器一个都不选中。resolution_param 正是这种 (取值只有
+                      resolution / mode, 而绝大多数通道从没碰过它)。
+                      protocol 那种自带空串的照旧, 不会多出一项。 */}
+                  {!(f.choices ?? []).includes("") && (
+                    <option value="">{t(`imageProviders.${f.empty_label}`)}</option>
+                  )}
                   {/* 空串排第一 = 默认那一项 (见后端的 CHAT_PROTOCOL_CHOICES)。它的
                       名字要说清楚"不选就是这个", 而不是显示成一个空格。 */}
                   {(f.choices ?? []).map((c) => (
