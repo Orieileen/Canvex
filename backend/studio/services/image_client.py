@@ -130,6 +130,24 @@ def ratio_to_pixels(size: str) -> tuple[int | None, int | None]:
     return snap(w), snap(h)
 
 
+def _parse_pair_map(raw: str) -> dict[str, str]:
+    """`"a=x, b"` → `{"a": "x", "b": "b"}`。省略右边 = 两边相同。逗号分隔, 认全角逗号。
+
+    比例和画质档位共用这一条: 两者的形状完全一样 —— 左边是**我们摆在选择器里的那个值**,
+    右边是**这家要我们填进去的那个值**。抄两份的话, 只会在其中一份修好"全角逗号"这类小事。
+    """
+    out: dict[str, str] = {}
+    for part in (raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        shown, _, send = part.partition("=")
+        shown = shown.strip()
+        if shown:
+            out[shown] = send.strip() or shown
+    return out
+
+
 def parse_ratio_map(raw: str) -> dict[str, str]:
     """`"1:1=1024x1024, 16:9"` → `{"1:1": "1024x1024", "16:9": "16:9"}`。
 
@@ -144,16 +162,7 @@ def parse_ratio_map(raw: str) -> dict[str, str]:
     合成一个字段而不是再加一个: 这两件事永远一起出现 —— 一家会挑比例的供应商, 正是会
     规定该发什么值的那一家。分成两个字段就必然出现"填了一边"的半配置状态。
     """
-    out: dict[str, str] = {}
-    for part in (raw or "").replace("，", ",").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        ratio, _, send = part.partition("=")
-        ratio = ratio.strip()
-        if ratio:
-            out[ratio] = send.strip() or ratio
-    return out
+    return _parse_pair_map(raw)
 
 
 def parse_ratios(raw: str) -> list[str]:
@@ -175,6 +184,60 @@ def _ratio_value(ratio: str) -> float | None:
         except ValueError:
             return None
     return w / h if h else None
+
+
+# 一个画质档位在"贵/清晰"这条轴上的位置。`720p` → 720, `2K` → 2000, `4k` → 4000。
+# 只用来排序和挑最近的一个, 不是真实像素 (`2K` 按宽算是 2560, 按高算是 1440 —— 两种都
+# 不重要, 重要的是它排在 1080p 和 4k 中间)。
+def _resolution_value(tier: str) -> float | None:
+    text = (tier or "").strip().lower()
+    if not text:
+        return None
+    unit = 1000.0 if text.endswith("k") else 1.0
+    head = text.rstrip("pk").strip()
+    try:
+        return float(head) * unit
+    except ValueError:
+        return None
+
+
+def parse_resolution_map(raw: str) -> dict[str, str]:
+    """`"720P=std, 1080P=pro"` → `{"720P": "std", "1080P": "pro"}`。
+
+    左边是**选择器里显示的画质档**, 右边是**这家要我们填进去的值**。省略右边 = 两者相同
+    (绝大多数模型直接收 `720p`)。
+
+    右边这一半不是可选的装饰: apimart 的可灵四个模型把画质叫 `mode`, 取值是
+    `std` / `pro` / `4k` —— 文档写明 std=720P、pro=1080P。选择器里摆一个「std」等于让用户
+    自己去查那是多少像素, 而摆「720P」再发 `std` 两边都对。
+    """
+    return _parse_pair_map(raw)
+
+
+def parse_resolutions(raw: str) -> list[str]:
+    """`"720P=std, 1080P=pro"` → `["720P", "1080P"]` —— 只要**摆在选择器里的那一半**。"""
+    return list(parse_resolution_map(raw))
+
+
+def nearest_resolution(want: str, allowed: list[str]) -> str:
+    """用户选的画质档 → 这个模型**真的收**的那一个。`allowed` 为空 = 不限制, 原样返回。
+
+    先按大小写不敏感对一遍: 同一档各家写法不一 (`720p` / `720P`), 而画布上存的是上一个
+    模型的写法 —— 不归一的话换个模型就变成"没匹配上", 白白掉一档。
+
+    对不上时挑数值最近的, 平手取**低**的那个 —— 画质跟时长一样是按档计费的
+    (wan3.0 的文档原话: 不传 resolution 按 1080P 计费, 对成本敏感请显式传 480P/720P)。
+    """
+    if not allowed:
+        return want
+    lowered = {r.lower(): r for r in allowed}
+    hit = lowered.get((want or "").strip().lower())
+    if hit is not None:
+        return hit
+    target = _resolution_value(want)
+    scored = [(abs(value - target), value, r) for r in allowed
+              if (value := _resolution_value(r)) is not None] if target is not None else []
+    return min(scored)[2] if scored else allowed[0]
 
 
 def parse_durations(raw: str) -> list[int]:
@@ -393,6 +456,16 @@ _D = {f.name: f.default for f in fields(ImageClient)}
 # 在 import 时对着它断言, 所以两边不可能漂。
 CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
 
+# 画质档位放在请求体的哪个键上。**这是一个二选一的事实, 不是一个开放的字段名**:
+# apimart 那 41 个视频模型里 37 个叫 `resolution`, 可灵那 4 个 (kling-v2-6 / kling-v3 /
+# kling-v3-omni / kling-video-o1) 叫 `mode`。模板是**每条通道一份**而模型有 41 个, 所以
+# "填哪个键"只能是 per-model 的数据 —— 模板里两个占位符都写上, 没选中的那个渲染成空、
+# 键整个消失 (见 request_template 的空值规则)。
+#
+# 做成 choices 而不是自由文本: 写一个模板里没有的名字 (`quality`), 表现是这个键静默地
+# 不下发 —— 配得看上去完全正确, 而画质旋钮不起作用, 没有任何报错。
+RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
+
 
 @dataclass(frozen=True)
 class ImageChannel:
@@ -469,6 +542,23 @@ class ImageChannel:
     allowed_durations: str = field(default="", metadata={"example": "5, 10, 15"})
     allowed_ratios: str = field(
         default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
+    )
+    # 这个模型**真的收**哪几个画质档, 由低到高; 空 = 这个模型没有画质旋钮, 那个键不下发
+    # (= 用供应商自己的默认, 也就是这个功能之前的行为)。
+    #
+    # 跟 allowed_durations 一样是"照它列"而不是"拿它筛" —— 画布这边根本没有一张固定的
+    # 画质档表可筛, 各家的档位从 360p 一路到 4k, 还有 MiniMax 的 `2K`、可灵的 `std/pro`。
+    #
+    # 右边那一半 (`720P=std`) 的用处见 parse_resolution_map。
+    #
+    # **不填的代价是钱**: wan3.0-video 的文档原话是"不传 resolution 时按 1080P 计费,
+    # 对成本敏感时请显式传 480P 或 720P" —— 一条没配这一项的通道会一直按最贵的档出片,
+    # 而界面上完全看不出来。
+    allowed_resolutions: str = field(default="", metadata={"example": "480p, 720p, 1080p"})
+    # 画质档发到哪个键上。只有视频通道用得上 (生图那边没有第二种叫法)。见
+    # RESOLUTION_PARAM_CHOICES。
+    resolution_param: str = field(
+        default="resolution", metadata={"choices": RESOLUTION_PARAM_CHOICES},
     )
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──

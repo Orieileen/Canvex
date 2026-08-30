@@ -186,6 +186,8 @@ export const imageProviders = {
         "The TLS handshake failed — usually the network or a proxy, not your config. Try another network, or turn the proxy off.",
       ratio:
         "This model doesn't take that aspect ratio — but the message below lists the ones it does. Paste them into \"aspect ratios this model accepts\" and the toolbar will only offer those.",
+      resolution:
+        "This model doesn't take that quality tier. Check the raw response below — some providers also tie a tier to one clip length (MiniMax only allows 1080p at its shortest duration). Fix the tier list in \"quality tiers this model takes\", or pick a different tier in the toolbar.",
       no_channel:
         "The aggregator has no route for this request — usually the model name isn't enabled for your account or group, occasionally the size tier isn't supported. Check the model name against their docs first; if it's right, check that model's access in their console. (Some aggregators report this as a 5xx, so don't read it as \"their server is down\".)",
       model:
@@ -227,6 +229,8 @@ export const imageProviders = {
       size_mode: "pixel = snap to the provider's legal pixel sizes",
       allowed_ratios: "ratios this model takes",
       allowed_durations: "durations this model takes (s)",
+      allowed_resolutions: "quality tiers this model takes, low → high",
+      resolution_param: "body key for the quality tier",
       protocol: "protocol",
       timeout: "request timeout (s)",
       poll_enabled: "provider returns a task id to poll",
@@ -397,6 +401,8 @@ export const imageProviders = {
         "TLS 握手失败 —— 通常是网络或代理的事,不是配置。换个网络、或者把代理关掉再试。",
       ratio:
         "这个模型不收这个比例 —— 但下面那段原文把它收的都列出来了。把它们填到「这个模型收哪几种比例」里,工具栏就只会给这些。",
+      resolution:
+        "这个模型不收这个画质档。看下面那段原文 —— 有的家还会把画质和时长绑在一起(MiniMax 的 1080p 只能配最短的那一档时长)。改「这个模型收哪几个画质档」,或者在工具栏换一档。",
       no_channel:
         "聚合商说这个请求没有可用渠道 —— 通常是这个模型名在你的账号/分组下没开通,偶尔是这个尺寸档它不支持。先照文档核对模型名;确认没错就去供应商后台看这个模型的权限。(有的聚合商把这种情况报成 5xx,别当成\"人家服务器挂了\"。)",
       model:
@@ -435,6 +441,8 @@ export const imageProviders = {
       size_mode: "pixel = 归一到供应商的合法像素尺寸",
       allowed_ratios: "收哪几种比例",
       allowed_durations: "收哪几个时长(秒)",
+      allowed_resolutions: "收哪几个画质档,由低到高",
+      resolution_param: "画质档发到哪个键",
       protocol: "协议",
       timeout: "请求超时(秒)",
       poll_enabled: "供应商先返 task id 再轮询",

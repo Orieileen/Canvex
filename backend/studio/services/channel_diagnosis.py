@@ -103,6 +103,24 @@ def diagnose(error: str, *, template: bool = False) -> str:
     ):
         return "ratio"
 
+    # ⑤b 画质档不支持 —— 跟比例同一类事、同一个理由排在"模型名"前面 (报文里常带模型名)。
+    #
+    #    单独一条而不是并进 ratio: 要改的字段不是同一个 ("收哪几种比例" vs "收哪几个画质
+    #    档"), 而一句指错字段的提示比没有提示更费时间。apimart 的原话是
+    #    `invalid_resolution`; 另有两条**跨字段**的约束 (MiniMax 的 1080p 只配得上最短的
+    #    那一档时长) 也会落到这里 —— 那种只能靠原文, 所以提示语必须把原文指出来。
+    if _any(
+        text,
+        "invalid_resolution", "invalid resolution", "unsupported resolution",
+        "resolution is not supported", "分辨率不支持", "不支持的分辨率",
+        # 可灵那四个模型把画质叫 `mode`, 而且**是异步校验的** —— 提交那一下回 200 带
+        # task_id, 任务立刻转 failed, 原话是 `mode value 'bogus' is invalid`。实测出来的:
+        # 只认 resolution 那几个词的话, 这条会落到最后的"供应商说请求有问题", 而那句提示
+        # 指不出该改哪个字段。
+        "invalid mode", "mode value", "unsupported mode",
+    ):
+        return "resolution"
+
     # ⑥ 模型名 —— 状态码没有专属的一种, 只能看正文, 所以也排在 4xx/5xx 前面。
     if _any(
         text,

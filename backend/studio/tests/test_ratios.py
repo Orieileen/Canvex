@@ -8,8 +8,11 @@ from django.test import SimpleTestCase
 
 from studio.services.image_client import (
     nearest_duration,
+    nearest_resolution,
     nearest_ratio,
     parse_durations,
+    parse_resolution_map,
+    parse_resolutions,
     parse_ratio_map,
     parse_ratios,
     ratio_to_pixels,
@@ -138,3 +141,52 @@ class DurationTests(SimpleTestCase):
         self.assertEqual(parse_durations("6，10"), [6, 10])        # 全角逗号
         self.assertEqual(parse_durations(""), [])
         self.assertEqual(parse_durations("abc, 5"), [5])           # 认不出的跳过
+
+
+class NearestResolutionTests(SimpleTestCase):
+    """画质档跟时长同一类事, 但**没有画布默认可退** —— 各家从 360p 排到 4k, 还有
+    MiniMax 的 `2K` 和可灵的 `std/pro`, 凑不出一张通用的表。所以没配 = 不发这个键 =
+    用供应商的默认, 而那个默认往往是最贵的一档 (wan3.0-video 文档原话: 不传按 1080P
+    计费)。"""
+
+    def test_empty_is_passthrough(self):
+        self.assertEqual(nearest_resolution("720p", []), "720p")
+
+    def test_case_insensitive_exact_match(self):
+        """同一档各家写法不一 (`720p` / `720P`), 而画布上存的是**上一个模型**的写法。
+        不归一的话换个模型就变成"没匹配上", 白白掉一档。"""
+        self.assertEqual(nearest_resolution("720p", ["720P", "1080P"]), "720P")
+        self.assertEqual(nearest_resolution("4K", ["720p", "1080p", "4k"]), "4k")
+
+    def test_falls_to_nearest_not_to_first(self):
+        """从 seedance-2.0 的 1080p 换到 -fast (只有 480p/720p): 最近的是 720p,
+        取第一个会掉到 480p。"""
+        self.assertEqual(nearest_resolution("1080p", ["480p", "720p"]), "720p")
+        self.assertEqual(nearest_resolution("4k", ["720p"]), "720p")
+
+    def test_k_notation_sorts_between(self):
+        """`2K` 排在 1080p 和 4k 中间 —— MiniMax-H3 只有 768P / 2K 两档。"""
+        self.assertEqual(nearest_resolution("720p", ["768P", "2K"]), "768P")
+        self.assertEqual(nearest_resolution("1080p", ["768P", "2K"]), "768P")
+        self.assertEqual(nearest_resolution("4k", ["768P", "2K"]), "2K")
+
+    def test_ties_prefer_the_cheaper(self):
+        self.assertEqual(nearest_resolution("720p", ["480p", "960p"]), "480p")
+
+    def test_unparseable_want_falls_to_first(self):
+        self.assertEqual(nearest_resolution("", ["480p", "720p"]), "480p")
+        self.assertEqual(nearest_resolution("auto", ["480p", "720p"]), "480p")
+
+    def test_map_form_shows_pixels_sends_mode(self):
+        """可灵那四个模型把画质叫 `mode`, 取值 std / pro —— 文档自己标了 std=720P。
+        选择器摆「std」等于让用户去查那是多少像素, 摆「720P」再发 std 两边都对。"""
+        tiers = parse_resolution_map("720P=std, 1080P=pro, 4K=4k")
+        self.assertEqual(tiers, {"720P": "std", "1080P": "pro", "4K": "4k"})
+        self.assertEqual(parse_resolutions("720P=std, 1080P=pro"), ["720P", "1080P"])
+        picked = nearest_resolution("1080p", list(tiers))
+        self.assertEqual(tiers[picked], "pro")
+
+    def test_parse_plain_list(self):
+        self.assertEqual(parse_resolutions("480p, 720p, 1080p"), ["480p", "720p", "1080p"])
+        self.assertEqual(parse_resolutions("720p，1080p"), ["720p", "1080p"])   # 全角逗号
+        self.assertEqual(parse_resolutions(""), [])

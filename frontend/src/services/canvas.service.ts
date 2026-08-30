@@ -295,6 +295,8 @@ export interface VideoCreatePayload {
   image_urls?: string[];
   duration?: number;
   aspect_ratio?: string;
+  /** 画质档 (`720p` / `1080P` / `4k` …)。空 = 不发这个键, 由供应商用自己的默认。 */
+  resolution?: string;
   /** Video tab 选的通道 (kind=video 的 ImageModel.id)。空 = 后端退到库里第一条。 */
   imageModelId?: string;
 }
@@ -465,6 +467,7 @@ export const canvasService = {
       if (payload.prompt) form.append("prompt", payload.prompt);
       if (payload.duration) form.append("duration", String(payload.duration));
       if (payload.aspect_ratio) form.append("aspect_ratio", payload.aspect_ratio);
+      if (payload.resolution) form.append("resolution", payload.resolution);
       if (payload.imageModelId) form.append("image_model", payload.imageModelId);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/video/`,

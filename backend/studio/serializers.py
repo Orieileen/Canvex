@@ -24,7 +24,7 @@ from .services.image_channels import (
     channel_for_model,
     kinds_for_kind,
 )
-from .services.image_client import parse_durations, parse_ratios
+from .services.image_client import parse_durations, parse_ratios, parse_resolutions
 from .services.request_template import TemplateError
 from .services.request_template import validate as validate_template
 
@@ -244,7 +244,7 @@ class VideoJobSerializer(serializers.ModelSerializer):
         model = VideoJob
         fields = (
             "id", "scene", "prompt", "image_urls", "duration", "aspect_ratio",
-            "task_id", "result_url", "thumbnail_url",
+            "resolution", "task_id", "result_url", "thumbnail_url",
             "status", "error", "created_at", "updated_at",
         )
         read_only_fields = fields
@@ -263,6 +263,10 @@ class VideoJobCreateSerializer(serializers.Serializer):
     )
     duration = serializers.IntegerField(required=False, min_value=1, max_value=60, default=10)
     aspect_ratio = serializers.CharField(required=False, default="16:9")
+    # 画布上选的画质档 (`720p` / `1080P` / `4k` …)。**不在这里校验取值** —— 合法值是
+    # per-model 的, 而模型是下一个字段才定的; 真正的归一在 template_client 那边按
+    # allowed_resolutions 做 (nearest_resolution)。空 = 不下发这个键, 用供应商默认。
+    resolution = serializers.CharField(required=False, allow_blank=True, default="", max_length=16)
     image_model = _channel_choice_field(ImageProvider.Kind.VIDEO)
 
 
@@ -628,11 +632,21 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_allowed_durations(self, obj) -> list[int]:
         return parse_durations(channel_for_model(obj).allowed_durations)
 
+    # 这个模型**真的收**哪几个画质档, 由低到高。空 = 这个模型没有画质旋钮, 工具栏就不显示
+    # 那个下拉 (= 按供应商自己的默认出片, 也就是这个功能之前的行为)。
+    #
+    # 下发的是**左边那一半** (选择器里显示的档), 右边"实际要发的值"是后端渲染模板时才用
+    # 的 —— 可灵那四个模型显示 720P/1080P 而发 std/pro。前端不需要知道这件事。
+    allowed_resolutions = serializers.SerializerMethodField()
+
+    def get_allowed_resolutions(self, obj) -> list[str]:
+        return parse_resolutions(channel_for_model(obj).allowed_resolutions)
+
     class Meta:
         model = ImageModel
         fields = (
             "id", "label", "provider_label", "picker", "sort_order",
-            "allowed_ratios", "allowed_durations",
+            "allowed_ratios", "allowed_durations", "allowed_resolutions",
         )
 
 

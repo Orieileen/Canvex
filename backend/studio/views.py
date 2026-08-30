@@ -1265,6 +1265,7 @@ class ChannelWizardProbeView(APIView):
                 channel, prompt=d.get("prompt") or PROBE_VIDEO_PROMPT,
                 image_urls=[], duration=int(d.get("duration") or 5),
                 aspect_ratio=str(d.get("aspect_ratio") or "16:9"),
+                resolution=str(d.get("resolution") or ""),
             )
         else:
             variables = template_client.image_variables(

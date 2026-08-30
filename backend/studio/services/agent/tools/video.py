@@ -26,7 +26,11 @@ from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
 from studio.services import channel_health, template_client
-from studio.services.image_client import ImageChannel
+from studio.services.image_client import (
+    ImageChannel,
+    nearest_resolution,
+    parse_resolution_map,
+)
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
 from ..context import CanvasAgentContext
@@ -111,6 +115,7 @@ def _template_video(job: VideoJob, channel: ImageChannel) -> str:
     variables = template_client.video_variables(
         channel, prompt=job.prompt, image_urls=list(job.image_urls or []),
         duration=job.duration, aspect_ratio=job.aspect_ratio,
+        resolution=job.resolution,
     )
     return template_client.item_to_url(template_client.execute(channel, variables))
 
@@ -128,6 +133,7 @@ def enqueue_video_generation(
     reference_image_urls: list[str] | None,
     scene_id: str,
     image_model_id: str | None = None,
+    resolution: str = "",
 ) -> str:
     """Pure-args helper: create VideoJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -152,6 +158,9 @@ def enqueue_video_generation(
             image_urls=urls,
             duration=duration_clamped,
             aspect_ratio=aspect_ratio or "16:9",
+            # 不校验取值: 合法档是 per-model 的, 归一在 template_client 那边按
+            # allowed_resolutions 做。LLM 写了个这个模型不收的档 → 落到最近的一档。
+            resolution=(resolution or "").strip(),
             # 先过 resolve_model_id 再进 FK 列: 前端的选择是粘的 (localStorage), 一个被删掉
             # 的 id 会一直跟着每轮聊天发过来 —— 直接塞进外键的话, 合法 UUID 撞约束抛
             # IntegrityError, 不合法字符串抛 ValidationError, 两种都是把"选择已失效"变成
@@ -177,6 +186,7 @@ def generate_video(
     prompt: str,
     duration: int = 5,
     aspect_ratio: str = "16:9",
+    resolution: str = "",
     reference_image_urls: list[str] | None = None,
     runtime: ToolRuntime[CanvasAgentContext] = None,
 ) -> str:
@@ -190,6 +200,9 @@ def generate_video(
         prompt: Detailed description of the motion / scene.
         duration: Clip length in seconds (1–60).
         aspect_ratio: "16:9" (landscape), "9:16" (portrait), "1:1" (square).
+        resolution: Optional quality tier, e.g. "720p" / "1080p" / "4k". Leave
+            blank to use the provider default. Tiers the chosen model does not
+            support are snapped to its nearest supported one.
         reference_image_urls: Optional list of http(s) URLs to seed the video
             (first frame / style reference). Must be publicly reachable.
 
@@ -203,6 +216,7 @@ def generate_video(
         prompt=prompt,
         duration=duration,
         aspect_ratio=aspect_ratio,
+        resolution=resolution,
         reference_image_urls=reference_image_urls,
         scene_id=ctx.scene_id,
         image_model_id=ctx.video_model_id,
@@ -222,6 +236,12 @@ def _submit(job: VideoJob, cfg: ImageChannel) -> str:
         "duration": job.duration,
         "aspect_ratio": job.aspect_ratio or "16:9",
     }
+    # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
+    # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
+    if job.resolution and cfg.allowed_resolutions:
+        tiers = parse_resolution_map(cfg.allowed_resolutions)
+        picked = nearest_resolution(job.resolution, list(tiers))
+        body[cfg.resolution_param or "resolution"] = tiers.get(picked, picked)
     if job.image_urls:
         # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网
         # URL 原样传 + 可达性预检(防 provider 拿不到 reference 时静默走纯文生视频)。

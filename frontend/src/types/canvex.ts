@@ -351,6 +351,13 @@ export interface CanvasImageModelChoice {
    *  跟 allowed_ratios 不同,选择器是**照这个列**而不是拿它去筛画布那三档 —— veo3 只出
    *  8 秒,画布的 5/10/15 一个都不在里面,筛完会是空的。 */
   allowed_durations: number[];
+  /** 这个模型**真的收**哪几个画质档,由低到高。空 = 这个模型没有画质旋钮,工具栏就不显示
+   *  那个下拉(= 按供应商自己的默认出片,也就是这个功能之前的行为)。
+   *
+   *  跟 allowed_durations 一样是「照它列」—— 画布这边根本没有一张固定的画质档表可筛,
+   *  各家从 360p 排到 4k,还有 MiniMax 的 `2K`、可灵的 std/pro(后端把它显示成
+   *  720P/1080P,发出去才换回 std/pro,前端不用知道这件事)。 */
+  allowed_resolutions: string[];
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

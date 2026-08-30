@@ -59,8 +59,12 @@ import {
 } from "@/hooks/use-image-edit";
 import {
   VIDEO_ASPECT_RATIOS,
+  DEFAULT_VIDEO_RESOLUTION,
+  nearestDuration,
+  nearestResolution,
   VIDEO_DURATIONS,
   type VideoAspectRatio,
+  type VideoResolution,
   type VideoDuration,
 } from "@/hooks/use-video-edit";
 import { ImageModelSelector } from "@/components/canvas/ImageModelSelector";
@@ -165,6 +169,7 @@ interface ImageEditBarProps {
       prompt: string;
       duration: VideoDuration;
       aspectRatio: VideoAspectRatio;
+      resolution: VideoResolution;
     }) => void;
     onDismissError: () => void;
   };
@@ -739,6 +744,7 @@ interface VideoPanelProps {
     prompt: string;
     duration: VideoDuration;
     aspectRatio: VideoAspectRatio;
+    resolution: VideoResolution;
   }) => void;
 }
 
@@ -747,6 +753,7 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("16:9");
+  const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
 
   const trimmed = prompt.trim();
   const canGenerate = canPin && !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
@@ -759,6 +766,7 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   const picked = videoModel.models.find((m) => m.id === videoModel.value);
   const durKey = (picked?.allowed_durations ?? []).join(",");
   const ratioKey = (picked?.allowed_ratios ?? []).join(",");
+  const resKey = (picked?.allowed_resolutions ?? []).join(",");
   const durations = useMemo(() => {
     const allowed = durKey ? durKey.split(",").map(Number).filter(Number.isFinite) : [];
     return allowed.length ? allowed : (VIDEO_DURATIONS as number[]);
@@ -768,20 +776,33 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
     const hit = VIDEO_ASPECT_RATIOS.filter((r) => allowed.includes(r));
     return hit.length ? hit : VIDEO_ASPECT_RATIOS;
   }, [ratioKey]);
+  // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
+  // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
+  const resolutions = useMemo(() => (resKey ? resKey.split(",") : []), [resKey]);
 
   // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
   // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。
   useEffect(() => {
-    if (!durations.includes(duration)) setDuration(durations[0]);
+    if (!durations.includes(duration)) setDuration(nearestDuration(duration, durations));
   }, [durations, duration]);
   useEffect(() => {
     if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
   }, [ratios, aspectRatio]);
+  // 画质落到**最近的一档**而不是第一档: 第一档是最便宜的那个 (列表由低到高), 从
+  // seedance-2.0 的 1080p 换到 -fast (只有 480p/720p) 会直接掉到 480p, 而最近的是 720p。
+  useEffect(() => {
+    if (!resolutions.length || resolutions.includes(resolution)) return;
+    setResolution(nearestResolution(resolution, resolutions));
+  }, [resolutions, resolution]);
 
   function submitGenerate() {
     if (!canGenerate) return;
     const finalPrompt = [promptFromTexts, trimmed].filter(Boolean).join("\n");
-    onSubmit({ prompt: finalPrompt, duration, aspectRatio });
+    onSubmit({
+      prompt: finalPrompt, duration, aspectRatio,
+      // 模型没报支持哪几档时发空串 = 后端不下发这个键。
+      resolution: resolutions.length ? resolution : "",
+    });
     setPrompt("");
   }
 
@@ -831,6 +852,22 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
           <option key={d} value={d}>{t("edit.durationSuffix", { n: d })}</option>
         ))}
       </select>
+      {resolutions.length > 0 && (
+        <>
+          <Divider />
+          <select
+            value={resolution}
+            onChange={(e) => setResolution(e.target.value)}
+            disabled={isSubmitting}
+            className={selectClass}
+            title={t("edit.resolutionTitle")}
+          >
+            {resolutions.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </>
+      )}
       <Divider />
       <select
         value={aspectRatio}

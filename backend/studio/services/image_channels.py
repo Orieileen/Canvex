@@ -265,8 +265,12 @@ _STARTER_GEMINI_IMAGE = {
 # `aspect_ratio` 而不是 `size`: seedance 的文档写 `size`, 但注明"也接受字段名
 # aspect_ratio", 而别家只认后者 —— 取交集。
 #
-# **不写 `resolution`**: 各家的取值根本对不上 (seedance 只收 480p/720p/1080p,
-# MiniMax 要 2K, veo3 支持 4k), 写死一个会把别家打成 400。不传时各家用自己的默认。
+# **`resolution` 和 `mode` 两个键都摆上, 但每次只有一个真的发出去**: 画质档在这家有两
+# 个叫法 —— 37 个模型叫 `resolution`, 可灵那 4 个叫 `mode` (取值也不同: std / pro / 4k)。
+# 哪个模型用哪个是 per-model 的事实, 写在 `allowed_resolutions` / `resolution_param` 上
+# (见 _APIMART_VIDEO_RESOLUTIONS); 没选中的那个渲染成空 → 键整个消失, 没有一个模型会
+# 收到它不认识的键。各家的取值也根本对不上 (seedance 只收 480p/720p/1080p, MiniMax 要
+# 2K, veo3 支持 4k), 所以模板里写死一个值是不行的, 只能让每个模型自己报。
 #
 # `image_urls` 让图生视频也能用: 画布上选中一张图再生成时它才有值, 文生视频时渲染成
 # 空数组 → 那个键整个消失 (见 request_template 的空值规则)。
@@ -277,6 +281,7 @@ _STARTER_APIMART_VIDEO = {
     "body": {
         "model": "{{model}}", "prompt": "{{prompt}}",
         "aspect_ratio": "{{aspect_ratio}}", "duration": "{{duration}}",
+        "resolution": "{{resolution}}", "mode": "{{mode}}",
         "image_urls": "{{images}}",
     },
     "task_id_path": "data[0].task_id",
@@ -292,6 +297,10 @@ _STARTER_APIMART_VIDEO = {
 }
 
 # 提交 → 拿 task_id → 轮询。视频基本都是这个形状。
+#
+# 画质档两个键都摆着, 理由同 _STARTER_APIMART_VIDEO —— 空的那个会整个消失。**这不是
+# 冗余**: 少了 `mode` 的话, 一条把 resolution_param 设成 mode 的通道会静默地不下发画质
+# 档 (模板里没有那个占位符 = 渲染不出来 = 没有任何报错), 而那正是这种起点要避免的事。
 _STARTER_ASYNC_VIDEO = {
     "method": "POST",
     "url": "{{base_url}}/videos/generations",
@@ -299,6 +308,7 @@ _STARTER_ASYNC_VIDEO = {
     "body": {
         "model": "{{model}}", "prompt": "{{prompt}}",
         "duration": "{{duration}}", "aspect_ratio": "{{aspect_ratio}}",
+        "resolution": "{{resolution}}", "mode": "{{mode}}",
         "image_urls": "{{images}}",
     },
     "task_id_path": "data.task_id",
@@ -325,7 +335,13 @@ _TEMPLATE_TUNABLES = frozenset({
     # 视频那半: 各家收的秒数差得离谱 (veo3 固定 8, sora 只收 4/8/12/16/20)。生图通道
     # 也留着这一项没有坏处 —— 它的模板里没有 {{duration}}, 填了也不下发。
     "allowed_durations",
+    # 画质档同理, 而且这一项**不填要花钱**: wan3.0-video 不传 resolution 按最贵的 1080P
+    # 计费。生图那边也用得上 (apimart Seedream 的 2K / 4K)。
+    "allowed_resolutions",
 })
+# 视频专有: 画质档发到哪个键 (`resolution` 还是可灵那种 `mode`)。生图那边没有第二种
+# 叫法, 放出来只会多一个永远不用动的下拉。
+_TEMPLATE_VIDEO_TUNABLES = _TEMPLATE_TUNABLES | {"resolution_param"}
 
 
 KIND_SPECS: dict[str, _KindSpec] = {
@@ -375,7 +391,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
         testable=True,
     ),
     ImageProvider.Kind.CUSTOM_VIDEO: _KindSpec(
-        tunables=_TEMPLATE_TUNABLES,
+        tunables=_TEMPLATE_VIDEO_TUNABLES,
         # 跟内置 video 通道**同一组数**, 包括 poll_max_interval —— 少了它这四个数的含义
         # 就变了: 固定 20 秒 × 9 次 = 160 秒, 而视频要跑 1-5 分钟, 一条配得完全正确的通道
         # 会稳定报"轮询了 9 次还没完成"。退避到 180 秒之后总墙钟才跟内置那条对得上。
@@ -409,6 +425,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "poll_interval", "poll_max_interval", "poll_timeout",
             # 视频模型的可用比例往往比生图还窄 —— 常见只有 16:9 / 9:16 / 1:1。
             "allowed_ratios", "allowed_durations",
+            "allowed_resolutions", "resolution_param",
         }),
         picker="video",
         defaults={
@@ -442,7 +459,7 @@ _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
         "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
-        "protocol",
+        "allowed_resolutions", "resolution_param", "protocol",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({
@@ -553,6 +570,96 @@ _APIMART_VIDEO_DURATIONS: dict[str, str] = {
     #   pixverse-v6                                        1~15
     #   gemini-omni-flash-preview   文档里根本没有 duration 这一项 (见下面那条注释)
 }
+
+
+# 每个视频模型**文档写明**支持的画质档。逐页抄的, 不是猜的 (docs.apimart.ai 的
+# /cn/api-reference/videos/<族>/generation, 每族一页, 下面按族分段)。
+#
+# 跟时长那张表**不一样, 这张要写全 41 行**: 时长有画布自己那三档兜底, 没配就用 5/10/15;
+# 画质没有这样一张通用表 —— 各家从 360p 排到 4k, 还有 MiniMax 的 `2K` 和可灵的
+# `std/pro`。留空的模型 = 界面上没有画质旋钮 = 按供应商自己的默认出片, 而那个默认往往
+# 是最贵的一档 (wan3.0-video 文档原话: 不传按 1080P 计费)。
+#
+# 一律**由低到高**排, 因为选择器就按这个顺序列。
+_APIMART_VIDEO_RESOLUTIONS: dict[str, str] = {
+    # ── /videos/seedance-2-5 ── 480p / 720p(默认) / 1080p; 传 2k/4k 同步 400
+    "seedance-2.5": "480p, 720p, 1080p",
+    # ── /videos/doubao (seedance 1.0 pro 两档) ── 480p / 720p / 1080p
+    "seedance-1-0-pro-fast": "480p, 720p, 1080p",
+    "seedance-1-0-pro-quality": "480p, 720p, 1080p",
+    # ── /videos/seedance-1-5-pro ──
+    "seedance-1-5-pro": "480p, 720p, 1080p",
+    # ── /videos/seedance-2-0 ── 文档在 1080p 和 4k 两条上都注明「仅 seedance-2.0 支持」,
+    # 所以同一页上的 -fast / -mini 以及走同一端点的两个 -face 只有低两档。
+    "seedance-2.0": "480p, 720p, 1080p, 4k",
+    "seedance-2.0-fast": "480p, 720p",
+    "seedance-2.0-mini": "480p, 720p",
+    "seedance-2.0-face": "480p, 720p",
+    "seedance-2.0-fast-face": "480p, 720p",
+    # ── /videos/sora-2 ── 文档给的是一张**按模型分的表**, 不是一个列表:
+    #   sora-2 → 720p 一档; sora-2-pro → 720p / 1024p / 1080p
+    "sora-2": "720p",
+    "sora-2-pro": "720p, 1024p, 1080p",
+    # ── /videos/veo3 ── 720p(默认) / 1080p / 4k
+    "veo3.1-fast": "720p, 1080p, 4k",
+    "veo3.1-quality": "720p, 1080p, 4k",
+    "veo3.1-lite": "720p, 1080p, 4k",
+    # ── /videos/minimax-hailuo ── 512p / 768p(默认) / 1080p。
+    # **1080p 文档注明「仅支持 5 秒时长」** —— 两张表管不到对方, 选 1080p + 10 秒会被
+    # 供应商打回, 报错原文会一路带到画布上 (见 channel_diagnosis 的 resolution 一条)。
+    "MiniMax-Hailuo-02": "512p, 768p, 1080p",
+    # ── /videos/minimax-hailuo-2.3 ── 768p(默认) / 1080p; 1080p 注明「仅支持 6 秒」
+    "MiniMax-Hailuo-2.3": "768p, 1080p",
+    "MiniMax-Hailuo-2.3-Fast": "768p, 1080p",
+    # ── /videos/minimax-h3 ── 只有这两个, 而且默认是**贵的那个** 2K
+    "MiniMax-H3": "768P, 2K",
+    # ── 可灵 ── **这一族把画质叫 `mode`, 取值 std / pro / 4k**, 见下面 resolution_param。
+    # 括号里的像素是文档自己标的 (std=720P, pro=1080P), 所以选择器摆像素、发 mode。
+    "kling-v2-6": "720P=std, 1080P=pro",
+    "kling-v3": "720P=std, 1080P=pro, 4K=4k",
+    "kling-v3-omni": "720P=std, 1080P=pro, 4K=4k",
+    "kling-video-o1": "720P=std, 1080P=pro",
+    # ── /videos/kling-3.0-turbo ── 同门里**唯一一个用 `resolution` 的**
+    "kling-3.0-turbo": "720p, 1080p",
+    # ── /videos/wan2.5 ── 480p / 720p(默认) / 1080p。
+    # 文档另注: 480p 只支持 16:9 / 9:16 / 1:1 —— 画布的视频比例正好就这三个, 不冲突。
+    "wan2.5-preview": "480p, 720p, 1080p",
+    # ── /videos/wan2.6 ── 明说不支持 480p
+    "wan2.6": "720p, 1080p",
+    # ── /videos/wan2.6/i2v-flash-generation ── 默认是 1080p
+    "wan2.6-i2v-flash": "720p, 1080p",
+    # ── /videos/wan2.7 ── 文档写的是大写 P
+    "wan2.7": "720P, 1080P",
+    # ── /videos/wan3.0-video ── 默认 1080P 且「价格最高」, 文档明确建议显式传低档
+    "wan3.0-video": "480P, 720P, 1080P",
+    # ── /videos/vidu-q3 ── 一页两个模型, 档位不同: viduq3-mix 不支持 540p
+    "viduq3": "540p, 720p, 1080p",
+    "viduq3-mix": "720p, 1080p",
+    # ── /videos/vidu-q3-pro ──
+    "viduq3-pro": "540p, 720p, 1080p",
+    "viduq3-turbo": "540p, 720p, 1080p",
+    # ── /videos/flux-3-video ── 这家的档位叫 `hd` / `fhd`, 但文档写明也接受 720p /
+    # 1080p。选择器摆通用写法、发它的规范写法, 跟可灵同一个道理。
+    "flux-3-video": "720p=hd, 1080p=fhd",
+    # ── /videos/skyreels-v4 ── 默认 1080p
+    "skyreels-v4-std": "480p, 720p, 1080p",
+    "skyreels-v4-fast": "480p, 720p, 1080p",
+    # ── /videos/happyhorse-1.0 、 1.1 ── 大写 P, 默认 1080P, 文档注明「影响计费」
+    "happyhorse-1.0": "720P, 1080P",
+    "happyhorse-1.1": "720P, 1080P",
+    # ── /videos/pixverse-v6 ── 唯一有 360p 的
+    "pixverse-v6": "360p, 540p, 720p, 1080p",
+    # ── /videos/grok-imagine ── 只有低两档, 默认 480p
+    "grok-imagine-1.5-video-apimart": "480p, 720p",
+    # ── /videos/omni-flash-ext ── 720p / 1080p / 4k, 别的会 invalid_resolution
+    "Omni-Flash-Ext": "720p, 1080p, 4k",
+    # ── /videos/gemini-omni-flash-preview ── 文档原话「当前仅支持 720p」
+    "gemini-omni-flash-preview": "720p",
+}
+
+# 可灵这四个把画质叫 `mode` 而不是 `resolution` (kling-3.0-turbo 不在其中 —— 它用
+# `resolution`)。剩下 37 个模型不用写, `resolution` 就是字段默认值。
+_APIMART_VIDEO_MODE_MODELS = ("kling-v2-6", "kling-v3", "kling-v3-omni", "kling-video-o1")
 
 
 PRESETS: tuple[_Preset, ...] = (
@@ -676,7 +783,13 @@ PRESETS: tuple[_Preset, ...] = (
         "gemini-omni-flash-preview",
         ),
         model_overrides={
-            m: {"allowed_durations": d} for m, d in _APIMART_VIDEO_DURATIONS.items()
+            m: {
+                "allowed_resolutions": r,
+                **({"resolution_param": "mode"} if m in _APIMART_VIDEO_MODE_MODELS else {}),
+                **({"allowed_durations": _APIMART_VIDEO_DURATIONS[m]}
+                   if m in _APIMART_VIDEO_DURATIONS else {}),
+            }
+            for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },
         request_template=_STARTER_APIMART_VIDEO,
     ),

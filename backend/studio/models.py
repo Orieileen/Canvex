@@ -431,6 +431,11 @@ class VideoJob(models.Model):
     image_urls = models.JSONField(default=list, blank=True)
     duration = models.PositiveSmallIntegerField(default=10)  # seconds
     aspect_ratio = models.CharField(max_length=16, default="16:9")
+    # 画质档, 画布上选的那个显示值 (`720p` / `1080P` / `4k` / …)。空 = 不下发这个键,
+    # 由供应商用自己的默认。**存显示值而不是要发出去的值**: 后者是 per-model 的
+    # (可灵那几个模型 1080P 要发 `pro`), 而这一行会比它的通道配置活得久 —— 存翻译后的
+    # 结果, 换个模型重跑就对不上了。翻译在 template_client 渲染模板时做。
+    resolution = models.CharField(max_length=16, blank=True, default="")
 
     # 用户在 Video tab 选的通道。这条路径是异步的 (提交完就返回, worker 之后才捞这行去
     # 长轮询), 所以选择必须落在行上而不是留在请求里。空 = 退到库里第一条 video 通道。

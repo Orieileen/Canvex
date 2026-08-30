@@ -38,13 +38,16 @@ import requests
 from studio.services.http_retry import make_retry_session
 from studio.services.image_client import (
     BODY_TRUNC,
+    RESOLUTION_PARAM_CHOICES,
     ImageChannel,
     _url_to_data_uri,
     nearest_duration,
     nearest_ratio,
+    nearest_resolution,
     parse_durations,
     parse_ratio_map,
     parse_ratios,
+    parse_resolution_map,
     ratio_to_pixels,
     size_to_ratio,
 )
@@ -356,6 +359,23 @@ def _base_variables(
     }
 
 
+def _resolution_for(channel: ImageChannel, want: str) -> str:
+    """用户选的画质档 → 这个模型**真的收**的那个值。没配 `allowed_resolutions` = 原样。
+
+    返回的是**要发出去的那个值**而不是显示的那个 —— 可灵那四个模型显示 `1080P` 但要发
+    `pro` (见 parse_resolution_map)。
+
+    **空进空出**: 没选画质 = 不下发这个键 = 用供应商的默认。少了这一行的话,
+    `nearest_resolution("", …)` 会退回列表第一项 —— 一条没人碰过画质旋钮的请求会突然
+    带上一个档位, 而那是替用户做了决定。
+    """
+    if not (want or "").strip():
+        return ""
+    tiers = parse_resolution_map(channel.allowed_resolutions)
+    picked = nearest_resolution(want, list(tiers))
+    return tiers.get(picked, picked)
+
+
 def image_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
     n: int = 1, resolution: str = "", session: requests.Session | None = None,
@@ -382,7 +402,7 @@ def image_variables(
     width, height = ratio_to_pixels(sent)
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        "n": n, "resolution": resolution,
+        "n": n, "resolution": _resolution_for(channel, resolution),
         "size": sent, "aspect_ratio": size_to_ratio(picked),
         "width": width, "height": height,
     }
@@ -390,20 +410,30 @@ def image_variables(
 
 def video_variables(
     channel: ImageChannel, *, prompt: str, image_urls: list[str],
-    duration: int, aspect_ratio: str, session: requests.Session | None = None,
+    duration: int, aspect_ratio: str, resolution: str = "",
+    session: requests.Session | None = None,
 ) -> dict[str, Any]:
     """喂给 custom_video 模板的变量表。公共部分见 `_base_variables`。
 
     比例同样过一遍 `allowed_ratios` —— 视频模型的可用比例往往比生图还窄 (常见只有
     16:9 / 9:16 / 1:1)。
+
+    **画质档两个占位符只填一个**: 同一件事在 apimart 有两个键名 (37 个模型叫
+    `resolution`, 可灵那 4 个叫 `mode`), 而模板是每条通道一份、模型有 41 个。所以两个都
+    摆出来, 由 `channel.resolution_param` 决定填哪个, 另一个渲染成空 → 那个键整个消失。
     """
     picked = nearest_ratio(aspect_ratio, parse_ratios(channel.allowed_ratios))
     # 时长同样过一遍。选择器已经按 allowed_durations 列过一次, 这里管它拦不住的:
     # agent 自己挑的秒数, 以及"换了模型之后 localStorage 里那个旧选择失效"。
     secs = nearest_duration(duration, parse_durations(channel.allowed_durations))
+    tier = _resolution_for(channel, resolution)
+    # 认不出的键名退回 `resolution` 而不是谁都不填: 下拉框拦得住手填的通道, 拦不住
+    # model.overrides 里的一行 JSON —— 而"谁都不填"的表现是画质旋钮静默失效。
+    param = channel.resolution_param if channel.resolution_param in RESOLUTION_PARAM_CHOICES else "resolution"
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
         "duration": secs, "aspect_ratio": picked,
+        **{name: (tier if name == param else "") for name in RESOLUTION_PARAM_CHOICES},
     }
 
 

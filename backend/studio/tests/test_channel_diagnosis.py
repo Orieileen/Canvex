@@ -122,3 +122,33 @@ class RatioDiagnosisTests(SimpleTestCase):
     def test_does_not_swallow_plain_model_errors(self):
         """没提比例的模型名错误还是 model —— 新规则不能把它抢走。"""
         self.assertEqual(diagnose('HTTP 404: {"error":{"code":"model_not_found"}}'), "model")
+
+
+class ResolutionDiagnosisTests(SimpleTestCase):
+    """画质档跟比例分成两条规则, 因为要改的字段不是同一个 —— 一句指错字段的提示比没有
+    提示更费时间。两条报文都是实测抄的 (apimart, 2026-08-30)。"""
+
+    def test_apimart_invalid_resolution(self):
+        self.assertEqual(
+            diagnose(
+                'HTTPError: 400 Bad Request for https://api.apimart.ai/v1/videos/generations: '
+                '{"error":{"code":"invalid_resolution","message":"This model only supports '
+                '480p, 720p, or 1080p resolution (got: 9999p)."}}'
+            ),
+            "resolution",
+        )
+
+    def test_kling_async_mode_failure(self):
+        """可灵把画质叫 mode, 而且是**异步**校验的 —— 提交回 200 带 task_id, 任务随即
+        转 failed。只认 resolution 那几个词会把它落到"请求有问题", 指不出字段。"""
+        self.assertEqual(
+            diagnose("TemplateRequestError: task failed: mode value 'bogus' is invalid"),
+            "resolution",
+        )
+
+    def test_plain_bad_request_is_not_a_resolution_problem(self):
+        self.assertNotEqual(
+            diagnose('HTTPError: 400 Bad Request for https://x/v1/videos/generations: '
+                     '{"error":{"message":"missing required parameter: prompt"}}'),
+            "resolution",
+        )
