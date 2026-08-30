@@ -510,8 +510,16 @@ def presets_payload() -> list[dict]:
 
     跟 `tunable_schema()` 一样**只下发结构, 不下发文案**: 名字和说明是翻译, 前端按
     `key` 查, 查不到就退回显示 key —— 漏一条翻译只是标签难看, 而不是按钮消失。
+
+    额外算一个 `role` = 界面上按什么分组。**由后端算而不是前端按 kind 名字判**, 跟
+    `picker` 同一个理由: 一个角色可能对应多种 kind (生图 = 内置 image + 模板
+    custom_image), 前端按名字分组的话, 哪天加一条内置 image 的预设就会自己单开一组。
+    chat 没有工具栏选择器 (picker 为空), 用它自己的 kind 当组名。
     """
-    return [dataclasses.asdict(preset) for preset in PRESETS]
+    return [
+        {**dataclasses.asdict(preset), "role": KIND_SPECS[preset.kind].picker or preset.kind}
+        for preset in PRESETS
+    ]
 
 
 def tunable_schema() -> dict[str, dict]:

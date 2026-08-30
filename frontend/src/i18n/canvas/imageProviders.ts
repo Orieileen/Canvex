@@ -21,41 +21,50 @@ export const imageProviders = {
       "Endpoint, key and request shape for every channel — image, angle, video and the chat model. Configured here, not in the backend env.",
     /** 一键预设。**按 preset.key 查** —— 后端加一条预设,这里补两行翻译即可;
      *  漏了只是标签难看(退回显示 key),不是按钮消失。 */
+    presetsTitle: "Quick setup",
+    /** 分组标题。分组由后端下发的 `role` 决定 (见 image_channels.presets_payload),
+     *  这里只管怎么念。 */
+    presetRole: {
+      chat: "LLM agent / chat provider",
+      image: "Image generation provider",
+      angle: "Re-angle provider",
+      video: "Video provider",
+    },
     presets: {
       tuzi_chat: {
-        label: "Quick setup: LLM Agent Chat provider",
+        label: "tu-zi",
         hint: "api.tu-zi.com — powers the chat box and the agent",
         /** 建出来的那条通道叫什么。**不能拿 label 当名字** —— 那是按钮上的话
          *  (「Quick setup: …」), 而通道名是列表里那一行, 要短、要一眼认出是哪一家。 */
         channel: "tu-zi chat",
       },
       apimart_image: {
-        label: "Quick setup: image generation provider",
+        label: "apimart",
         hint: "api.apimart.ai — async; the request shape is already wired up",
         channel: "apimart images",
       },
       openai_chat: {
-        label: "Quick setup: OpenAI direct",
+        label: "OpenAI",
         hint: "api.openai.com — powers the chat box and the agent",
         channel: "OpenAI chat",
       },
       google_chat: {
-        label: "Quick setup: Google direct",
+        label: "Google",
         hint: "Gemini via its OpenAI-compatible endpoint — chat box and agent",
         channel: "Gemini chat",
       },
       openai_image: {
-        label: "Quick setup: OpenAI images",
+        label: "OpenAI",
         hint: "api.openai.com — gpt-image-1, sizes already mapped",
         channel: "OpenAI images",
       },
       google_image: {
-        label: "Quick setup: Google images",
+        label: "Google",
         hint: "Gemini native generateContent — not the OpenAI-compatible layer",
         channel: "Gemini images",
       },
       fal_angle: {
-        label: "Quick setup: re-angle provider",
+        label: "fal.ai",
         hint: "fal.ai — powers the Change angle panel",
         channel: "fal.ai re-angle",
       },
@@ -206,39 +215,46 @@ export const imageProviders = {
   zh: {
     title: "通道配置",
     subtitle: "所有通道的端点、密钥和请求形状 —— 生图、视角、视频、聊天模型。在这里配,不再改后端 env。",
+    presetsTitle: "快捷配置",
+    presetRole: {
+      chat: "llm Agent Chat 供应商",
+      image: "生图供应商",
+      angle: "视角重渲染供应商",
+      video: "视频供应商",
+    },
     presets: {
       tuzi_chat: {
-        label: "快捷配置:llm Agent Chat 供应商",
+        label: "tu-zi",
         hint: "api.tu-zi.com —— 聊天框和 agent 都走它",
         channel: "tu-zi 聊天",
       },
       apimart_image: {
-        label: "快捷配置:生图供应商",
+        label: "apimart",
         hint: "api.apimart.ai —— 异步通道,请求形状已经配好",
         channel: "apimart 生图",
       },
       openai_chat: {
-        label: "快捷配置:OpenAI 官方直连",
+        label: "OpenAI 官方",
         hint: "api.openai.com —— 聊天框和 agent 都走它",
         channel: "OpenAI 聊天",
       },
       google_chat: {
-        label: "快捷配置:Google 官方直连",
+        label: "Google 官方",
         hint: "Gemini,走它的 OpenAI 兼容端点 —— 聊天框和 agent 都走它",
         channel: "Gemini 聊天",
       },
       openai_image: {
-        label: "快捷配置:OpenAI 官方生图",
+        label: "OpenAI 官方",
         hint: "api.openai.com —— gpt-image-1,尺寸映射已经配好",
         channel: "OpenAI 生图",
       },
       google_image: {
-        label: "快捷配置:Google 官方生图",
+        label: "Google 官方",
         hint: "Gemini 原生 generateContent —— 不走 OpenAI 兼容层",
         channel: "Gemini 生图",
       },
       fal_angle: {
-        label: "快捷配置:视角重渲染供应商",
+        label: "fal.ai",
         hint: "fal.ai —— 「换视角」面板走它",
         channel: "fal.ai 视角重渲染",
       },

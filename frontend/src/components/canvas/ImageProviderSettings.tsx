@@ -264,6 +264,16 @@ export function ImageProviderSettings({
 
   /** 一键预设。后端下发 (见 image_channels.PRESETS) —— 前端不写死任何一家供应商。 */
   const [presets, setPresets] = useState<CanvasChannelPreset[]>([]);
+  /** 按**角色**分组: 聊天 / 生图 / 换视角。同一个角色下的几家并排, 角色名只说一次。
+   *
+   *  分组用后端给的 `role` 而不是 kind 名字 —— 一个角色可能对应多种 kind (生图 = 内置
+   *  image + 模板 custom_image), 按名字分的话哪天加一条内置 image 的预设就会自己单开
+   *  一组。顺序完全跟后端下发的行序, 这里只做首次出现的分段。 */
+  const presetRoles = useMemo(() => {
+    const seen = new Map<string, CanvasChannelPreset[]>();
+    for (const p of presets) (seen.get(p.role) ?? seen.set(p.role, []).get(p.role)!).push(p);
+    return [...seen.entries()];
+  }, [presets]);
 
   const patchDraft = (id: string, patch: Partial<CanvasImageProvider>) =>
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -360,26 +370,38 @@ export function ImageProviderSettings({
                 向导   —— 别家供应商, 粘一段 curl, 零 JSON。
                 手动   —— 什么都自己填 (下面那个「新建通道」)。
               预设排最前面: 新用户的第一个问题不是"我想怎么配", 是"我怎么开始"。 */}
-          {presets.length > 0 && (
-            <div className="flex flex-col gap-1.5">
-              {presets.map((preset) => (
-                <PresetButton
-                  key={preset.key} preset={preset}
-                  onPick={() => addDraft({
-                    kind: preset.kind as CanvasImageProvider["kind"],
-                    // 通道名用 `channel` 而不是 `label`: label 是按钮上那句话
-                    // (「快捷配置:…」), 拿它当通道名, 列表里会出现一条叫
-                    // 「快捷配置:视角重渲染供应商」的通道。
-                    label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
-                    base_url: preset.base_url,
-                    defaults: preset.defaults as Values,
-                    request_template: preset.request_template,
-                    models: [{
-                      id: newLocalId(), label: preset.model, model: preset.model,
-                      overrides: {}, enabled: true, sort_order: 0,
-                    }],
-                  })}
-                />
+          {presetRoles.length > 0 && (
+            <div className="rounded-md border border-border p-2.5">
+              <div className="mb-2 text-[11px] font-medium text-muted-foreground">
+                {t("imageProviders.presetsTitle")}
+              </div>
+              {presetRoles.map(([role, items]) => (
+                <div key={role} className="mb-2 last:mb-0">
+                  <div className="mb-1 text-[11px] text-muted-foreground">
+                    {t(`imageProviders.presetRole.${role}`, role)}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {items.map((preset) => (
+                      <PresetChip
+                        key={preset.key} preset={preset}
+                        onPick={() => addDraft({
+                          kind: preset.kind as CanvasImageProvider["kind"],
+                          // 通道名用 `channel` 而不是 `label`: label 是芯片上那几个字
+                          // (供应商名), 拿它当通道名, 列表里会出现一条叫「OpenAI 官方」
+                          // 的通道 —— 看不出它是聊天还是生图。
+                          label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
+                          base_url: preset.base_url,
+                          defaults: preset.defaults as Values,
+                          request_template: preset.request_template,
+                          models: [{
+                            id: newLocalId(), label: preset.model, model: preset.model,
+                            overrides: {}, enabled: true, sort_order: 0,
+                          }],
+                        })}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           )}
@@ -465,24 +487,19 @@ export function ImageProviderSettings({
  *  **它不是"内置供应商"**: 存进库之后就是一条普通通道, 跟手配出来的没有区别, 随便改
  *  随便删。所以这里也不该有任何一家供应商的特殊逻辑 —— 名字、说明、去哪儿拿 key 全是
  *  按 `preset.key` 查的翻译, 查不到就退回显示 key 本身。 */
-function PresetButton({ preset, onPick }: { preset: CanvasChannelPreset; onPick: () => void }) {
+function PresetChip({ preset, onPick }: { preset: CanvasChannelPreset; onPick: () => void }) {
   const { t } = useTranslation("canvasUi");
   return (
     <button
       type="button"
       onClick={onPick}
-      className="group flex items-center gap-2.5 rounded-md border border-border px-3 py-2.5 text-left transition-colors hover:border-foreground/30 hover:bg-foreground/5"
+      // 说明放 title 而不是排在芯片下面: 一行只放得下供应商名, 而说明 (哪个域名、
+      // 什么形状) 点进去卡片上就有 —— 在这里它只会把一行挤成三行。
+      title={t(`imageProviders.presets.${preset.key}.hint`, preset.base_url)}
+      className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] transition-colors hover:border-foreground/30 hover:bg-foreground/5"
     >
-      <Sparkles className="size-4 shrink-0 text-muted-foreground group-hover:text-foreground" strokeWidth={2} />
-      <span className="min-w-0 flex-1">
-        <span className="block text-[13px] font-medium">
-          {t(`imageProviders.presets.${preset.key}.label`, preset.key)}
-        </span>
-        <span className="block truncate text-[11px] text-muted-foreground">
-          {t(`imageProviders.presets.${preset.key}.hint`, preset.base_url)}
-        </span>
-      </span>
-      <Plus className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+      <Sparkles className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+      {t(`imageProviders.presets.${preset.key}.label`, preset.key)}
     </button>
   );
 }

@@ -361,6 +361,10 @@ export interface CanvasImageProviderTestResult {
 export interface CanvasChannelPreset {
   key: string;
   kind: string;
+  /** 界面上按什么分组:聊天 / 生图 / 换视角。**后端算**(= 那个 kind 的 picker,
+   *  chat 没有 picker 就用 kind 本身)—— 一个角色可能对应多种 kind,前端按 kind 名字
+   *  分组的话,哪天加一条内置 image 的预设就会自己单开一组。 */
+  role: string;
   base_url: string;
   model: string;
   defaults: Record<string, unknown>;
