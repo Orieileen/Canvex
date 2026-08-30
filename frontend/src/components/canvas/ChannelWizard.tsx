@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, Loader2, Wand2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -67,6 +67,9 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
    *  分钟, 每轮弹一个 toast 是把进度做成了噪音 —— 而且 toast 会盖住下面的按钮。 */
   const [pollTry, setPollTry] = useState(0);
   const [pollStatus, setPollStatus] = useState("");
+  /** 「取消」按下了没有。用 ref 不用 state: `runPoll` 是一个可能跑几十分钟的 async
+   *  循环, 它闭包里那个 state 永远是开跑那一刻的值, 点了取消它看不见。 */
+  const cancelPoll = useRef(false);
 
   const reset = () => {
     setStep("paste"); setCurl(""); setParsed(null); setApiKey(""); setMapping([]);
@@ -160,7 +163,9 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
     if (!parsed || !poll) return;
     setBusy(true);
     try {
-      for (let i = 0; i < 40; i++) {
+      cancelPoll.current = false;
+      for (let i = 0; i < POLL_TRIES; i++) {
+        if (cancelPoll.current) return;      // 点了取消 —— 别再发下一个请求
         setPollTry(i + 1);
         const { data } = await canvasService.wizardProbe({
           kind,
@@ -181,7 +186,7 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
           return;
         }
         setPollStatus(data.status || "…");
-        await new Promise((r) => setTimeout(r, 6000));
+        await new Promise((r) => setTimeout(r, POLL_EVERY_MS));
       }
       toast.error(t("wizard.pollGaveUp"), { duration: 12000 });
     } catch (err) {
@@ -328,7 +333,8 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
               )}
               <WizardButtons
                 busy={busy} disabled={false} onRun={() => void runPoll()}
-                runLabel={t("wizard.runPoll")} onCancel={() => setPoll(null)}
+                runLabel={t("wizard.runPoll")}
+                onCancel={() => { cancelPoll.current = true; setPoll(null); }}
                 note={t("wizard.pollNote")}
               />
             </>
@@ -375,6 +381,14 @@ export function ChannelWizard({ onReady, specs }: ChannelWizardProps) {
     </div>
   );
 }
+
+/** 「盯到出图」最多查几次、每次隔多久 —— 200 × 6 秒 ≈ 20 分钟。
+ *
+ *  给得宽的理由跟 `ImageChannel.poll_max_attempts` 一样: **这不是超时**, 一轮只是一个
+ *  便宜的 GET。给小了的表现是向导在一条完全正常、只是出图慢的通道上说"等太久放弃了",
+ *  而用户手上没有别的判断依据。真要停下来有「取消」—— 它现在能真的中断这个循环。 */
+const POLL_TRIES = 200;
+const POLL_EVERY_MS = 6000;
 
 /** 这几个占位符**不进下拉**: 它们由向导自己填 (base_url / api_key 从 curl 里拆出来,
  *  task_id 是轮询时注入的), 放出来只会让人误选一个然后渲染成空。

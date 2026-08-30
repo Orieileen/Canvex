@@ -291,9 +291,13 @@ class ImageChannel:
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False
     poll_url: str = ""          # 空则用 base_url
-    poll_max_attempts: int = 60
+    # 200 × 5 秒 ≈ 17 分钟。给得宽是因为**它不是超时**: 轮询一轮只是一个便宜的 GET,
+    # 而这个数管的是"等多久才认输"。给小了的表现是一条**配得完全正确**、只是出图慢的
+    # 通道稳定报"轮询完了还没结果" —— 那是最难查的一类假失败, 因为每个字段看上去都对。
+    # 真正兜底的是 poll_timeout(单轮)和「测试」按钮那条 deadline(同步调用), 不是这个数。
+    poll_max_attempts: int = 200
     poll_interval: int = 5
-    # 退避上限: 每轮等待 ×1.5 直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
+    # 退避上限: 每轮等待**翻倍**直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
     # 视频是分钟级的, 固定 5 秒去敲一个要跑 3 分钟的任务只是白敲。
     poll_max_interval: int = 0
     poll_timeout: int = 30
