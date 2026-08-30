@@ -506,7 +506,26 @@ PRESETS: tuple[_Preset, ...] = (
         key="apimart_image",
         kind=ImageProvider.Kind.CUSTOM_IMAGE,
         base_url="https://api.apimart.ai/v1",
-        models=("gpt-image-2",),
+        # 文档 /images/*/generation 各页的模型, 逐个对着这家的 /v1/models 核过。
+        # 全都是 `POST /v1/images/generations` + 异步 task_id, 跟视频那条同一个道理:
+        # 一条通道几十行模型, 不是几十条通道。
+        #
+        # **不含** midjourney (它自己一套 API 和任务系统, `/images/midjourney/*`),
+        # 也不含各家的 `-official` 渠道 (走独立端点页)。
+        # 第一个是默认 —— gpt-image-2 是这条预设一直验着的那个。
+        models=(
+            "gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gemini-3.1-flash-image-preview",
+            "gemini-3.1-flash-lite-image", "gemini-3.1-flash-lite-image-ext",
+            "gemini-3-pro-image-preview", "gemini-2.5-flash-image-preview",
+            "imagen-4.0-apimart", "seedream-5-0-pro", "seedream-5-0-lite", "seedream-4-5",
+            "seedream-4-0", "flux-2-max", "flux-2-pro", "flux-2-flex", "flux-kontext-max",
+            "flux-kontext-pro", "qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.0-pro",
+            "qwen-image-2.0", "z-image-turbo", "grok-imagine-2.0-ext",
+            "grok-imagine-image-2.0", "grok-imagine-image-quality", "grok-imagine-image",
+            "grok-imagine-1.5-apimart", "grok-imagine-1.5-edit-apimart",
+            "grok-imagine-1.0-apimart", "grok-imagine-1.0-edit-apimart", "wan2.7-image-pro",
+            "wan2.7-image",
+        ),
         request_template=_STARTER_ASYNC_IMAGE,
     ),
     # 官方直连的两家 agent 供应商, 作为 tu-zi 之外的选择。

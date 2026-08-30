@@ -40,7 +40,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai — async; the request shape is already wired up",
+        hint: "api.apimart.ai — 33 image models, async, request shape wired up",
         channel: "apimart images",
       },
       openai_chat: {
@@ -75,7 +75,7 @@ export const imageProviders = {
       },
       apimart_video: {
         label: "apimart",
-        hint: "api.apimart.ai — seedance-2.5, 720p, async",
+        hint: "api.apimart.ai — 41 video models, async",
         channel: "apimart video",
       },
       fal_angle: {
@@ -253,7 +253,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai —— 异步通道,请求形状已经配好",
+        hint: "api.apimart.ai —— 33 个生图模型,异步,请求形状已经配好",
         channel: "apimart 生图",
       },
       openai_chat: {
@@ -288,7 +288,7 @@ export const imageProviders = {
       },
       apimart_video: {
         label: "apimart",
-        hint: "api.apimart.ai —— seedance-2.5,720p,异步",
+        hint: "api.apimart.ai —— 41 个视频模型,异步",
         channel: "apimart 视频",
       },
       fal_angle: {
