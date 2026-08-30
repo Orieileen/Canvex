@@ -697,6 +697,42 @@ _APIMART_IMAGE_RATIOS: dict[str, str] = {
 }
 
 
+# 每个视频模型**文档写明**收哪几个比例。逐页抄的 (每族一页)。
+#
+# 画布的视频标签只给三档: `16:9` / `9:16` / `1:1`。`allowed_ratios` 是拿去**筛**这三档
+# 的, 所以**只写"收不全这三个"的模型** —— 三个都收的留空 = 不限制。
+#
+# 实际只有一种情况: **不收 `1:1`**。七个模型, 而画布无条件把这一档摆在选择器里。
+# gemini-omni-flash-preview 的文档写着「其它值按 16:9 处理」—— 也就是**静默换方向**,
+# 用户拿到一条横屏, 而他选的是方形, 没有任何提示。
+#
+# ── 另一件事, 这张表管不了, 但值得写在这儿 ──
+# 很多模型的比例**只在文生视频时生效**, 图生视频时由首帧图决定。而画布的视频标签
+# **必须先选中一张图**, 所以在那条路径上它们的比例旋钮是装饰品 (不报错, 输出跟着源图):
+#   kling-3.0-turbo「仅文生视频生效」   happyhorse-1.0/1.1「I2V 模式下此参数会被忽略」
+#   pixverse-v6「仅文生视频…生效」      skyreels-v4「I2V 模式下会被忽略」
+#   vidu-q3-pro「仅文生视频模式可用」    wan2.5 / wan2.6 / wan2.7「图生模式下忽略」
+#   sora-2「传入 image_urls 时失效」
+# 另有四个**根本没有比例参数**: MiniMax-Hailuo-02 / -2.3 / -2.3-Fast / wan2.6-i2v-flash。
+# 这些要表达出来需要一个"这个旋钮在这种模式下不存在"的说法, 而那是按模式分的, 不是按
+# 模型分的 —— 不是这张表能装下的东西。留空 = 照发, 供应商忽略, 跟以前一样。
+_APIMART_VIDEO_RATIOS: dict[str, str] = {
+    # ── /videos/veo3 ── 只有横竖两种
+    "veo3.1-fast": "16:9, 9:16",
+    "veo3.1-quality": "16:9, 9:16",
+    "veo3.1-lite": "16:9, 9:16",
+    # ── /videos/sora-2 ── 文档给的是一张"方向"表: 横屏 16:9/landscape, 竖屏 9:16/portrait
+    "sora-2": "16:9, 9:16",
+    "sora-2-pro": "16:9, 9:16",
+    # ── /videos/omni-flash-ext ──
+    "Omni-Flash-Ext": "16:9, 9:16",
+    # ── /videos/gemini-omni-flash-preview ── 「仅支持 16:9 / 9:16, 其它值按 16:9 处理」
+    "gemini-omni-flash-preview": "16:9, 9:16",
+    # 留空 (= 画布那三档都收) 的三十四个: seedance 全家、kling 全家、MiniMax-H3、
+    # wan 系、vidu 系、flux-3-video、skyreels、happyhorse、pixverse、grok。
+}
+
+
 # 每个视频模型**文档写明**支持的时长(秒)。逐页抄的, 不是猜的。
 #
 # **只列跟画布那三档 (5/10/15) 不一样的**: 一致的留空 = 不限制, 少一行要维护的数据。
@@ -941,9 +977,11 @@ PRESETS: tuple[_Preset, ...] = (
         request_template=_STARTER_GEMINI_IMAGE,
     ),
     # apimart 视频。跟它的生图共用一套任务系统, 所以轮询那半跟 apimart_image 一模一样。
-    # 画布上那三个比例 (16:9 / 9:16 / 1:1) 和三个时长 (5 / 10 / 15 秒) 都在 seedance 2.5
-    # 的支持范围内 (比例还支持 4:3 / 3:4 / 21:9 / adaptive, 时长 4~30), 所以不用配
-    # allowed_ratios —— 没有一个选得中却发不出去的。
+    # 比例 / 时长 / 画质三张表分别见 _APIMART_VIDEO_RATIOS / _DURATIONS / _RESOLUTIONS。
+    #
+    # (这里原来写着"画布那三个比例都在支持范围内, 所以不用配 allowed_ratios" —— 那是只
+    # 照 seedance 2.5 一个模型下的结论。逐页核完发现 veo3 / sora / Omni-Flash-Ext /
+    # gemini-omni 这七个**不收 1:1**。)
     _Preset(
         key="apimart_video",
         kind=ImageProvider.Kind.CUSTOM_VIDEO,
@@ -971,6 +1009,8 @@ PRESETS: tuple[_Preset, ...] = (
                 **({"resolution_param": "mode"} if m in _APIMART_VIDEO_MODE_MODELS else {}),
                 **({"allowed_durations": _APIMART_VIDEO_DURATIONS[m]}
                    if m in _APIMART_VIDEO_DURATIONS else {}),
+                **({"allowed_ratios": _APIMART_VIDEO_RATIOS[m]}
+                   if m in _APIMART_VIDEO_RATIOS else {}),
             }
             for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },

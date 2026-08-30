@@ -15,6 +15,7 @@ from studio.services.image_channels import (
     _APIMART_IMAGE_RESOLUTIONS,
     _TEXT_ONLY_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
+    _APIMART_VIDEO_RATIOS,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
     KIND_SPECS,
@@ -328,3 +329,57 @@ class ApimartImageResolutionTests(SimpleTestCase):
                         prompt="p", image_urls=[], size="1:1", n=1, resolution=want,
                     )
                     self.assertIn(variables["resolution"], tiers)
+
+
+class ApimartVideoRatioTests(SimpleTestCase):
+    """视频比例。画布的视频标签只给 16:9 / 9:16 / 1:1 三档, 而七个模型**不收 1:1** ——
+    跟当初时长那个是同一类 bug: 选择器摆着一档, 一发就错。"""
+
+    def setUp(self):
+        self.preset = _preset("apimart_video")
+
+    def test_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_RATIOS), set(self.preset.models))
+
+    def test_only_narrower_than_the_canvas_is_written_down(self):
+        """三档全收的留空 = 不限制。写一份"刚好等于全集"的列表只是多一处要跟着画布改的
+        数据 —— 跟生图那张比例表同一个规矩。"""
+        from studio.services.image_client import parse_ratios
+
+        for model, raw in _APIMART_VIDEO_RATIOS.items():
+            with self.subTest(model=model):
+                self.assertLess(len(parse_ratios(raw)), 3)
+
+    def test_every_ratio_is_one_the_canvas_offers(self):
+        from studio.services.image_client import parse_ratios
+
+        for model, raw in _APIMART_VIDEO_RATIOS.items():
+            for ratio in parse_ratios(raw):
+                with self.subTest(model=model, ratio=ratio):
+                    self.assertIn(ratio, {"16:9", "9:16", "1:1"})
+
+    def test_square_snaps_to_landscape_on_the_seven(self):
+        """选 1:1 时这七个必须落到一个它们真收的比例。不兜底的话:
+        gemini-omni-flash-preview 会**静默按 16:9 出片**(文档原话「其它值按 16:9 处理」),
+        用户拿到横屏而他选的是方形。"""
+        from studio.services import template_client
+
+        for model in _APIMART_VIDEO_RATIOS:
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p", image_urls=[],
+                    duration=5, aspect_ratio="1:1",
+                )
+                self.assertIn(variables["aspect_ratio"], ("16:9", "9:16"))
+
+    def test_unrestricted_models_still_get_square(self):
+        """留空的那三十四个不受影响 —— 1:1 原样发出去。"""
+        from studio.services import template_client
+
+        for model in ("seedance-2.5", "kling-v3", "wan2.6", "MiniMax-H3"):
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p", image_urls=[],
+                    duration=5, aspect_ratio="1:1",
+                )
+                self.assertEqual(variables["aspect_ratio"], "1:1")
