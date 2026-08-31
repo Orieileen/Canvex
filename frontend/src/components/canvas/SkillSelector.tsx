@@ -87,11 +87,18 @@ export function SkillSelector({
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" side="top" className="w-80 p-2">
+      <PopoverContent
+        align="start"
+        side="top"
+        className="w-80 p-2"
+        // 同 ImageModelSelector: 别让滚轮顺着组件树冒到工具栏的 forwardWheelToCanvas。
+        onWheel={(e) => e.stopPropagation()}
+      >
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
           {t("skills.header")}
         </div>
-        <div className="max-h-64 overflow-y-auto">
+        {/* 同 ImageModelSelector: 滚到头别把回弹传给整页。 */}
+        <div className="max-h-64 overflow-y-auto overscroll-contain">
           {skills.map((skill) => {
             const isOn = !disabledSkills.includes(skill.name);
             return (
