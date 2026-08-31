@@ -87,13 +87,7 @@ export function SkillSelector({
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        side="top"
-        className="w-80 p-2"
-        // 同 ImageModelSelector: 别让滚轮顺着组件树冒到工具栏的 forwardWheelToCanvas。
-        onWheel={(e) => e.stopPropagation()}
-      >
+      <PopoverContent align="start" side="top" className="w-80 p-2">
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
           {t("skills.header")}
         </div>

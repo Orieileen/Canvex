@@ -115,16 +115,7 @@ export function ImageModelSelector({
           </Button>
         )}
       </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-72 p-0"
-        // 在列表里滚动**只滚列表**。这个弹层是 portal 到 body 的, 但 React 的合成事件
-        // 沿**组件树**冒泡而不是 DOM 树 —— 所以滚轮会一路冒到工具栏根节点的
-        // `onWheel={forwardWheelToCanvas}`, 那个 handler 会把滚轮**重新派发到
-        // excalidraw 的 canvas 上**, 画布跟着平移, 看起来就是"整个页面在动"。
-        // (同一个文件里的调整面板早就这么修过, 见 AdjustPanel 的 onWheel。)
-        onWheel={(e) => e.stopPropagation()}
-      >
+      <PopoverContent align="start" className="w-72 p-0">
         <div className="border-b border-border px-3 py-2">
           <div className="text-[13px] font-medium">{title ?? t("imageModels.title")}</div>
         </div>
@@ -148,7 +139,8 @@ export function ImageModelSelector({
         ) : (
           // overscroll-contain: 滚到头之后别把回弹传给外面。画布上其它几个可滚面板
           // (ChatFrameOverlay / CanvasSidebar / 生成详情) 都加了这个类。
-          // **真正让页面动的不是它**, 是上面 PopoverContent 那个 stopPropagation。
+          // 曾经在这里滚动会带着画布一起平移, 那**不是**这个类管的事 —— 是
+          // forwardWheelToExcalidrawCanvas 把 portal 出去的滚轮也转发了, 已在那边修。
           <div className="max-h-72 overflow-y-auto overscroll-contain py-1">
             {models.map((m) => (
               <ModelRow

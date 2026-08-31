@@ -3,14 +3,16 @@ import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 
 import { elementScreenRect } from "@/lib/excalidraw-bounds";
+import { soleSelectionAppState } from "@/lib/excalidraw-selection";
 import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
 
 /**
- * Shared projection + interaction plumbing for an HTML panel anchored to a native
- * Excalidraw frame (ChatFrameOverlay, BrowseLogOverlay). Native frames can't
+ * Projection + interaction plumbing for an HTML panel anchored to a native
+ * Excalidraw frame (today: ChatFrameOverlay — BrowseLogOverlay was the second
+ * caller and went away with the browse tool). Native frames can't
  * scroll their contents, so the panel is an absolutely-positioned HTML overlay
  * that the caller renders using the values returned here. This hook owns the
- * three pieces both panels share verbatim:
+ * four pieces such a panel needs:
  *
  * - **Projection**: the frame's world rect → screen `rect` + `zoom`. The caller
  *   renders content at the frame's world `width`/`height` then `transform:
@@ -91,25 +93,24 @@ export function useFrameAnchoredPanel(
     return () => el.removeEventListener("wheel", onWheel);
   }, [frameId, excalidrawApiRef]);
 
-  // Press inside the panel → select the frame. Paired with the wheel routing
-  // above on purpose: that only scrolls the panel while the frame is SELECTED,
-  // and the panel covers the frame's entire interior. Without this, selecting
-  // means hitting the frame's border (or its name label) — which reads as
-  // "I clicked the chat box and nothing happened".
-  //
-  // stopPropagation keeps the press off the canvas so it can't start a
-  // selection-box drag. No preventDefault — selecting text inside still works.
+  // Click-to-select (see the doc comment). stopPropagation keeps the press off
+  // the canvas so it can't start a selection-box drag; no preventDefault, so
+  // selecting text inside the panel still works.
   const onPointerDown = useCallback(
     (e: PointerEvent<HTMLElement>) => {
       e.stopPropagation();
       const api = excalidrawApiRef.current;
       if (!api || !frameId) return;
-      const selected = api.getAppState().selectedElementIds ?? {};
-      const ids = Object.keys(selected).filter((id) => selected[id]);
+      // Excalidraw types this `{[id]: true}` — a present key is always selected.
+      const ids = Object.keys(api.getAppState().selectedElementIds ?? {});
       // Already the sole selection — skip the scene update so clicking around
       // inside an open chat isn't a re-render per click.
       if (ids.length === 1 && ids[0] === frameId) return;
-      api.updateScene({ appState: { selectedElementIds: { [frameId]: true } } });
+      // soleSelectionAppState (not a bare selectedElementIds): it also clears
+      // selectedGroupIds/editingGroupId, which Excalidraw draws dashed selection
+      // borders for on their own — leaving them would paint the previously
+      // selected group's outline next to the chat frame forever.
+      api.updateScene({ appState: soleSelectionAppState(frameId) });
     },
     [frameId, excalidrawApiRef],
   );
