@@ -329,6 +329,10 @@ export function ImageEditBar({ selection, imageSourceUrl, preview, image, video,
   return (
     <motion.div
       ref={rootRef}
+      // 滚轮划过工具栏 → 转发给画布 (否则光标停在工具栏上就没法 pan/zoom)。
+      // portal 出去的后代 (模型下拉、预览/prompt 那两个 Dialog) 的滚轮也会沿
+      // **组件树**冒到这里, 但 forwardWheelToExcalidrawCanvas 自己会按 target
+      // 把它们挡掉 —— 见那个文件里的说明。
       onWheel={forwardWheelToCanvas}
       data-image-edit-bar
       className={cn(
@@ -1222,8 +1226,10 @@ export function AdjustPanel({ binding, onChange, onBandChange, onReset, onAuto, 
 
   return (
     <div
-      // Wheel over the panel scrolls the panel only — stop it bubbling to the
-      // toolbar root's forwardWheelToCanvas (which would also pan the canvas).
+      // 面板自己可滚, 所以滚轮到此为止。挡的是"宿主把滚轮转发给画布"这件事, 而且
+      // 只有这里能挡: 转发器那道 target 判定只认得出 portal 出去的后代, 而这个面板
+      // 要真挂在某个转发宿主底下就是**普通 DOM 子节点**, 判定为真, 照转不误。
+      // (今天的宿主 FloatingAdjustPanel 是工具栏的兄弟节点, 所以这行暂时是保险。)
       onWheel={(e) => e.stopPropagation()}
       className={cn("flex w-[300px] flex-col", panelChromeClass)}
     >

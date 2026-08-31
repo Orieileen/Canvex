@@ -1,16 +1,18 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type PointerEvent, type RefObject } from "react";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 
 import { elementScreenRect } from "@/lib/excalidraw-bounds";
+import { soleSelectionAppState } from "@/lib/excalidraw-selection";
 import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
 
 /**
- * Shared projection + interaction plumbing for an HTML panel anchored to a native
- * Excalidraw frame (ChatFrameOverlay, BrowseLogOverlay). Native frames can't
+ * Projection + interaction plumbing for an HTML panel anchored to a native
+ * Excalidraw frame (today: ChatFrameOverlay — BrowseLogOverlay was the second
+ * caller and went away with the browse tool). Native frames can't
  * scroll their contents, so the panel is an absolutely-positioned HTML overlay
  * that the caller renders using the values returned here. This hook owns the
- * three pieces both panels share verbatim:
+ * four pieces such a panel needs:
  *
  * - **Projection**: the frame's world rect → screen `rect` + `zoom`. The caller
  *   renders content at the frame's world `width`/`height` then `transform:
@@ -20,6 +22,10 @@ import { forwardWheelToExcalidrawCanvas } from "@/lib/excalidraw-wheel-forward";
  *   frame is SELECTED a plain wheel scrolls the panel; otherwise (or on a
  *   ctrl/⌘ zoom gesture) the wheel is forwarded to the canvas so it pans/zooms
  *   even with the cursor over the panel.
+ * - **Click-to-select**: a press inside the panel selects the frame. The panel
+ *   covers the frame's whole interior, so without this the only way to select it
+ *   is the few px of frame border — and the wheel routing above needs it
+ *   selected before it will scroll the panel at all.
  * - **Stick-to-bottom**: scrolls to the end whenever `stickKey` (or the frame
  *   height) changes — a new message / log line.
  *
@@ -32,6 +38,8 @@ export function useFrameAnchoredPanel(
   stickKey?: string | number,
 ): {
   scrollRef: RefObject<HTMLDivElement | null>;
+  /** Put this on the panel root — see "Click-to-select" above. */
+  onPointerDown: (e: PointerEvent<HTMLElement>) => void;
   rect: ReturnType<typeof elementScreenRect> | null;
   zoom: number;
   width: number;
@@ -85,5 +93,27 @@ export function useFrameAnchoredPanel(
     return () => el.removeEventListener("wheel", onWheel);
   }, [frameId, excalidrawApiRef]);
 
-  return { scrollRef, rect, zoom, width, height };
+  // Click-to-select (see the doc comment). stopPropagation keeps the press off
+  // the canvas so it can't start a selection-box drag; no preventDefault, so
+  // selecting text inside the panel still works.
+  const onPointerDown = useCallback(
+    (e: PointerEvent<HTMLElement>) => {
+      e.stopPropagation();
+      const api = excalidrawApiRef.current;
+      if (!api || !frameId) return;
+      // Excalidraw types this `{[id]: true}` — a present key is always selected.
+      const ids = Object.keys(api.getAppState().selectedElementIds ?? {});
+      // Already the sole selection — skip the scene update so clicking around
+      // inside an open chat isn't a re-render per click.
+      if (ids.length === 1 && ids[0] === frameId) return;
+      // soleSelectionAppState (not a bare selectedElementIds): it also clears
+      // selectedGroupIds/editingGroupId, which Excalidraw draws dashed selection
+      // borders for on their own — leaving them would paint the previously
+      // selected group's outline next to the chat frame forever.
+      api.updateScene({ appState: soleSelectionAppState(frameId) });
+    },
+    [frameId, excalidrawApiRef],
+  );
+
+  return { scrollRef, onPointerDown, rect, zoom, width, height };
 }

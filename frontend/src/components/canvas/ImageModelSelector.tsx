@@ -137,7 +137,11 @@ export function ImageModelSelector({
             </button>
           </div>
         ) : (
-          <div className="max-h-72 overflow-y-auto py-1">
+          // overscroll-contain: 滚到头之后别把回弹传给外面。画布上其它几个可滚面板
+          // (ChatFrameOverlay / CanvasSidebar / 生成详情) 都加了这个类。
+          // 曾经在这里滚动会带着画布一起平移, 那**不是**这个类管的事 —— 是
+          // forwardWheelToExcalidrawCanvas 把 portal 出去的滚轮也转发了, 已在那边修。
+          <div className="max-h-72 overflow-y-auto overscroll-contain py-1">
             {models.map((m) => (
               <ModelRow
                 key={m.id}

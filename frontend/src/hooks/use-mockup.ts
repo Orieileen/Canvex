@@ -19,6 +19,7 @@ import {
   type Mockup3dBinding,
 } from "@/lib/canvas-mockup";
 import { imageDimensionsFromDataURL } from "@/hooks/use-canvas-pinning";
+import { soleSelectionAppState } from "@/lib/excalidraw-selection";
 import { computeDepthMap } from "@/lib/depth-estimation";
 import { computeForegroundMask } from "@/lib/segmentation";
 
@@ -260,7 +261,7 @@ export function useMockup({ excalidrawApiRef }: UseMockupParams): UseMockup {
       if (!replaced) next.push(designEl);
       apiNow.updateScene({
         elements: next,
-        appState: { selectedElementIds: { [designId]: true } },
+        appState: soleSelectionAppState(designId),
       });
     },
     [excalidrawApiRef, removeMockup],
@@ -315,7 +316,7 @@ export function useMockup({ excalidrawApiRef }: UseMockupParams): UseMockup {
       });
       api.updateScene({
         elements: next,
-        appState: { selectedElementIds: { [baseId]: true } },
+        appState: soleSelectionAppState(baseId),
       });
       setReceivingBaseId(null);
     },
