@@ -56,7 +56,7 @@ export function ChatFrameOverlay({
   // or a streaming-state flip (StreamingBubble pins itself while typing, so the
   // live token text isn't part of the key).
   const lastId = messages.length ? messages[messages.length - 1].id : "";
-  const { scrollRef, rect, zoom, width, height } = useFrameAnchoredPanel(
+  const { scrollRef, onPointerDown, rect, zoom, width, height } = useFrameAnchoredPanel(
     frame,
     excalidrawApiRef,
     `${lastId}:${streaming ? 1 : 0}`,
@@ -75,9 +75,9 @@ export function ChatFrameOverlay({
         transform: `scale(${zoom})`,
         transformOrigin: "top left",
       }}
-      // Clicking/selecting inside the panel shouldn't disturb the canvas selection.
-      // (Wheel zoom/pan is handled by the native listener above, which forwards to the canvas.)
-      onPointerDown={(e) => e.stopPropagation()}
+      // 点面板里的任何地方 = 选中这个 frame (而不是只能点那几像素的框边)。选中之后
+      // 滚轮才滚面板 —— 两件事绑在一起, 都在 useFrameAnchoredPanel 里。
+      onPointerDown={onPointerDown}
     >
       <div className="flex flex-col gap-4 p-6">
         {messages.length === 0 && !streaming ? (
