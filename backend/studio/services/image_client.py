@@ -16,6 +16,7 @@ ImageProvider/ImageModel (services/image_channels.py)。本模块只负责把它
 
 import base64
 import functools
+import math
 import logging
 from dataclasses import asdict, dataclass, field, fields
 from math import gcd
@@ -37,6 +38,12 @@ _INLINE_DOWNLOAD_TIMEOUT = (10, 60)
 # 是 iPhone 多图 JPEG 容器 (PIL 报 'MPO'), 本质是 JPEG —— 不归一会拼出火山拒收的
 # data:image/mpo / data:image/jpg.
 _MIME_ALIASES = {"image/jpg": "image/jpeg", "image/mpo": "image/jpeg", "image/jfif": "image/jpeg"}
+
+
+# 报错里带多少响应体。够看清供应商说了什么, 又不至于把一整个 base64 图塞进日志/DB。
+# 住在这个叶子模块里, template_client 从这儿 import —— 两边各写一个数的话, 同一个"报错
+# 能有多长"会在两条通道上不一样, 而没有任何地方会提醒你。
+BODY_TRUNC = 800
 
 
 def _sniff_image_mime(content: bytes) -> str:
@@ -81,6 +88,243 @@ def size_to_ratio(size: str) -> str:
         return size
     g = gcd(w, h) or 1
     return f"{w // g}:{h // g}"
+
+
+# 比例串 → 像素时, 长边按这个数凑。1024 是各家生图模型都吃得下的常见档位, 而且
+# 面积跟 1024×1024 同量级 —— 换比例不该顺带换掉出图的精细度。
+_RATIO_LONG_EDGE = 1024
+# 不少模型要求边长是 32 的倍数 (latent 是 8 倍下采样再过几层)。凑整比"精确比例"重要:
+# 1344×768 是 16:9 的近似, 而 1365.33×768 根本发不出去。
+_RATIO_STEP = 32
+
+
+def ratio_to_pixels(size: str) -> tuple[int | None, int | None]:
+    """`W:H` 比例 **或** `WxH` 像素 → 一对具体像素。认不出 / "auto" 时给 (None, None)。
+
+    跟 `size_to_wh` 的区别: 那个只认像素串, 比例串对它是"解析不了"。而画布**只会**发比例
+    串 (见前端的 ImageEditSize: auto / 1:1 / 16:9 …), 于是模板里的 `{{width}}` 和
+    `{{height}}` 一直渲染成空、那两个键整个消失 —— 一家要 width+height 的供应商配得再
+    对也拿不到尺寸, 而且没有任何报错。向导的下拉里还列着这两个占位符。
+
+    `size_to_wh` 不动: `size_to_ratio` 建在它上面, 而"比例串原样返回"正是那条路要的 ——
+    这里若让它解析出像素, gcd 化简会把画布上的 `21:9` 变成 `7:3`, 而供应商认的是前者。
+    """
+    w, h = size_to_wh(size)
+    if w is not None and h is not None:
+        return w, h
+    text = (size or "").strip()
+    if ":" not in text:
+        return None, None
+    left, _, right = text.partition(":")
+    try:
+        rw, rh = float(left), float(right)
+    except ValueError:
+        return None, None
+    if rw <= 0 or rh <= 0:
+        return None, None
+    long_edge = _RATIO_LONG_EDGE
+    if rw >= rh:
+        w, h = long_edge, long_edge * rh / rw
+    else:
+        w, h = long_edge * rw / rh, long_edge
+    snap = lambda v: max(_RATIO_STEP, round(v / _RATIO_STEP) * _RATIO_STEP)  # noqa: E731
+    return snap(w), snap(h)
+
+
+def _parse_pair_map(raw: str) -> dict[str, str]:
+    """`"a=x, b"` → `{"a": "x", "b": "b"}`。省略右边 = 两边相同。逗号分隔, 认全角逗号。
+
+    比例和画质档位共用这一条: 两者的形状完全一样 —— 左边是**我们摆在选择器里的那个值**,
+    右边是**这家要我们填进去的那个值**。抄两份的话, 只会在其中一份修好"全角逗号"这类小事。
+    """
+    out: dict[str, str] = {}
+    for part in (raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        shown, _, send = part.partition("=")
+        shown = shown.strip()
+        if shown:
+            out[shown] = send.strip() or shown
+    return out
+
+
+def parse_ratio_map(raw: str) -> dict[str, str]:
+    """`"1:1=1024x1024, 16:9"` → `{"1:1": "1024x1024", "16:9": "16:9"}`。
+
+    左边是**画布上的比例**, 右边是**这家要我们填进 size 字段的东西**。省略右边 = 两者
+    相同 (绝大多数供应商, 比如 apimart 直接收 `16:9`)。
+
+    为什么要有右边: 有些家只收一张写死的像素表, 而且那些像素**不是**按比例算出来的 ——
+    OpenAI 的 gpt-image-1 只认 `1024x1024` / `1536x1024` / `1024x1536`, 而 3:2 按 1024
+    长边算出来是 `1024x672`, 发过去就是 400。火山那张 `resolution → 合法像素` 表也是同一
+    类东西 (内置通道靠 `size_mode=pixel` 里一段硬编码解决, 模板通道一直没有等价物)。
+
+    合成一个字段而不是再加一个: 这两件事永远一起出现 —— 一家会挑比例的供应商, 正是会
+    规定该发什么值的那一家。分成两个字段就必然出现"填了一边"的半配置状态。
+    """
+    return _parse_pair_map(raw)
+
+
+def parse_ratios(raw: str) -> list[str]:
+    """`"16:9, 1:1=1024x1024"` → `["16:9", "1:1"]` —— 只要**画布上那一半**。
+
+    工具栏的选择器和 `nearest_ratio` 都只关心比例本身; 右边那个"实际要发的值"是渲染模板
+    时才用的 (见 `parse_ratio_map`)。
+    """
+    return list(parse_ratio_map(raw))
+
+
+def _ratio_value(ratio: str) -> float | None:
+    """`"16:9"` → 1.777…。算不出来 (含 "auto") 返回 None。"""
+    w, h = size_to_wh(ratio)
+    if w is None or h is None:
+        left, _, right = (ratio or "").partition(":")
+        try:
+            w, h = float(left), float(right)
+        except ValueError:
+            return None
+    return w / h if h else None
+
+
+# 一个画质档位在"贵/清晰"这条轴上的位置。`720p` → 720, `2K` → 2000, `4k` → 4000。
+# 只用来排序和挑最近的一个, 不是真实像素 (`2K` 按宽算是 2560, 按高算是 1440 —— 两种都
+# 不重要, 重要的是它排在 1080p 和 4k 中间)。
+def _resolution_value(tier: str) -> float | None:
+    text = (tier or "").strip().lower()
+    if not text:
+        return None
+    # `NMP` = N 百万像素 (flux-2 用这个计)。换成"边长"才能跟 1K/2K/4K 排在同一根轴上:
+    # 1MP = 1024², 4MP = 2048² —— 所以 4MP 落在 2K 附近, 而不是 4K 附近。照字面读成 4
+    # 的话它会排到 0.5K 前面, 于是"选 2K"会挑中 flux 最小的那一档。
+    if text.endswith("mp"):
+        try:
+            return 1024.0 * math.sqrt(float(text[:-2]))
+        except ValueError:
+            return None
+    unit = 1000.0 if text.endswith("k") else 1.0
+    head = text.rstrip("pk").strip()
+    try:
+        return float(head) * unit
+    except ValueError:
+        return None
+
+
+def parse_resolution_map(raw: str) -> dict[str, str]:
+    """`"720P=std, 1080P=pro"` → `{"720P": "std", "1080P": "pro"}`。
+
+    左边是**选择器里显示的画质档**, 右边是**这家要我们填进去的值**。省略右边 = 两者相同
+    (绝大多数模型直接收 `720p`)。
+
+    右边这一半不是可选的装饰: apimart 的可灵四个模型把画质叫 `mode`, 取值是
+    `std` / `pro` / `4k` —— 文档写明 std=720P、pro=1080P。选择器里摆一个「std」等于让用户
+    自己去查那是多少像素, 而摆「720P」再发 `std` 两边都对。
+    """
+    return _parse_pair_map(raw)
+
+
+def parse_resolutions(raw: str) -> list[str]:
+    """`"720P=std, 1080P=pro"` → `["720P", "1080P"]` —— 只要**摆在选择器里的那一半**。"""
+    return list(parse_resolution_map(raw))
+
+
+def nearest_resolution(want: str, allowed: list[str]) -> str:
+    """用户选的画质档 → 这个模型**真的收**的那一个。`allowed` 为空 = 不限制, 原样返回。
+
+    先按大小写不敏感对一遍: 同一档各家写法不一 (`720p` / `720P`), 而画布上存的是上一个
+    模型的写法 —— 不归一的话换个模型就变成"没匹配上", 白白掉一档。
+
+    对不上时挑数值最近的, 平手取**低**的那个 —— 画质跟时长一样是按档计费的
+    (wan3.0 的文档原话: 不传 resolution 按 1080P 计费, 对成本敏感请显式传 480P/720P)。
+    """
+    if not allowed:
+        return want
+    lowered = {r.lower(): r for r in allowed}
+    hit = lowered.get((want or "").strip().lower())
+    if hit is not None:
+        return hit
+    target = _resolution_value(want)
+    scored = [(abs(value - target), value, r) for r in allowed
+              if (value := _resolution_value(r)) is not None] if target is not None else []
+    return min(scored)[2] if scored else allowed[0]
+
+
+# ── 「挑一个这个模型真的收的值」的那三步 ──────────────────────────────────────
+#
+# 三步永远一起出现: 解析成 `显示值 → 要发的值` 的表 → 挑最近的一个 → 查出要发的那半。
+# 抄开的话第三步最容易掉 —— 它对没写 `=` 右半边的通道是空操作, 所以**漏了也看不出来**,
+# 只有配了映射的那一家会静默地发错值。实测掉过一次: video_variables 就少了这一步。
+def resolve_ratio(raw: str, want: str) -> tuple[str, str]:
+    """`(选择器里那个比例, 要发出去的那个值)`。没配 allowed_ratios 时两者都是 `want`。"""
+    ratios = parse_ratio_map(raw)
+    picked = nearest_ratio(want, list(ratios))
+    return picked, ratios.get(picked, picked)
+
+
+def resolve_resolution(raw: str, want: str) -> tuple[str, str]:
+    """`(选择器里那个画质档, 要发出去的那个值)` —— 可灵显示 `1080P` 而要发 `pro`。
+
+    **空进空出**: 没选画质 = 不下发这个键 = 用供应商的默认。少了这一条,
+    `nearest_resolution("", …)` 会退回列表第一项 —— 一条没人碰过画质旋钮的请求会突然
+    带上一个档位, 而那是替用户做了决定。
+    """
+    if not (want or "").strip():
+        return "", ""
+    tiers = parse_resolution_map(raw)
+    picked = nearest_resolution(want, list(tiers))
+    return picked, tiers.get(picked, picked)
+
+
+def parse_durations(raw: str) -> list[int]:
+    """`"4, 8, 12"` → `[4, 8, 12]`。认不出的项跳过, 空串 → 空列表 (= 不限制)。"""
+    out: list[int] = []
+    for part in (raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(float(part)))
+        except ValueError:
+            continue
+    return out
+
+
+def nearest_duration(want: int, allowed: list[int]) -> int:
+    """用户选的秒数 → 这个模型**真的收**的那一个。`allowed` 为空 = 不限制, 原样返回。
+
+    选择器本来就只列 allowed 里的数字, 所以正常路径永远命中。这条兜底管的是选择器拦不住
+    的那几种: agent 自己挑的时长、以及"换了模型之后旧选择失效"(画布上那三档是粘在
+    localStorage 里的)。
+    """
+    if not allowed or want in allowed:
+        return want
+    return min(allowed, key=lambda d: (abs(d - want), d))
+
+
+def nearest_ratio(want: str, allowed: list[str]) -> str:
+    """用户选的比例 → 这个模型**真的收**的那一个。
+
+    `allowed` 为空 = 不限制, 原样返回 (绝大多数通道都是这样, 这条路不该有开销)。
+
+    为什么要有: 同一家的不同模型吃的比例都不一样 —— 实测 apimart 的
+    gemini-3.1-flash-image-preview 只收 15 种并会 400 拒掉别的, 而 gpt-image-2 连
+    `999:998` 都收。画布上那十个选项是固定的, 所以"选得中但发不出去"必然发生。
+
+    挑"最近的"用**长宽比的比值**而不是字符串: 21:9 和 2:1 是不同的字符串、几乎一样的画面。
+    比不出来的 (auto, 或者写歪了的) 就退回 allowed 里的第一个 —— 宁可给一张能出的图,
+    也不要一个 400。
+    """
+    if not allowed or want in allowed:
+        return want
+    target = _ratio_value(want)
+    if target is None:                       # "auto" 之类: 优先仍然给 auto, 否则给 1:1
+        for fallback in ("auto", "1:1"):
+            if fallback in allowed:
+                return fallback
+        return allowed[0]
+    scored = [(abs(value / target - 1), r) for r in allowed
+              if (value := _ratio_value(r)) is not None]
+    return min(scored)[1] if scored else allowed[0]
 
 
 def bytes_to_data_uri(content: bytes) -> str:
@@ -205,14 +449,23 @@ class ImageClient:
 
         resp = self.session.post(url, json=payload, headers=headers, timeout=self.timeout)
         if not resp.ok:
-            # provider HTTP 错误 → 把 status + body 打 ERROR 让定位 (tu-zi/apimart 的
-            # 400/422 通常带具体字段 / quota / model 错误描述). raise_for_status 之前
-            # 拦, 再让它 raise 不掩盖原 HTTPError.
             logger.error(
                 "ImageClient %d %s: prompt_len=%d image_count=%d body=%.500s",
                 resp.status_code, url, len(prompt), len(image_urls), resp.text,
             )
-        resp.raise_for_status()
+            # **自己抛而不是 raise_for_status()**: 后者的消息只有一行状态
+            # ("401 Client Error: Unauthorized for url: …"), 供应商真正说了什么全在 body
+            # 里 —— tu-zi 那句 "Invalid token"、火山那句"model 不存在"、额度打光那句"余额
+            # 不足"。而这条消息正是「测试」按钮和画布上那行红字要显示的东西, 只留一行状态
+            # 等于把这个按钮存在的理由删掉了 (body 原来只进日志, 用户看不到)。
+            # 模板通道那条路早就是这么做的 (template_client._request), 内置这条落下了。
+            #
+            # 仍然是 HTTPError 且带着 response: `_call_with_retries` 靠 `exc.response
+            # .status_code` 判"确定性 4xx 不重试", 换个异常类型会让那条判断静默失效。
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason} for {url}: {resp.text[:BODY_TRUNC]}",
+                response=resp,
+            )
         result = resp.json()
 
         logger.info(
@@ -228,6 +481,25 @@ class ImageClient:
 # (见 _CLIENT_FIELDS), 所以只要是配过的通道, ImageClient 自己的默认值根本轮不到生效。
 # 那时改 ImageClient.timeout=600 会毫无反应, 而两张表已经不一致了, 没有任何报错。
 _D = {f.name: f.default for f in fields(ImageClient)}
+
+
+# 聊天通道能说的协议。**空串排第一 = 默认**, 也就是 OpenAI 兼容那条 —— 绝大多数供应商
+# 都提供它, 九条预设里九条都走这条。
+#
+# 表住在这个叶子模块而不是 agent/builder: 表单要它 (下拉里列哪几项), 而表单那条路不该为
+# 了一张三个字符串的表把 deepagents / langchain 整个 import 进来。builder 那边的分派表
+# 在 import 时对着它断言, 所以两边不可能漂。
+CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
+
+# 画质档位放在请求体的哪个键上。**这是一个二选一的事实, 不是一个开放的字段名**:
+# apimart 那 41 个视频模型里 37 个叫 `resolution`, 可灵那 4 个 (kling-v2-6 / kling-v3 /
+# kling-v3-omni / kling-video-o1) 叫 `mode`。模板是**每条通道一份**而模型有 41 个, 所以
+# "填哪个键"只能是 per-model 的数据 —— 模板里两个占位符都写上, 没选中的那个渲染成空、
+# 键整个消失 (见 request_template 的空值规则)。
+#
+# 做成 choices 而不是自由文本: 写一个模板里没有的名字 (`quality`), 表现是这个键静默地
+# 不下发 —— 配得看上去完全正确, 而画质旋钮不起作用, 没有任何报错。
+RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
 
 
 @dataclass(frozen=True)
@@ -248,7 +520,8 @@ class ImageChannel:
     **这个类的字段声明就是前端配置表单**: `image_channels.tunable_schema()` 从这里派生出
     控件类型、占位符、空选项语义, 前端照着渲染。所以
 
-      - 声明**顺序 = 表单里的顺序**, 别随手调;
+      - 声明**顺序 = 表单里同一组内的顺序**, 别随手调 (组与组的先后由
+        `image_channels._TUNABLE_GROUPS` 决定);
       - 加一个旋钮, 表单里自动多一行 (只需补两条 i18n 文案);
       - 注解类型决定控件: str→输入框, int→数字框, bool→下拉, `bool | None`→下拉且
         "不填"的含义是**不下发该字段**(而不是"用我们的默认")。
@@ -271,13 +544,68 @@ class ImageChannel:
     # 以下几项 ImageClient 没有 (是通道层自己的适配 / 轮询逻辑), 默认值只此一份。
     # size 适配: "pixel" → 火山合法像素; 空 + poll_enabled → 归一成比例串 (apimart)
     size_mode: str = field(default="", metadata={"example": "pixel"})
+    # 聊天通道说哪种协议。空 / "openai" = OpenAI 的 /chat/completions (默认, 绝大多数);
+    # "anthropic" = Anthropic 的 /v1/messages。
+    #
+    # 存在的理由: 国内几家的 **coding plan 订阅**卖的是 Anthropic 协议端点 (给 Claude
+    # Code 用的), 比按量付费便宜一大截 —— 智谱的 `open.bigmodel.cn/api/anthropic`、
+    # DeepSeek 的 `api.deepseek.com/anthropic` 都是。协议对不上时 ChatOpenAI 发出去的
+    # 是 `/chat/completions`, 换回来一个 404, 而那跟"key 不对"看起来一模一样。
+    #
+    # 只对 chat 通道有意义 (见 KIND_SPECS)。生图那边形状由模板决定, 不需要这个开关。
+    protocol: str = field(default="", metadata={"choices": CHAT_PROTOCOL_CHOICES})
+    # 这个模型**真的收**哪几种比例, 逗号分隔; 空 = 不限制 (默认, 也是绝大多数通道)。
+    # 每一项可以写成 `比例=要发的值` —— 有些家只收一张写死的像素表, 而那些像素不是按比例
+    # 算出来的 (OpenAI: `3:2` 要发 `1536x1024`)。省略右边 = 原样发比例。见 parse_ratio_map。
+    #
+    # 存在的理由: 画布上那十个比例是固定的, 而各家各模型收的不一样 —— apimart 的
+    # gemini-3.1-flash-image-preview 只收 15 种、别的直接 400, 同一家的 gpt-image-2 却
+    # 什么都收。填了之后两件事: 工具栏的比例选择器只列这些, 后端再把漏网的映射到最近的
+    # 一个 (agent 自己挑的尺寸、以及"换了模型之后旧选择失效"都走这条兜底)。
+    #
+    # **放在旋钮里而不是写一张内置表**: 这是 per-model 的事实, 而 overrides 本来就是
+    # per-model 的 —— 同一条通道下两个模型可以各填各的。内置表则永远追不上新模型。
+    # 这个模型**真的收**哪几个时长(秒), 逗号分隔; 空 = 用画布自己那三档 (5/10/15)。
+    #
+    # 跟 allowed_ratios 不同, 这里**不需要"画布值=要发的值"映射** —— 选择器直接列这些
+    # 数字。veo3 只出 8 秒, 那就让它显示「8 秒」, 而不是显示「5 秒」偷偷发 8: 后者用户
+    # 拿到一条时长不对的视频, 还以为是模型没听话。
+    #
+    # 实测这件事有多要紧: 画布原来固定给 5/10/15, 而 apimart 那 41 个模型里 veo3 只收 8、
+    # sora 只收 4/8/12/16/20 —— 那八个模型**一条都生成不出来**, 而报错是供应商给的
+    # invalid duration, 跟"通道配错了"看起来一样。
+    allowed_durations: str = field(default="", metadata={"example": "5, 10, 15"})
+    allowed_ratios: str = field(
+        default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
+    )
+    # 这个模型**真的收**哪几个画质档, 由低到高; 空 = 这个模型没有画质旋钮, 那个键不下发
+    # (= 用供应商自己的默认, 也就是这个功能之前的行为)。
+    #
+    # 跟 allowed_durations 一样是"照它列"而不是"拿它筛" —— 画布这边根本没有一张固定的
+    # 画质档表可筛, 各家的档位从 360p 一路到 4k, 还有 MiniMax 的 `2K`、可灵的 `std/pro`。
+    #
+    # 右边那一半 (`720P=std`) 的用处见 parse_resolution_map。
+    #
+    # **不填的代价是钱**: wan3.0-video 的文档原话是"不传 resolution 时按 1080P 计费,
+    # 对成本敏感时请显式传 480P 或 720P" —— 一条没配这一项的通道会一直按最贵的档出片,
+    # 而界面上完全看不出来。
+    allowed_resolutions: str = field(default="", metadata={"example": "480p, 720p, 1080p"})
+    # 画质档发到哪个键上。只有视频通道用得上 (生图那边没有第二种叫法)。见
+    # RESOLUTION_PARAM_CHOICES。
+    resolution_param: str = field(
+        default="resolution", metadata={"choices": RESOLUTION_PARAM_CHOICES},
+    )
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False
     poll_url: str = ""          # 空则用 base_url
-    poll_max_attempts: int = 60
+    # 200 × 5 秒 ≈ 17 分钟。给得宽是因为**它不是超时**: 轮询一轮只是一个便宜的 GET,
+    # 而这个数管的是"等多久才认输"。给小了的表现是一条**配得完全正确**、只是出图慢的
+    # 通道稳定报"轮询完了还没结果" —— 那是最难查的一类假失败, 因为每个字段看上去都对。
+    # 真正兜底的是 poll_timeout(单轮)和「测试」按钮那条 deadline(同步调用), 不是这个数。
+    poll_max_attempts: int = 200
     poll_interval: int = 5
-    # 退避上限: 每轮等待 ×1.5 直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
+    # 退避上限: 每轮等待**翻倍**直到这个值。0 / ≤poll_interval = 不退避, 固定间隔。
     # 视频是分钟级的, 固定 5 秒去敲一个要跑 3 分钟的任务只是白敲。
     poll_max_interval: int = 0
     poll_timeout: int = 30
@@ -293,6 +621,15 @@ class ImageChannel:
     # 是个坑**: 两条只差模板的通道会被判等、撞同一个缓存格。真要那么做的话, 先把这个
     # 字段换成一个可哈希的表示 (比如 json.dumps 的结果), 别直接把 compare 改回去。
     request_template: dict = field(default_factory=dict, compare=False)
+    # ── 身份 (不参与请求) ──
+    # 这条通道是库里哪一行 ImageProvider。**只给 channel_health 用** —— 它要把"这次调用
+    # 供应商应答了吗"记回那一行。空串 = 不是从库里来的 (向导里还没保存的探针通道), 记录
+    # 直接跳过。
+    #
+    # 放在通道上而不是让每个调用方自己传: 调用方拿到的就是这个 dataclass, 再多传一个
+    # provider_id 意味着**每一条**生成路径 (生图/角度/视频/探针) 都要各自记得带上它, 而
+    # 忘掉的那条会静默地不记健康 —— 没有任何报错, 只是那张卡片上的点永远是灰的。
+    provider_id: str = ""
     # 只用于日志和报错文案, 不参与请求 (库通道是"供应商 · 模型")
     label: str = ""
 

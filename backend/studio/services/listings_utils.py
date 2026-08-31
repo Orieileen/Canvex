@@ -25,6 +25,36 @@ DONE_STATUSES = {"completed", "succeeded", "success"}
 FAILED_STATUSES = {"failed", "failure", "error", "cancelled", "canceled"}
 
 
+# ── 同步调用方的墙钟预算用完了 ────────────────────────────────────────────────
+
+
+class PollBudgetExhausted(RuntimeError):
+    """「测试」按钮的墙钟预算用完了 —— **不是**这条通道有问题。
+
+    **不能是 `TimeoutError`**: 报错回传给前端时前面缀的是异常类名
+    (`f"{type(exc).__name__}: {exc}"`), 而 `channel_diagnosis` 按关键字判类型 ——
+    "timeouterror" 里就带着 "timeout", 于是这条会被判成"把超时调大", 正好跟下面那句
+    "**不要据此改配置**"顶上。两条路 (内置 poll_task / 模板 template_client._poll) 用
+    同一个类和同一句话, 免得只有一条被诊断规则误伤。
+    """
+
+
+def budget_exhausted_message(attempts_done: int, last_status: str = "") -> str:
+    """撞上 deadline 时那句话。**两条轮询路径共用一份** —— 抄两份的下场是其中一份哪天
+    被改成一句会被 `channel_diagnosis` 误认的话, 而没有任何地方会提醒你。
+
+    它**不等于"这条通道配错了"** —— 恰恰相反, 走到这里说明提交成功、轮询也在正常返回
+    状态, 只是这家比一次同步测试能等的时间更慢。所以话要从这一句开始说, 否则用户会去改
+    一个没问题的配置。
+    """
+    seen = f"最后看到的状态是 `{last_status}`, " if last_status else ""
+    return (
+        f"这条通道跑得通, 但比这次测试能等的时间更慢 —— 轮询了 {attempts_done} 次, "
+        f"{seen}时间预算用完了。**不要据此改配置**: 提交和轮询都正常, 只是这家出图慢。"
+        f"直接在画布上真发一次, 那条路径没有这个时间限制。"
+    )
+
+
 # ── 环境变量读取 ──────────────────────────────────────────────────────────────
 
 
@@ -177,6 +207,7 @@ def poll_task(
     max_attempts: int = 60,
     interval: int = 5,
     req_timeout: int = 30,
+    deadline: float | None = None,
 ) -> bytes:
     """
     轮询异步任务直到完成/失败/超时，返回图片字节。
@@ -188,11 +219,19 @@ def poll_task(
         max_attempts: 最大轮询次数
         interval:     轮询间隔秒数
         req_timeout:  单次 HTTP 请求超时秒数
+        deadline:     `time.monotonic()` 时间点，撞上就停。**只有同步调用方会给** ——
+                      「测试」按钮必须在一次 HTTP 请求里返回。给真实墙钟而不是一个换算
+                      出来的次数：次数换算必须假设"每轮都耗尽超时"，而实际每轮通常一秒
+                      就回来，于是 600 秒预算只用掉 96 秒就宣布失败 —— 一条配得完全正确、
+                      只是慢一点的异步通道会被判死刑。worker 里不传，那边没人在等。
+                      (模板通道那条路是 template_client._poll，同一个道理。)
     """
     status_url = f"{poll_url.rstrip('/')}/tasks/{task_id}"
     headers = {"Authorization": f"Bearer {api_key}"}
 
     for attempt in range(max_attempts):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise PollBudgetExhausted(budget_exhausted_message(attempt))
         try:
             resp = requests.get(status_url, headers=headers, timeout=req_timeout)
             resp.raise_for_status()
@@ -261,6 +300,7 @@ def handle_poll_if_needed(
     max_attempts: int = 60,
     interval: int = 5,
     req_timeout: int = 30,
+    deadline: float | None = None,
 ) -> bytes:
     """
     从 images.generations 响应中提取图片。
@@ -274,6 +314,7 @@ def handle_poll_if_needed(
         max_attempts: 最大轮询次数
         interval:     轮询间隔秒数
         req_timeout:  单次请求超时秒数
+        deadline:     见 poll_task —— 同步调用方(「测试」按钮)的墙钟上限
     """
     # 先尝试直接提取图片（同步响应）
     try:
@@ -297,4 +338,5 @@ def handle_poll_if_needed(
         max_attempts=max_attempts,
         interval=interval,
         req_timeout=req_timeout,
+        deadline=deadline,
     )

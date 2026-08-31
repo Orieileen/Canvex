@@ -410,6 +410,7 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
   const pinning = useCanvasPinning(excalidrawApiRef);
   const {
     ensureChatFrame,
+    focusChatFrame,
     pinImage,
     pinVideo,
     createPlaceholder,
@@ -918,6 +919,9 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
       // Make sure the scene has a chat frame for the panel to anchor to (created
       // on the first message; no-op thereafter). Recreates it if the user deleted it.
       ensureChatFrame();
+      // 再把视口带回它 —— 回复出现在锚在这个 frame 上的聊天面板里, 而用户很可能正在
+      // 别处看图。只在它完全不在视野里时才动镜头 (见 focusChatFrame)。
+      focusChatFrame();
       // Per-message ephemeral: drop attachment chips immediately on send.
       setAttachments(clearIfNonEmpty);
       // Pack-mode 横排状态是 per-turn 的:本轮若不重置, turn-2 的 slot 复用
@@ -1122,6 +1126,7 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
       markPlaceholdersFailed,
       pinImage,
       ensureChatFrame,
+      focusChatFrame,
       imageModelIdRef,
       videoModelIdRef,
       pollAndPinJob,

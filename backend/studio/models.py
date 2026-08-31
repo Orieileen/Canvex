@@ -174,7 +174,19 @@ class ChatMessage(models.Model):
 
 
 class ImageProvider(models.Model):
-    """一个生图供应商端点 —— 用户在前端配的「一把 key + 一个 base_url + 一套请求参数」。
+    """一条**通道** —— 用户在前端配的「一把 key + 一个 base_url + 一套请求参数」。
+
+    **界面上它叫「通道」, 不叫「供应商」。** 类名是历史遗留 (最早只有生图, 一条配置就等于
+    一家供应商), 改类名要动迁移和整张表, 而用户看不到类名 —— 所以留着, 但别让这个名字
+    传染到文案里。对应关系:
+
+        ImageProvider  = 界面上的「通道」
+        ImageModel     = 界面上的「模型」
+        「供应商」        = 那家**公司** (tu-zi / APIMart / OpenAI), 库里没有这个概念
+
+    这个区分不是洁癖: 同一家公司底下可以有好几条通道 (这个项目里就同时存在「tu-zi」和
+    「自定义-兔子」, 打的是同一家)。两个词混用的时候, "供应商返回: …" 这种报错到底在说
+    哪一个就没法判断了。前端的用词规则写在 i18n/canvas/imageProviders.ts 顶上。
 
     存在的理由: 生图参数以前只能写在后端 env 里, 固定两条通道 (PRIMARY / FALLBACK),
     只有部署者能改。用户想这张图用 Google、下张用豆包就做不到。现在通道进库、由前端配。
@@ -235,6 +247,33 @@ class ImageProvider(models.Model):
     # result_path, 异步的再加一段 poll)。其余 kind 留空 —— 它们的请求由代码拼。
     # 校验在 ImageProviderSerializer: 变量名必须在这种 kind 声明的变量表里。
     request_template = models.JSONField(default=dict, blank=True)
+
+    # ── 健康状态 ────────────────────────────────────────────────────────────
+    # 「这条通道上一次真的被调用时, 供应商应答了吗」。写入点见
+    # services/channel_health.py —— 每一次真实生成 + 每一次「测试」按钮。
+    #
+    # 存在的理由: 一条配好的通道会在**没有任何人操作**的情况下坏掉 (key 过期、额度打光、
+    # 供应商换端点)。在此之前唯一的发现方式是"下次生成失败", 而那条报错落在画布上一张图
+    # 的红字里, 关掉就没了; 配置面板上这条通道看起来和配好的第一天一模一样。
+    #
+    # **粒度是供应商而不是模型**, 尽管一次调用打的是某一个模型: 界面上一个供应商就是一张
+    # 卡片, 一张卡片配一个点。代价说清楚 —— 同一把 key 下面挂了三个模型、只有一个模型名
+    # 写错时, 整张卡片会显示红点。所以 `last_error` 里带上是哪个模型出的错 (见
+    # channel_health.record), 用户看得到"红的是哪一行"。
+    class Health(models.TextChoices):
+        OK = "ok", "Last call succeeded"
+        ERROR = "error", "Last call failed"
+
+    # 空串 = 还没被调用过 (刚建好的通道)。**不是 null**: 三态里"没测过"是常态而不是缺失,
+    # 用空串省掉前端每处都要写的 `?? ""`。
+    last_status = models.CharField(
+        max_length=8, choices=Health.choices, blank=True, default="",
+    )
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    # 供应商返回的原文, 截断到 2000 字 (同 ImageProviderTestView 那条)。用户拿着它对着
+    # 文档就能改 —— 所以不美化、不归类, 跟「测试」按钮的 toast 是同一份东西。
+    # **不含 api_key**: 记录的是异常文本, 不是请求头 (见 channel_health.record)。
+    last_error = models.TextField(blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -392,6 +431,11 @@ class VideoJob(models.Model):
     image_urls = models.JSONField(default=list, blank=True)
     duration = models.PositiveSmallIntegerField(default=10)  # seconds
     aspect_ratio = models.CharField(max_length=16, default="16:9")
+    # 画质档, 画布上选的那个显示值 (`720p` / `1080P` / `4k` / …)。空 = 不下发这个键,
+    # 由供应商用自己的默认。**存显示值而不是要发出去的值**: 后者是 per-model 的
+    # (可灵那几个模型 1080P 要发 `pro`), 而这一行会比它的通道配置活得久 —— 存翻译后的
+    # 结果, 换个模型重跑就对不上了。翻译在 template_client 渲染模板时做。
+    resolution = models.CharField(max_length=16, blank=True, default="")
 
     # 用户在 Video tab 选的通道。这条路径是异步的 (提交完就返回, worker 之后才捞这行去
     # 长轮询), 所以选择必须落在行上而不是留在请求里。空 = 退到库里第一条 video 通道。

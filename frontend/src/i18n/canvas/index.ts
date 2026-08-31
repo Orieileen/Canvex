@@ -24,6 +24,7 @@ import { mockup } from './mockup'
 import { placement } from './placement'
 import { sidebar } from './sidebar'
 import { skills } from './skills'
+import { wizard } from './wizard'
 import { workspace } from './workspace'
 
 const areas = {
@@ -45,6 +46,7 @@ const areas = {
   placement,
   sidebar,
   skills,
+  wizard,
   workspace,
 }
 

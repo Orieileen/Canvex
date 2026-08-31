@@ -61,13 +61,22 @@ from .services.agent.builder import (
 )
 from .services.agent.skills import list_skills, resync_skills
 from .services.agent.tools.common import enqueue_on_commit
-from .services.agent.tools.image import probe_image_channel
+from .services.agent.tools.image import PROBE_PROMPT, PROBE_VIDEO_PROMPT, probe_image_channel
 from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
-from .services.curl_import import CurlParseError, parse_curl
+from .services.curl_import import (
+    CurlParseError,
+    curl_to_template,
+    poll_curl_to_section,
+)
+from .services import channel_diagnosis, template_client
+from .services.image_client import ImageChannel
+from .services.request_template import TemplateError
+from .services.template_client import TemplateRequestError
 from .services.image_channels import (
     KIND_SPECS,
+    presets_payload,
     UNTESTABLE_FALLBACK,
     channel_for_model,
     tunable_schema,
@@ -1010,7 +1019,8 @@ class ImageProviderTestView(APIView):
     # 他眼前。而且每次点击都占住一个同步 worker 那么久。
     #
     # 逐个钳制每个旋钮是不够的: 轮询的真实耗时是 POST + N×(单次超时 + 间隔), 而 interval
-    # 用户可以在界面上自己填。所以这里从**总墙钟预算**倒推出允许几轮, 让整体有个硬上限。
+    # 用户可以在界面上自己填。所以这里给整次点击一个**总墙钟预算**, 由一个真的 deadline
+    # 一路传到轮询循环里兜底 (见 `_probe` / `_budgeted`) —— 而不是把预算倒推成轮数。
     # 跟前端 axios 的 `timeout: 600000` (毫秒) 对齐 —— 那才是真正会掐断这次点击的东西,
     # 而 compose 里没有反代, 是 runserver 直连。原来写 60 是保守估的, 结果是**测试比真实
     # 调用还严**: 实测图生图 66 秒, 一条配得完全正确的通道会被自己的测试判失败。
@@ -1053,9 +1063,14 @@ class ImageProviderTestView(APIView):
           实测 tu-zi 的 gpt-image-2 要 49 秒 —— 按 15 秒掐, 一条**配得完全正确**的通道
           会稳定报"测试失败", 正是这个按钮要消灭的那种假信号。angle 早就为同一个理由拿
           整个预算 (见 ANGLE_OP_TIMEOUT), 生图这条当时漏了。
-        - **轮询** (apimart 这类先返 task_id): 总耗时是 POST + N×(单次超时 + 间隔),
-          所以 POST 只能拿一小段, 轮数由剩余墙钟倒推 —— 而不是写死一个次数, 因为
-          interval 和单次超时都是用户可编辑的, 写死次数换个配置就又跑到几分钟。
+        - **轮询** (apimart 这类先返 task_id): POST 只能拿一小段 (它只是交个任务),
+          剩下的时间给轮询。**轮数不动** —— 停下来靠的是一个真的 deadline
+          (见 `_probe` / `probe_image_channel`), 不是从预算换算出来的次数。
+
+        这里原来是把预算倒推成 `poll_max_attempts`。那个换算必须假设"每轮都耗尽单次
+        超时", 而实际每轮通常一秒就回来 —— 于是 600 秒的预算实际只等了 96 秒, 一条配得
+        完全正确、只是慢一点的异步通道会被判失败。现在只钳"单次能有多久", 总时长交给
+        deadline, 两者各管各的: 钳单次是为了让越界最多超出一轮, deadline 才是硬上限。
         """
         # 「这条通道会不会轮询」有两种说法, 两种都得看:
         #   - 内置通道: `poll_enabled` 旋钮
@@ -1067,23 +1082,18 @@ class ImageProviderTestView(APIView):
         if not polls:
             return replace(channel, timeout=min(channel.timeout, cls.TEST_BUDGET_SECONDS))
 
-        op_timeout = min(channel.timeout, cls.TEST_OP_TIMEOUT)
-        poll_timeout = min(channel.poll_timeout, cls.TEST_OP_TIMEOUT)
         interval = min(channel.poll_interval, cls.TEST_POLL_INTERVAL)
-        per_attempt = max(1, poll_timeout + interval)
         return replace(
             channel,
-            timeout=op_timeout,
-            poll_timeout=poll_timeout,
+            timeout=min(channel.timeout, cls.TEST_OP_TIMEOUT),
+            # 钳单次超时是为了让"撞线"最多超出一轮 —— deadline 是在**发下一个请求之前**
+            # 判的, 判完那个请求本身还能跑 poll_timeout 那么久。
+            poll_timeout=min(channel.poll_timeout, cls.TEST_OP_TIMEOUT),
             poll_interval=interval,
-            # 退避上限也要钳: 下面那道轮数推导是按"每轮都只等 interval"算的, 而模板通道的
-            # 轮询会把等待翻倍到 poll_max_interval (跟内置 video 同一条式子)。不钳的话一条
-            # poll_max_interval=180 的自定义通道, 推导出的轮数乘上真实等待照样跑到几十分钟。
-            # 钳成 interval = 这次测试里不退避, 固定间隔。
+            # 退避上限也钳成 interval (= 这次测试里固定间隔不退避)。一条
+            # poll_max_interval=180 的通道, 第一次撞线可能要先睡三分钟才轮到判断,
+            # 那三分钟里浏览器什么也不知道。
             poll_max_interval=interval,
-            poll_max_attempts=max(
-                1, min(channel.poll_max_attempts, (cls.TEST_BUDGET_SECONDS - op_timeout) // per_attempt),
-            ),
         )
 
     @classmethod
@@ -1100,7 +1110,12 @@ class ImageProviderTestView(APIView):
                 replace(channel, timeout=min(channel.timeout, cls.ANGLE_OP_TIMEOUT)),
                 image_url=cls.ANGLE_PROBE_IMAGE,
             )
-        return probe_image_channel(cls._budgeted(channel))
+        # deadline 在这儿算而不是更深的地方: 「这次点击能占多久」是 **view** 的事
+        # (它知道浏览器那头的 axios 超时是多少), 不是通道配置的一部分。
+        return probe_image_channel(
+            cls._budgeted(channel),
+            deadline=time.monotonic() + cls.TEST_BUDGET_SECONDS,
+        )
 
     def post(self, request, pk):
         provider = get_object_or_404(ImageProvider, pk=pk)
@@ -1122,13 +1137,13 @@ class ImageProviderTestView(APIView):
                 # 前端给还没保存的模型行发的是本地临时 id ("new-1723…"), 直接丢给
                 # UUIDField 查询会抛 django 的 ValidationError → 500。说人话地拦下来。
                 raise ValidationError(
-                    {"image_model": ["这个模型还没有保存, 先保存供应商再测试"]}
+                    {"image_model": ["这个模型还没有保存, 先保存这条通道再测试"]}
                 ) from exc
             model = provider.models.filter(id=model_pk).first()
         else:
             model = provider.models.first()
         if model is None:
-            raise ValidationError({"image_model": ["这个供应商下还没有配置任何模型"]})
+            raise ValidationError({"image_model": ["这条通道下还没有配置任何模型"]})
         # channel_for_model 会读 model.provider —— 那就是我们手上这条, 喂给 FK 缓存,
         # 省掉一次纯属多余的往返。
         model.provider = provider
@@ -1138,13 +1153,18 @@ class ImageProviderTestView(APIView):
             image_bytes = self._probe(provider, channel_for_model(model))
         except Exception as exc:  # noqa: BLE001 — 原样回传才是这个接口的价值
             logger.info("image provider test failed: provider=%s model=%s", provider.label, model.label)
+            error = f"{type(exc).__name__}: {exc}"[:2000]
             return Response(
                 {
                     "ok": False,
                     "elapsed": round(time.monotonic() - started, 1),
                     # str(exc) 可能带供应商回的整段报文。这是本地工具, 用户就是要看它;
                     # 但**不要**把 channel / 请求头拼进去 —— 那里面有 api_key。
-                    "error": f"{type(exc).__name__}: {exc}"[:2000],
+                    "error": error,
+                    # 「这属于哪一类问题」。只回 code, 文案在前端 (中英各一份) ——
+                    # 见 services/channel_diagnosis.py。认不出就是空串, 那时界面上只有
+                    # 上面那段原文, 跟没有这个字段时一样。
+                    "diagnosis": channel_diagnosis.diagnose(error, template=spec.template),
                 },
                 status=status.HTTP_200_OK,  # 测试"失败"本身是成功的测试结果, 不是 HTTP 错误
             )
@@ -1166,20 +1186,101 @@ class ImageProviderSchemaView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        return Response({"tunables": tunable_schema()})
+        # presets 跟 tunables 同一个端点: 前端**同时**要这两样才能画出面板 (顶上的一键
+        # 预设按钮 + 下面每张卡片的表单), 分两个端点只是多一次往返和一次加载态。
+        return Response({"tunables": tunable_schema(), "presets": presets_payload()})
 
 
-class ImageProviderCurlImportView(APIView):
-    """POST /image-providers/import-curl/ —— 把供应商文档里的示例 curl 转成预填字段。
+class ChannelWizardParseView(APIView):
+    """POST /image-providers/wizard/parse/ —— 一段 curl → 请求模板 (或 poll 段)。
 
-    替代内置预设: 那 16 个旋钮是我们适配器的词汇而不是供应商的词汇, 用户没法直接从文档
-    抄; 但示例 curl 的请求体形状里就含着答案 (图字段叫什么、是数组还是单值)。
+    带 `task_id` 时解析的是"查询任务"那一段, 否则是"提交生成"那一段。两者合成一个端点
+    是因为对前端而言它们是同一件事的两步, 而且第二步的入参 (`task_id` / `base_url`) 全
+    来自第一步的结果。
     """
 
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        curl = request.data.get("curl", "")
+        task_id = str(request.data.get("task_id") or "").strip()
         try:
-            return Response(parse_curl(request.data.get("curl", "")))
+            if task_id:
+                section, notes = poll_curl_to_section(
+                    curl, task_id=task_id, base_url=request.data.get("base_url", ""),
+                )
+                # notes = "这一段我是猜的"。猜错的后果 (一条永远查不到状态的通道) 要等
+                # 第一次真实生成才显形, 所以必须当场说出来。
+                return Response({"poll": section, "notes": notes})
+            return Response(curl_to_template(curl))
         except CurlParseError as exc:
             raise ValidationError({"curl": [str(exc)]}) from exc
+
+
+class ChannelWizardProbeView(APIView):
+    """POST /image-providers/wizard/probe/ —— 拿**还没保存**的配置真发一次, 把回包里
+    能自动认出来的东西 (result_path / status_path / task_id_path / 完成时的状态值) 交回去。
+
+    必须接受未入库的通道: 向导的全部意义就是"存之前先跑通"。所以这里从请求体拼一个临时
+    ImageChannel, 不碰数据库。
+
+    这会真的产生一次生成消耗 —— 跟 ⚡ 测试同理。
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    # 向导能建的通道类型 = 所有**模板类**通道。从 KIND_SPECS 推, 不写死一个名单 ——
+    # 加第三种模板通道时这里自动跟上, 而写死的名单会静默地把它挡在向导之外。
+    @staticmethod
+    def _template_kinds() -> dict[str, object]:
+        return {k: spec for k, spec in KIND_SPECS.items() if spec.template}
+
+    def post(self, request):
+        d = request.data
+        template = d.get("request_template") or {}
+        kind = str(d.get("kind") or ImageProvider.Kind.CUSTOM_IMAGE)
+        if kind not in self._template_kinds():
+            raise ValidationError({"kind": [
+                f"向导只能建模板类通道, 不认识 `{kind}`。"
+            ]})
+        channel = ImageChannel(
+            base_url=str(d.get("base_url") or ""),
+            api_key=str(d.get("api_key") or ""),
+            model=str(d.get("model") or ""),
+            kind=kind,
+            request_template=template,
+            # 向导是同步 HTTP, 浏览器在等 —— 沿用测试按钮那套墙钟预算。
+            timeout=min(ImageProviderTestView.TEST_BUDGET_SECONDS, 300),
+            poll_timeout=ImageProviderTestView.TEST_OP_TIMEOUT,
+        )
+        if not channel.base_url or not channel.api_key:
+            raise ValidationError({"detail": ["先填好 Base URL 和 API key 再试跑"]})
+
+        task_id = str(d.get("task_id") or "").strip()
+        poll = d.get("poll")
+        # 变量表按 kind 选。视频那张多了 duration / aspect_ratio, 少了 size / n ——
+        # 喂错的话模板里的 `{{duration}}` 会渲染成空、那个键整个消失, 而供应商多半只会
+        # 回一句"缺少必填参数", 跟"向导挑错了变量表"看不出关系。
+        if kind == ImageProvider.Kind.CUSTOM_VIDEO:
+            variables = template_client.video_variables(
+                channel, prompt=d.get("prompt") or PROBE_VIDEO_PROMPT,
+                image_urls=[], duration=int(d.get("duration") or 5),
+                aspect_ratio=str(d.get("aspect_ratio") or "16:9"),
+                resolution=str(d.get("resolution") or ""),
+            )
+        else:
+            variables = template_client.image_variables(
+                channel, prompt=d.get("prompt") or PROBE_PROMPT,
+                image_urls=[], size=str(d.get("size") or "1024x1024"), n=1, resolution="1K",
+            )
+        try:
+            if poll and task_id:
+                return Response(template_client.probe_poll(
+                    channel, poll, {**variables, "task_id": task_id},
+                ))
+            return Response(template_client.probe_template(channel, variables))
+        except (TemplateRequestError, TemplateError) as exc:
+            # 供应商的原文一路带到界面上 —— 向导失败时那句话就是用户唯一的线索。
+            raise ValidationError({"detail": [str(exc)]}) from exc
+
+

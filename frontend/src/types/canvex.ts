@@ -253,6 +253,19 @@ export interface CanvasImageProvider {
   models: CanvasImageModel[];
   created_at: string;
   updated_at: string;
+  /** 通道健康 —— 「上一次真的调用它时,供应商应答了吗」。只读,由后端在每次真实生成
+   *  和每次「测试」之后写 (backend services/channel_health.py)。
+   *
+   *  `""` = 还没被调用过。`last_error` 是供应商返回的原文,前面缀了是哪条通道
+   *  (「供应商 · 模型」) —— 同一把 key 下面只有一个模型名写错时,那是判断"红的是哪一
+   *  行"的唯一线索。 */
+  last_status: "" | "ok" | "error";
+  last_checked_at: string | null;
+  last_error: string;
+  /** `last_error` 属于哪一类问题 —— 后端算出来的 code,文案在前端
+   *  (`imageProviders.diag.<code>`,中英各一份)。空串 = 认不出,那时只显示原文。
+   *  见 backend services/channel_diagnosis.py。 */
+  last_error_diagnosis: string;
 }
 
 /** 后端下发的、关于一种通道类型的全部表单规则 (GET /image-providers/schema/)。
@@ -263,6 +276,12 @@ export interface CanvasImageProvider {
  *  请求发出去之前就拦下来, 后端改了等于没改。 */
 export interface CanvasKindSpec {
   tunables: CanvasTunableSpec[];
+  /** 还能不能**新建**这种通道。false = 已有的照常编辑照常用,只是建不出新的。
+   *
+   *  给 image / video 用 —— 模板通道出现之前的老形状(十六个 / 七个旋钮),而
+   *  custom_image / custom_video 能表达的严格更多。不是删掉那两种 kind:库里可能还存着,
+   *  而"存在但打不开"比多一个选项糟得多。 */
+  creatable: boolean;
   /** false = 这种通道的 base_url 可以留空 (chat 留空 = OpenAI 官方端点)。 */
   requires_base_url: boolean;
   base_url_example: string;
@@ -285,8 +304,17 @@ export interface CanvasKindSpec {
  */
 export interface CanvasTunableSpec {
   key: string;
-  /** 渲染成什么控件。由字段的标量类型决定。 */
-  control: "text" | "bool" | "number";
+  /** 归哪一组 (`shape` / `timing` / `poll` / `other`)。**后端说了算** —— 前端不按字段名
+   *  前缀猜, 那种猜法会在有人加一个 `poll_` 开头的非轮询字段时静默出错。
+   *  行已经按组排好, 前端只按首次出现的次序切段。 */
+  group: string;
+  /** 渲染成什么控件。由字段的标量类型决定,**有固定取值的除外** —— 那种发 `choice`。 */
+  control: "text" | "bool" | "number" | "choice";
+  /** `control === "choice"` 时才有:能选哪几个。**第一项是空串 = 默认。**
+   *
+   *  为什么不做成自由文本:序列化器只校验类型(str),所以一个拼错的值存得进去,而错误
+   *  要等到下一轮聊天建模型时才抛 —— 又一个"保存时看不见、用的时候才炸"。 */
+  choices?: string[];
   /** 输入框的灰字提示。通常就是 Canvex 自己的默认值。 */
   placeholder: string;
   /** 下拉里"不填"那一项的语义: 用我们的默认, 还是根本不下发这个字段。 */
@@ -303,12 +331,33 @@ export type CanvasImageProviderWrite = Omit<CanvasImageProvider, "models"> & {
 export interface CanvasImageModelChoice {
   id: string;
   label: string;
+  /** 这条模型挂在哪条**通道**下 (界面上显示成「通道名 · 模型名」)。
+   *  字段名里的 `provider` 是后端模型类名 `ImageProvider` 的遗留 —— 界面上这东西叫通道,
+   *  「供应商」只指那家公司。见 i18n/canvas/imageProviders.ts 顶上的用词规则。 */
   provider_label: string;
   /** **分流按这个。** 一个选择器对应多种 kind (生图 = 内置 image + 模板 custom_image),
    *  所以后端直接给"这一项归哪个选择器", 前端不按 kind 名字判 —— 那样新加的通道类型
    *  配好了却不出现在工具栏里, 而且不报错。 */
   picker: string;
   sort_order: number;
+  /** 这个模型**真的收**哪几种比例(已经是合并过三层配置之后的结果)。空 = 不限制。
+   *
+   *  工具栏的比例选择器按它裁 —— 选不中的东西就不该出现在列表里,那比"选了再收 400"
+   *  好得多。实测 apimart 的 gemini-3.1-flash-image-preview 只收 15 种并会直接拒掉别的,
+   *  而同一家的 gpt-image-2 连 `999:998` 都收,所以这是 per-model 的事实。 */
+  allowed_ratios: string[];
+  /** 这个模型**真的收**哪几个时长(秒)。空 = 用画布自己那三档。
+   *
+   *  跟 allowed_ratios 不同,选择器是**照这个列**而不是拿它去筛画布那三档 —— veo3 只出
+   *  8 秒,画布的 5/10/15 一个都不在里面,筛完会是空的。 */
+  allowed_durations: number[];
+  /** 这个模型**真的收**哪几个画质档,由低到高。空 = 这个模型没有画质旋钮,工具栏就不显示
+   *  那个下拉(= 按供应商自己的默认出片,也就是这个功能之前的行为)。
+   *
+   *  跟 allowed_durations 一样是「照它列」—— 画布这边根本没有一张固定的画质档表可筛,
+   *  各家从 360p 排到 4k,还有 MiniMax 的 `2K`、可灵的 std/pro(后端把它显示成
+   *  720P/1080P,发出去才换回 std/pro,前端不用知道这件事)。 */
+  allowed_resolutions: string[];
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——
@@ -318,21 +367,85 @@ export interface CanvasImageProviderTestResult {
   elapsed: number;
   bytes?: number;
   error?: string;
+  /** 失败时的诊断 code,跟 `CanvasImageProvider.last_error_diagnosis` 同一套。
+   *  空串 = 认不出。 */
+  diagnosis?: string;
 }
 
-/** POST /image-providers/import-curl/ 从示例 curl 推断出的预填字段。
- *  只包含推断出来的项;`_unrecognized` 是示例里出现但我们不认识的请求体键。 */
-export interface CanvasCurlImportResult {
-  base_url?: string;
+/** 向导第 1 步:一段 curl 解析出来的东西 (POST /image-providers/wizard/parse/)。
+ *
+ *  `mapping` 是给界面渲染成"这个键 = 提示词 / 尺寸 / 固定值"那张表的 —— 占位符是**猜**
+ *  的(按键名 + 值的形状),所以必须让用户能逐行改。`var` 为空 = 认不出来,原样当固定值
+ *  发给供应商,那通常正是对的。 */
+/** 一键预设:一张预先填好 base_url / 模型 / 请求形状的通道草稿,用户只剩 key 要填。
+ *  由后端下发(image_channels.PRESETS)—— **前端不写死任何一家供应商**。
+ *
+ *  存进库之后就是一条普通通道,跟手配出来的没有区别。名字和说明按 `key` 查翻译。 */
+export interface CanvasChannelPreset {
+  key: string;
+  kind: string;
+  /** 界面上按什么分组:聊天 / 生图 / 换视角。**后端算**(= 那个 kind 的 picker,
+   *  chat 没有 picker 就用 kind 本身)—— 一个角色可能对应多种 kind,前端按 kind 名字
+   *  分组的话,哪天加一条内置 image 的预设就会自己单开一组。 */
+  role: string;
+  base_url: string;
+  /** 这条预设建出来的通道底下挂哪几个模型。**第一个是默认**(工具栏的选择器落在列表
+   *  第一项)。绝大多数只有一个;apimart 视频那条有四十一个 —— 同一家的所有视频模型
+   *  共用一个端点和一套请求形状,差别只在这个字符串。 */
+  models: string[];
+  /** 某几个模型自己的旋钮覆盖,键是模型字符串。只有 apimart 视频那条用得上 ——
+   *  它装的是每个模型真实支持的时长。 */
+  model_overrides: Record<string, Record<string, unknown>>;
+  defaults: Record<string, unknown>;
+  request_template: Record<string, unknown>;
+}
+
+export interface CanvasWizardMapping {
+  /** 在请求体里的位置,如 `body.size` / `input.image_urls[0]`。 */
+  path: string;
+  key: string;
+  /** curl 示例里那个具体的值,显示给用户看"我们是照着什么猜的"。 */
+  sample: unknown;
+  /** 认成了哪个占位符。空 = 固定值。 */
+  var: string;
+}
+
+export interface CanvasWizardParsed {
+  base_url: string;
+  /** 示例里的 key 是占位符时不返回 —— 见 notes。 */
   api_key?: string;
   model?: string;
-  image_field?: string;
-  image_as_single?: boolean;
-  response_format?: string;
-  quality?: string;
-  watermark?: boolean;
-  _unrecognized?: string[];
-  /** 这段 curl 打的不是 /images/generations —— base_url 里留着端点路径, 直接保存会拼出
-   *  一个多一截的地址。整句话由后端给, 因为"我们会打哪个端点"是后端的事。 */
-  _path_note?: string;
+  template: Record<string, unknown>;
+  mapping: CanvasWizardMapping[];
+  notes: string[];
 }
+
+/** 向导第 2 / 4 步:真发一次之后,从回包里自动认出来的东西
+ *  (POST /image-providers/wizard/probe/)。
+ *
+ *  `result_path` 是模板里唯一没人写得出来的字段(`data.result.images[0].url[0]` 这种),
+ *  所以不问用户,跑一次在回包里找"哪个位置长得像图"。 */
+export interface CanvasWizardProbe {
+  raw: unknown;
+  candidates: { path: string; preview: string }[];
+  result_path: string;
+  /** 第一个命中位置上的值,且它是个 http(s) 地址时才有。向导拿它把**刚生成的那张图**
+   *  显示出来 —— 一行 `data.result.images[0].url[0]` 只能证明"有个地址长得像结果",
+   *  看见图才是"这条通道真的通了"。base64 / data URI 不给(体积)。 */
+  preview_url?: string;
+  /** 没找到图但有 task_id/status = 这家是异步的。**这件事文档里看不出来**,
+   *  异步和同步供应商的示例 curl 长得一模一样,差别只在回包。 */
+  is_async?: boolean;
+  task_id_path?: string;
+  /** `task_id_path` 那一层上**真实的那个值**。向导第 3 步全靠它(拿它去查任务、拿它在
+   *  查询地址里定位该换成 `{{task_id}}` 的那一段)。
+   *
+   *  由后端读出来而不是前端再走一遍回包 —— 那会是第二份"哪个键是任务 id"的规则,而两份
+   *  必然分叉:一家把它叫 `id` / `request_id` 的供应商会让前端拿到空串。 */
+  task_id?: string;
+  /** 轮询探针才有 */
+  status_path?: string;
+  status?: string;
+  done?: boolean;
+}
+

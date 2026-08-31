@@ -52,6 +52,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from django.conf import settings
 from django.db import DatabaseError, transaction
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -66,7 +67,9 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from studio.models import ImageProvider
+from studio.services import channel_health
 from studio.services.image_channels import require_channel
+from studio.services.image_client import CHAT_PROTOCOL_CHOICES
 
 from .context import CanvasAgentContext
 from .tools.image import generate_image
@@ -282,7 +285,7 @@ def _skills_namespace(_rt) -> tuple[str, ...]:
 def build_canvas_agent():
     """按当前配置好的聊天通道返回 deep-agent 实例, 每条通道各建一次。
 
-    配置来自库里 `kind=chat` 的供应商 (在侧栏「配置供应商」里配), 老部署的
+    配置来自库里 `kind=chat` 的那条通道 (在侧栏「通道配置」里配), 老部署的
     `CANVAS_CHAT_*` 由迁移 0015 一次性导入。
 
     **不是单例而是按通道缓存**: 用户在界面上改了 key / base_url / 模型, 下一轮聊天就该用
@@ -309,31 +312,114 @@ def build_canvas_agent():
     # 这一条, 搬到库里之后不能丢。
     if not (channel.api_key or "").strip():
         raise RuntimeError(
-            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「配置供应商」里补上。"
+            f"聊天通道「{channel.label}」没有填 API key —— 在侧栏「通道配置」里补上。"
             "它必须是一把支持 OpenAI tools 参数的 key, 别直接填生图那把。"
         )
     with _agent_lock:
         return _agent_for_channel(
             channel.api_key, channel.base_url, channel.model, channel.timeout,
+            channel.provider_id, channel.protocol,
         )
 
 
+class _ChannelHealthCallback(BaseCallbackHandler):
+    """把每一次 LLM 往返的结果记到聊天通道行上 (见 services/channel_health.py)。
+
+    **为什么是回调而不是在 stream_canvas_agent 的 except 里记**: 那里一次工具报错和一次
+    LLM 报错会变成同一个 CanvasAgentInvocationError, 分不出是谁的责任 —— 而卡片上那个红点
+    必须意味着"这条通道不行", 不能意味着"刚才那次生成挂了"。回调是 langchain 里唯一确知
+    "这一次是模型在说话"的地方。
+
+    聊天通道**没有「测试」按钮** (要验的是"支不支持 tools 参数", 跟发一张图不是一回事 ——
+    见 KIND_SPECS 的 untestable_reason), 所以真实对话是它唯一的健康信号。用户那把
+    tu-zi key 额度打光时, 聊天和生图是一起停的, 而在此之前只有生图那条会变红。
+
+    一轮对话会调好几次模型 (每次工具调用之后都要再问一遍), 于是这里一轮写好几次库。
+    单机项目 + 一张几行的表, 换掉这份精确度不值得。
+    """
+
+    def __init__(self, provider_id: str, label: str):
+        self.provider_id = provider_id
+        self.label = label
+
+    def on_llm_end(self, response, **kwargs) -> None:
+        channel_health.record(self.provider_id, self.label, True)
+
+    def on_llm_error(self, error: BaseException, **kwargs) -> None:
+        channel_health.record(
+            self.provider_id, self.label, False, f"{type(error).__name__}: {error}",
+        )
+
+
+# 聊天通道说的协议 → 建哪个 langchain 模型。
+#
+# 为什么需要不止一种: 国内几家的 **coding plan 订阅**卖的是 Anthropic 协议端点 (给
+# Claude Code 用的), 比按量付费便宜一大截。协议对不上时 ChatOpenAI 发出去的是
+# `/chat/completions`, 换回来一个 404 —— 而那跟"地址填错了"看起来一模一样。
+#
+# **一张表而不是 if/else**: 加第三种协议 (Gemini 原生?) 时只加一行, 而且"支持哪几种"
+# 这个事实有一个唯一出处 —— 校验、表单提示、这里, 三处读的是同一张表。
+def _openai_model(**kw):
+    return ChatOpenAI(**kw)
+
+
+def _anthropic_model(**kw):
+    # `max_tokens` 是 Anthropic 协议的**必填项** (OpenAI 那边可选)。langchain 的默认值
+    # 偏小, 而 agent 一轮要吐工具调用 + 一段回复, 给窄了的表现是回答被拦腰截断。
+    #
+    # 延迟 import: 只有配了 anthropic 协议的通道才会走到这里, 而这个包是 deepagents 带
+    # 进来的 —— 放模块顶上会让所有人 (含从不用它的绝大多数) 多付一次 import。
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(max_tokens=8192, **kw)
+
+
+CHAT_PROTOCOLS = {
+    "": _openai_model,             # 没填 = OpenAI, 绝大多数
+    "openai": _openai_model,
+    "anthropic": _anthropic_model,
+}
+# 表单的下拉列的是 CHAT_PROTOCOL_CHOICES, 这里分派的是 CHAT_PROTOCOLS —— 两边漂了的
+# 表现是"下拉里选得中的值, 一聊天就抛 ValueError"。import 时就炸掉, 别等到用户点。
+assert set(CHAT_PROTOCOLS) == set(CHAT_PROTOCOL_CHOICES), (
+    f"协议表对不上: 能选 {sorted(CHAT_PROTOCOL_CHOICES)}, 认得 {sorted(CHAT_PROTOCOLS)}"
+)
+
+
 @functools.lru_cache(maxsize=4)
-def _agent_for_channel(api_key: str, base_url: str, model_name: str, timeout: int):
+def _agent_for_channel(
+    api_key: str, base_url: str, model_name: str, timeout: int, provider_id: str,
+    protocol: str = "",
+):
     """建一条通道的 graph。**只在 `_agent_lock` 下调用** (见 build_canvas_agent)。
 
-    键是这四个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
+    键是这六个**真正会用到**的字段, 不是整个 ImageChannel。整通道当键的话, `label`
     (= "供应商名 · 模型名") 也在里面 —— 在配置面板里给聊天供应商改个名字就会让这条失效,
     下一轮聊天要重新编译整个 deep-agent graph 并新建一个 ChatOpenAI (连带新的 httpx 连接
     池), 而且是握着进程级的 _agent_lock 做的, 期间所有并发的聊天全都排队等着。
     image_client.build_image_client 早就为同一个理由把键收窄到 _CLIENT_FIELDS 了。
+
+    `provider_id` 在键里是因为健康记录要写回**那一行**: 两条 key/端点/模型全一样的聊天
+    通道以前会共用一个 graph, 现在各建各的。这不会引起上面担心的那种反复重建 —— id 是
+    不变的, 改名字照样命中。
     """
-    model = ChatOpenAI(
+    build = CHAT_PROTOCOLS.get((protocol or "").strip().lower())
+    if build is None:
+        raise ValueError(
+            f"聊天通道的 protocol 填了 `{protocol}`, 只认: "
+            f"{', '.join(k or '(留空 = openai)' for k in CHAT_PROTOCOLS)}"
+        )
+    model = build(
         api_key=api_key,
+        # 空串 → None: 两个 SDK 都把 None 当成"用官方默认端点", 而空串会被当成一个
+        # 真的 (空的) 地址。chat 通道的 base_url 本来就允许留空。
         base_url=base_url or None,
         model=model_name,
         max_retries=10,
         timeout=timeout,
+        # 装在模型构造上而不是每次 invoke 传: 聊天有好几个入口 (流式 / 非流式 / 将来的
+        # 子 agent), 挂在这里就不用每处各记一遍。
+        callbacks=[_ChannelHealthCallback(provider_id, model_name)],
     )
 
     agent = create_deep_agent(

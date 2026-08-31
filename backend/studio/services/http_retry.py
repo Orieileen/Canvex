@@ -10,6 +10,7 @@
 - POST 在 5xx 之外的错误: provider 可能已部分处理 (扣了配额 / 创了任务) → 不
   retry 防双扣. urllib3 Retry 默认 allowed_methods 已排除 POST, 我们显式加回来
   只对 5xx/429 — 这些状态码意味着 server 没接收 / 没处理, 重试安全.
+- **读超时** (`read=0`, 见下): 超时恰恰说明对方**收到了、正在跑**.
 """
 import requests
 from requests.adapters import HTTPAdapter
@@ -23,6 +24,18 @@ RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
 RETRY_TOTAL = 3
 RETRY_BACKOFF_FACTOR = 1
 
+# **读超时一次都不重试。** 上面那段"5xx 重试 POST 是安全的"只对状态码成立: 5xx 是对方
+# 明确回了一句"我没处理"。读超时不是 —— 它的意思是**连上了、请求发过去了、对方半天没
+# 回**, 而一次生图本来就要几十秒。于是一条比 `timeout` 慢的通道会被这套重试把同一个
+# 生成 POST 发四遍: 实测过, 本地慢服务器 14.1 秒里收到 4 次 POST。用户点一次, 供应商
+# 那边跑四次、扣四次额度, 而画布上只会出现一张图 (前三次的结果没人接)。
+#
+# 代价: 源图下载 (GET) 也失去了自动重读。可以接受 —— 那条路径上面还有
+# `_call_with_retries` 的两次尝试兜着, 而轮询 GET 本来就是靠循环重试的。
+#
+# 只关"读", 不关"连": 连接建立失败 = 请求根本没发出去, 重发 POST 是安全的。
+RETRY_READ = 0
+
 # urllib3 默认 pool_maxsize=10. worker_pipeline 是 gevent c=20 → 20 greenlets 抢
 # 1 个 Session, 默认 10 槽不够会让 11+ 阻塞等待空闲 connection. 32 给最大 worker
 # 并发 (20) + 一些 burst headroom, 不浪费内存 (~100KB/conn).
@@ -35,11 +48,15 @@ def make_retry_session(
     backoff_factor: float = RETRY_BACKOFF_FACTOR,
     status_forcelist: tuple[int, ...] = RETRY_STATUS_FORCELIST,
     pool_maxsize: int = POOL_MAXSIZE,
+    read: int = RETRY_READ,
 ) -> requests.Session:
     """构建一个挂了 Retry adapter 的 Session, http(s) 都会自动重试 transient 错误。"""
     session = requests.Session()
     retry = Retry(
         total=total,
+        # 读超时不重试 —— 见 RETRY_READ 上面那段。`total` 仍然是 3, 所以 5xx/429 的
+        # 状态重试和连接失败重试都照旧。
+        read=read,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
         # POST 默认不在 allowed_methods 里 (担心非幂等); 但 5xx/429 表示 server

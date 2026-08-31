@@ -7,8 +7,8 @@ import {
   ChevronRight,
   Loader2,
   Plus,
+  Sparkles,
   Trash2,
-  Wand2,
   Zap,
 } from "lucide-react";
 
@@ -29,10 +29,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ChannelWizard } from "@/components/canvas/ChannelWizard";
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
 import { cn } from "@/lib/utils";
 import type {
+  CanvasChannelPreset,
   CanvasImageModel,
   CanvasImageProvider,
   CanvasImageProviderKind,
@@ -67,6 +69,16 @@ type Values = Record<string, unknown>;
 const kindLabel = (t: TFunction, kind: string) =>
   t(`imageProviders.kind${kind[0].toUpperCase()}${kind.slice(1)}`);
 
+/** 诊断 code → 一句能照做的话。
+ *
+ *  后端只回 code (见 backend services/channel_diagnosis.py), 文案在这边 —— 否则英文界面
+ *  上会冒出一句中文, 而且同一句话有了两个来源。
+ *
+ *  `defaultValue: ""` 而不是 `i18n.exists`: 后端加了一个新 code、这边还没补文案时, 表现是
+ *  "少一句提示"而不是界面上冒出一个 key 名。原文本来就在下面, 少一句提示不致命。 */
+const diagText = (t: TFunction, code: string) =>
+  code ? t(`imageProviders.diag.${code}`, { defaultValue: "" }) : "";
+
 /** 等宽多行输入 (curl 导入、请求模板)。跟 `inputCls` 同一个理由: 这串 class 在本文件里
  *  已经出现过三次, 而改主题/尺寸时漏掉一处不会报错, 只会长得不一样。 */
 const monoTextareaCls =
@@ -86,11 +98,40 @@ const inputCls =
 let localIdSeq = 0;
 const newLocalId = () => `new-${Date.now()}-${localIdSeq++}`;
 
+/** 「上一次调用是多久以前」。
+ *
+ *  用 Intl.RelativeTimeFormat 而不是自己拼「3 分钟前」: 后者要为秒/分/时/天各补两套
+ *  翻译还得处理单复数, 而浏览器本来就带一份, 跟着 i18n 当前语言走。
+ *
+ *  表是 [到这个秒数为止, 换算除数, 单位]。找第一个装得下的档 —— 90 秒说"1 分钟前"而
+ *  不是"90 秒前"。 */
+const RELATIVE_STEPS: [limit: number, per: number, unit: Intl.RelativeTimeFormatUnit][] = [
+  [60, 1, "second"],
+  [3600, 60, "minute"],
+  [86400, 3600, "hour"],
+  [604800, 86400, "day"],
+  [2629800, 604800, "week"],
+  [31557600, 2629800, "month"],
+  [Infinity, 31557600, "year"],
+];
+
+const relTime = (iso: string, lang: string) => {
+  const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+  const [, per, unit] =
+    RELATIVE_STEPS.find(([limit]) => Math.abs(seconds) < limit) ?? RELATIVE_STEPS[RELATIVE_STEPS.length - 1];
+  // 负数 = 过去。numeric:"auto" 让"0 秒前"变成「刚刚」/「now」而不是「0 秒前」。
+  return new Intl.RelativeTimeFormat(lang, { numeric: "auto" }).format(
+    Math.round(-seconds / per), unit,
+  );
+};
+
 /** 空草稿 —— 「新建供应商」和 curl 导入都从它开始。 */
 const emptyProvider = (): CanvasImageProvider => ({
   id: "",
   label: "",
-  kind: "image",
+  // 手动新建 = 建一条**自定义模板**通道。老的 image / video 两种不再能新建 (schema 里
+  // creatable=false) —— 它们是模板通道出现之前的形状, 而 custom_* 能表达的严格更多。
+  kind: "custom_image",
   request_template: {},
   base_url: "",
   api_key: "",
@@ -98,6 +139,11 @@ const emptyProvider = (): CanvasImageProvider => ({
   models: [],
   created_at: "",
   updated_at: "",
+  // 健康是**服务端事实**, 本地草稿上永远是"还没调用过"。真正的值由 reload 从服务端带回。
+  last_status: "",
+  last_checked_at: null,
+  last_error: "",
+  last_error_diagnosis: "",
 });
 
 /** 只取会被 PUT 上去的部分。既是请求体, 也是"改过没有"的比较基准。
@@ -211,12 +257,71 @@ export function ImageProviderSettings({
     if (Object.keys(tunables).length === 0) {
       canvasService
         .getImageProviderSchema()
-        .then(({ data }) => setTunables(data.tunables))
+        .then(({ data }) => { setTunables(data.tunables); setPresets(data.presets ?? []); })
         .catch(() => setTunables({}));
     }
     // tunables 刻意不进依赖: 它只在还没拿到时拉一次, 进依赖会在 setTunables 后再触发一轮。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, reload]);
+
+  /** 一键预设。后端下发 (见 image_channels.PRESETS) —— 前端不写死任何一家供应商。 */
+  const [presets, setPresets] = useState<CanvasChannelPreset[]>([]);
+  /** 按**角色**分组: 聊天 / 生图 / 换视角。同一个角色下的几家并排, 角色名只说一次。
+   *
+   *  分组用后端给的 `role` 而不是 kind 名字 —— 一个角色可能对应多种 kind (生图 = 内置
+   *  image + 模板 custom_image), 按名字分的话哪天加一条内置 image 的预设就会自己单开
+   *  一组。顺序完全跟后端下发的行序, 这里只做首次出现的分段。 */
+  const presetRoles = useMemo(() => {
+    const seen = new Map<string, CanvasChannelPreset[]>();
+    for (const p of presets) (seen.get(p.role) ?? seen.set(p.role, []).get(p.role)!).push(p);
+    return [...seen.entries()];
+  }, [presets]);
+
+  /** 预设 → 一份通道草稿。两条路共用: 「只填 key 直接存」和「展开细配」。 */
+  const presetSeed = useCallback(
+    (preset: CanvasChannelPreset): Partial<CanvasImageProvider> => ({
+      kind: preset.kind as CanvasImageProvider["kind"],
+      // 通道名用 `channel` 而不是 `label`: label 是芯片上那几个字 (供应商名), 拿它当
+      // 通道名, 列表里会出现一条叫「OpenAI 官方」的通道 —— 看不出它是聊天还是生图。
+      label: t(`imageProviders.presets.${preset.key}.channel`, preset.key),
+      base_url: preset.base_url,
+      defaults: preset.defaults as Values,
+      request_template: preset.request_template,
+      // 一条预设可能带好几十个模型 (apimart 那两条)。label 用模型字符串本身 —— 工具栏
+      // 显示的是「通道名 · 模型名」, 而模型名正是用户在供应商文档里看到的那个词。
+      models: preset.models.map((m, i) => ({
+        id: newLocalId(), label: m, model: m,
+        // 每个模型自己的覆盖 (apimart 视频那条装的是各模型真实支持的时长)。没有的就是
+        // 空对象 = 跟着通道默认走。
+        overrides: (preset.model_overrides?.[m] ?? {}) as Values,
+        enabled: true, sort_order: i,
+      })),
+    }),
+    [t],
+  );
+
+  /** 点了预设之后要填 key 的那一条。**不直接展开一张卡片**: apimart 那两条各带三四十个
+   *  模型, 卡片高 3700px, 「保存」在 key 输入框下面三千多像素 —— 用户得滚过全部模型行
+   *  才存得下去。而预设的全部意义就是"只填一把 key"。 */
+  const [pendingPreset, setPendingPreset] = useState<CanvasChannelPreset | null>(null);
+  const [pendingKey, setPendingKey] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+
+  const savePreset = async () => {
+    if (!pendingPreset || !pendingKey.trim() || savingPreset) return;
+    setSavingPreset(true);
+    try {
+      const draft = {
+        ...emptyProvider(), ...presetSeed(pendingPreset), api_key: pendingKey.trim(),
+      };
+      await canvasService.createImageProvider(providerPayload(draft));
+      toast.success(t("imageProviders.saved"));
+      setPendingPreset(null); setPendingKey("");
+      await reload();
+    } catch (err) {
+      toast.error(extractApiError(err, "save failed"));
+    } finally { setSavingPreset(false); }
+  };
 
   const patchDraft = (id: string, patch: Partial<CanvasImageProvider>) =>
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -308,7 +413,103 @@ export function ImageProviderSettings({
         </SheetHeader>
 
         <div className="flex flex-col gap-3 p-4">
-          <CurlImport onImported={(seed) => addDraft(seed)} />
+          {/* 三档, 从"完全不用想"到"什么都自己写":
+                预设       —— 认识的那几家, 点一下只填 key。
+                向导       —— 别家, 粘一段 curl。四种还能新建的通道它都能建: 要模板的
+                              走完整流程, 不要模板的 (chat / angle) 走两步的短路。
+                新建通道   —— **自己写请求模板 JSON**。只建 custom_image / custom_video,
+                              因为别的类型都有更好的入口 (见上面两档)。
+
+              预设排最前面: 新用户的第一个问题不是"我想怎么配", 是"我怎么开始";
+              「新建通道」排最后, 它是给"向导也猜不出来"的那些形状留的后门。
+
+              老的 image / video 三档都到不了 (creatable=false) —— custom_* 能表达的严格
+              更多, 最后一处差距 (火山那种写死的像素表) 在 allowed_ratios 支持
+              `比例=要发的值` 之后也没了。已有的照常编辑照常用。 */}
+          {presetRoles.length > 0 && (
+            <div className="rounded-md border border-border p-2.5">
+              <div className="mb-2 text-[11px] font-medium text-muted-foreground">
+                {t("imageProviders.presetsTitle")}
+              </div>
+              {presetRoles.map(([role, items]) => (
+                <div key={role} className="mb-2 last:mb-0">
+                  <div className="mb-1 text-[11px] text-muted-foreground">
+                    {t(`imageProviders.presetRole.${role}`, role)}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {items.map((preset) => (
+                      <PresetChip
+                        key={preset.key} preset={preset}
+                        onPick={() => { setPendingPreset(preset); setPendingKey(""); }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {/* 点了某条预设 → 就地问一把 key, 存完就出现在下面的列表里。
+                  「细配」是给要先改点什么的人留的后门 —— 它走原来那条路 (展开一张完整
+                  卡片), 只是不再是唯一的路。 */}
+              {pendingPreset && (
+                <form
+                  className="mt-2 rounded-md border border-foreground/20 bg-foreground/[0.03] p-2.5"
+                  onSubmit={(e) => { e.preventDefault(); void savePreset(); }}
+                >
+                  <div className="mb-1.5 text-[11px] text-muted-foreground">
+                    {t(`imageProviders.presets.${pendingPreset.key}.hint`, pendingPreset.base_url)}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={pendingKey}
+                      onChange={(e) => setPendingKey(e.target.value)}
+                      placeholder="sk-…"
+                      autoFocus
+                      className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-foreground/30"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!pendingKey.trim() || savingPreset}
+                      className="flex shrink-0 items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
+                    >
+                      {savingPreset && <Loader2 className="size-3.5 animate-spin" />}
+                      {t("imageProviders.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addDraft(presetSeed(pendingPreset));
+                        setPendingPreset(null); setPendingKey("");
+                      }}
+                      className="shrink-0 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {t("imageProviders.presetDetail")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setPendingPreset(null); setPendingKey(""); }}
+                      className="shrink-0 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {t("sidebar.cancel")}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* 建通道只有这一个入口。这里原来还并排放着一个「从 curl 示例导入」—— 同样
+              写着"粘一段 curl", 但它是把 curl 猜成内置通道那十四个旋钮、而且从不验证,
+              粘完人就落在十四个输入框里。两个入口只是让人选错, 删了。 */}
+          <ChannelWizard onReady={(seed) => addDraft(seed)} specs={tunables} />
+
+          <button
+            type="button"
+            onClick={() => addDraft()}
+            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
+          >
+            <Plus className="size-4" strokeWidth={2} />
+            {t("imageProviders.add")}
+          </button>
 
           {loading && (
             <div className="flex justify-center py-8 text-muted-foreground">
@@ -332,19 +533,12 @@ export function ImageProviderSettings({
               onPatch={(patch) => patchDraft(id, patch)}
               onSave={() => void save(id)}
               onDelete={() => void remove(id)}
+              onTested={() => void reload()}
               tunables={tunables}
               kinds={kinds}
             />
           ))}
 
-          <button
-            type="button"
-            onClick={() => addDraft()}
-            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
-          >
-            <Plus className="size-4" strokeWidth={2} />
-            {t("imageProviders.add")}
-          </button>
         </div>
       </SheetContent>
 
@@ -380,88 +574,91 @@ export function ImageProviderSettings({
   );
 }
 
-/** 「从 curl 导入」—— 替代内置预设的那块。 */
-function CurlImport({ onImported }: { onImported: (seed: Partial<CanvasImageProvider>) => void }) {
+/** 一键预设按钮。点一下 = 一张填好 base_url / 模型 / 请求形状的草稿, 只剩 key 要填。
+ *
+ *  **它不是"内置供应商"**: 存进库之后就是一条普通通道, 跟手配出来的没有区别, 随便改
+ *  随便删。所以这里也不该有任何一家供应商的特殊逻辑 —— 名字、说明、去哪儿拿 key 全是
+ *  按 `preset.key` 查的翻译, 查不到就退回显示 key 本身。 */
+function PresetChip({ preset, onPick }: { preset: CanvasChannelPreset; onPick: () => void }) {
   const { t } = useTranslation("canvasUi");
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      // 说明放 title 而不是排在芯片下面: 一行只放得下供应商名, 而说明 (哪个域名、
+      // 什么形状) 点进去卡片上就有 —— 在这里它只会把一行挤成三行。
+      title={t(`imageProviders.presets.${preset.key}.hint`, preset.base_url)}
+      className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] transition-colors hover:border-foreground/30 hover:bg-foreground/5"
+    >
+      <Sparkles className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+      {t(`imageProviders.presets.${preset.key}.label`, preset.key)}
+    </button>
+  );
+}
 
-  const run = async () => {
-    setBusy(true);
-    try {
-      const { data } = await canvasService.importImageProviderCurl(text);
-      const { base_url, api_key, model, _unrecognized, _path_note, ...tunables } = data;
-      onImported({
-        base_url: base_url ?? "",
-        api_key: api_key ?? "",
-        defaults: tunables as Values,
-        models: model
-          ? [{
-              id: newLocalId(), label: model, model,
-              overrides: {}, enabled: true, sort_order: 0,
-            }]
-          : [],
-      });
-      // 示例里出现但我们不认识的键要说出来, 否则用户以为已经完整导入了
-      // 路径不对是**会导致请求必然失败**的那一类, 比"有几个键不认识"严重, 所以单独一条
-      // 且停留更久 —— 用户多半正要直接点保存。
-      if (_path_note) toast.warning(_path_note, { duration: 15000 });
-      if (_unrecognized?.length) {
-        toast.warning(t("imageProviders.curlUnknown", { keys: _unrecognized.join(", ") }));
-      } else {
-        toast.success(t("imageProviders.curlOk"));
-      }
-      setOpen(false);
-      setText("");
-    } catch (err) {
-      toast.error(extractApiError(err, "curl import failed"));
-    } finally {
-      setBusy(false);
-    }
-  };
+/**
+ * 通道健康的那个点 —— 「上一次真的调用它时, 供应商应答了吗」。
+ *
+ * 存在的理由: 一条配好的通道会在**没有任何人操作**的情况下坏掉 (key 过期、额度打光、
+ * 供应商换端点), 而在此之前唯一的发现方式是"下一次生成失败" —— 那条报错落在画布上一张
+ * 图的红字里, 关掉就没了; 回到这个面板, 这条通道看起来和配好的第一天一模一样。
+ *
+ * **读服务端那份 (`saved`) 而不是草稿**: 这是一条服务端事实, 本地改了半截不会让一条坏
+ * 通道变好, 也不会让一条好通道变坏。所以还没保存的新卡片上它根本不出现 (调用方判)。
+ *
+ * 三态而不是两态: "还没调用过"必须跟"通了"分得开 —— 一个刚建好的通道显示绿点等于凭空
+ * 给了一个没人验证过的承诺。
+ */
+function HealthDot({ provider }: { provider: CanvasImageProvider }) {
+  const { t, i18n } = useTranslation("canvasUi");
+  const when = provider.last_checked_at ? relTime(provider.last_checked_at, i18n.language) : "";
+  // 悬停能看到全文。展开之后下面还有一块能选中复制的 —— 长报文在 title 里读不了。
+  const title =
+    provider.last_status === "error"
+      ? `${t("imageProviders.healthError", { when })}\n${provider.last_error}`
+      : provider.last_status === "ok"
+        ? t("imageProviders.healthOk", { when })
+        : t("imageProviders.healthUnknown");
+  return (
+    <span
+      title={title}
+      // role 不能省: 一个裸 <span> 即使带了 aria-label 也不会被读屏念出来, 而这个点是
+      // 纯颜色编码的 —— 没有它, "这条通道坏了"对读屏用户根本不存在。
+      role="img"
+      aria-label={title}
+      className={cn(
+        "size-2 shrink-0 rounded-full",
+        provider.last_status === "ok" && "bg-ok",
+        provider.last_status === "error" && "bg-destructive",
+        // 没调用过 = 空心。跟"通了"分得开, 又不像实心灰那样看着像"停用了"。
+        !provider.last_status && "border border-border",
+      )}
+    />
+  );
+}
 
-  if (!open) {
+/** 展开之后那一行/一块健康详情。失败时给的是**供应商返回的原文** —— 用户拿着它对着
+ *  文档就能改, 跟「测试」按钮的 toast 是同一份东西, 所以不美化、不归类。 */
+function HealthNote({ provider }: { provider: CanvasImageProvider }) {
+  const { t, i18n } = useTranslation("canvasUi");
+  if (!provider.last_status) return null;
+  const when = provider.last_checked_at ? relTime(provider.last_checked_at, i18n.language) : "";
+  if (provider.last_status === "ok") {
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 hover:text-foreground"
-      >
-        <Wand2 className="size-4" strokeWidth={2} />
-        {t("imageProviders.curlImport")}
-      </button>
+      <p className="text-[11px] text-muted-foreground">{t("imageProviders.healthOk", { when })}</p>
     );
   }
-
+  const hint = diagText(t, provider.last_error_diagnosis);
   return (
-    <div className="rounded-md border border-border p-3">
-      <p className="mb-2 text-[12px] leading-relaxed text-muted-foreground">
-        {t("imageProviders.curlHint")}
-      </p>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={5}
-        placeholder={"curl https://api.example.com/v1/images/generations \\\n  -H 'Authorization: Bearer …' \\\n  -d '{\"model\":\"…\",\"image\":\"…\"}'"}
-        className={cn(monoTextareaCls, "focus:border-foreground/30")}
-      />
-      <div className="mt-2 flex gap-2">
-        <button
-          type="button"
-          disabled={busy || !text.trim()}
-          onClick={() => void run()}
-          className="rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background disabled:opacity-40"
-        >
-          {busy ? t("imageProviders.parsing") : t("imageProviders.parse")}
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded-md px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-        >
-          {t("sidebar.cancel")}
-        </button>
+    <div className="rounded-md bg-destructive/10 px-2.5 py-2 text-[11px] leading-relaxed text-destructive">
+      <div className="font-medium">{t("imageProviders.healthError", { when })}</div>
+      {/* 诊断排在原文**前面**: 原文说的是"发生了什么", 这句说的是"你该改哪儿", 而后者
+          才是用户打开这张卡片要找的东西。认不出类别时这一行整个不出现。 */}
+      {hint && <div className="mt-1">{hint}</div>}
+      {/* 可选中: 这段要能复制去搜 / 贴给供应商。break-all 是因为报文里常有一整条没有
+          空格的 URL, 不断行会把卡片撑出横向滚动条。 */}
+      <div className="mt-1 font-mono break-all whitespace-pre-wrap select-text opacity-75">
+        {provider.last_error}
       </div>
     </div>
   );
@@ -475,6 +672,7 @@ function ProviderCard({
   onPatch,
   onSave,
   onDelete,
+  onTested,
   tunables,
   kinds,
 }: {
@@ -485,6 +683,10 @@ function ProviderCard({
   onPatch: (patch: Partial<CanvasImageProvider>) => void;
   onSave: () => void;
   onDelete: () => void;
+  /** 「测了一次」—— 让父组件重拉列表, 把那个点和下面的报文换成这一次的结果。
+   *  测试的结果是**服务端写的** (后端每次真实调用都记, 不只是这个按钮), 所以不在本地
+   *  凑一份出来: 那样它会跟画布上那次生成写进去的结果打架。 */
+  onTested: () => void;
   /** 后端下发的按 kind 分组的表单规则。 */
   tunables: Record<string, CanvasKindSpec>;
   /** 可选的通道类型 = schema 的键。 */
@@ -516,14 +718,25 @@ function ProviderCard({
     setTesting(model.id);
     try {
       const { data } = await canvasService.testImageProvider(draft.id, model.id);
-      if (data.ok) toast.success(t("imageProviders.testOk", { s: data.elapsed }));
-      // 原始错误直接显示 —— 用户拿着它对着供应商文档就能改。这是没有预设之后
-      // 唯一的反馈回路, 所以不做美化、不截断成"请求失败"。
-      else toast.error(data.error || t("imageProviders.testFailed"), { duration: 15000 });
+      if (data.ok) {
+        toast.success(t("imageProviders.testOk", { s: data.elapsed }));
+      } else {
+        // 原始错误**永远**显示 —— 用户拿着它对着供应商文档就能改, 所以不美化、不截断成
+        // 一句"请求失败"。诊断只是**加**在它上面的一句"你该改哪儿": 认得出就当标题、原文
+        // 退到副标题; 认不出就跟以前一模一样。
+        const hint = diagText(t, data.diagnosis ?? "");
+        toast.error(hint || data.error || t("imageProviders.testFailed"), {
+          description: hint ? data.error : undefined,
+          duration: 15000,
+        });
+      }
     } catch (err) {
       toast.error(extractApiError(err, "test failed"));
     } finally {
       setTesting("");
+      // 通/不通两种都要刷: 后端在这一次调用里已经把结果记到通道行上了, 不重拉的话卡片上
+      // 那个点还停在上一次。
+      onTested();
     }
   };
 
@@ -536,6 +749,9 @@ function ProviderCard({
         <button type="button" onClick={onToggle} className="text-muted-foreground">
           {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         </button>
+        {/* 折叠着也看得见 —— 这一条的全部意义就是不用逐个展开就知道哪条坏了。
+            没保存的新卡片没有 `saved`, 也就没有点: 库里还没有这一行, 谈不上"上次调用"。 */}
+        {saved && <HealthDot provider={saved} />}
         <input
           value={draft.label}
           onChange={(e) => onPatch({ label: e.target.value })}
@@ -562,6 +778,9 @@ function ProviderCard({
 
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border p-3">
+          {/* 排在所有字段前面: 一条通道刚坏的时候, "供应商说了什么"比任何一个输入框都
+              重要 —— 用户就是照着它去改下面那些字段的。 */}
+          {saved && <HealthNote provider={saved} />}
           {/* kind 放在最前面: 它决定下面显示哪些字段, 以及这条通道会出现在哪个选择器里。 */}
           {/* 只有新建时才是一个真实的选择。存过之后它就不是设置了 —— 是"这个端点说哪种
               协议", 改它等于换一个东西 (后端也会拒), 所以这里不留一个点不动的下拉当摆设,
@@ -573,9 +792,15 @@ function ProviderCard({
                 onChange={(e) => onPatch({ kind: e.target.value as CanvasImageProviderKind })}
                 className={inputCls}
               >
-                {/* kind 列表 = schema payload 的键。加第五种通道时后端加一行, 这里自动
-                    多一项 (只需补一条 i18n 文案)。 */}
-                {kinds.map((k) => (
+                {/* **只列要模板的那两种** (后端的 spec.template)。这条路现在的角色就是
+                    "自己写 JSON" —— 别的类型都有更好的入口: 认识的那几家在快捷配置里,
+                    别家 (含 chat / angle) 走向导粘 curl。
+
+                    老的 image / video 也在这儿被挡掉 (它们 template=false), 而那正好
+                    符合它们 creatable=false 的定位。库里存量的那些不会因此被困住: 这个
+                    下拉只在 isNew 时渲染, 存过的通道压根没有它 —— 类型由头部那个徽标
+                    显示, 而那一处不筛。 */}
+                {kinds.filter((k) => tunables[k]?.template).map((k) => (
                   <option key={k} value={k}>{kindLabel(t, k)}</option>
                 ))}
               </select>
@@ -783,21 +1008,67 @@ function TunableEditor({
     onChange(next);
   };
 
+  // 用户手动折过的组。没记过的组走下面 `isOpen` 那条默认规则。
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+
+  // 按后端给的 group 切段。**顺序完全由后端下发的行序决定** (它已经按组排好), 这里不再
+  // 自己排一份 —— 排两份的下场是加一组时界面上的位置跟后端说的不一样, 而且不报错。
+  const groups = useMemo(() => {
+    const out: { key: string; rows: CanvasTunableSpec[] }[] = [];
+    for (const f of specs) {
+      const key = f.group || "other";
+      const last = out[out.length - 1];
+      if (last && last.key === key) last.rows.push(f);
+      else out.push({ key, rows: [f] });
+    }
+    return out;
+  }, [specs]);
+
+  // 只有一组时不显示分组头 —— angle / chat 只有一个 timeout, 给它套一个标题纯属噪音。
+  const showHeaders = groups.length > 1;
+
+  /** 「异步轮询」默认折起来: 那几个旋钮只在**异步**通道上有意义, 而同步是大多数, 它们
+   *  平铺出来占了这张表的一半。已经设过值就展开 —— 一条配好的异步通道不该把自己的配置
+   *  藏起来, 那比多几个框糟得多。 */
+  const isOpen = (g: { key: string; rows: CanvasTunableSpec[] }) =>
+    toggled[g.key] ??
+    (g.key !== "poll" || g.rows.some((f) => values[f.key] !== undefined));
+
   return (
     <div className="rounded-md bg-foreground/5 p-2">
       {title && <div className="mb-1 text-[12px] font-medium">{title}</div>}
       {hint && <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
-      <div className="flex flex-col gap-2">
-        {specs.map((f) => {
+      <div className="flex flex-col gap-3">
+        {groups.map((g) => (
+          <div key={g.key} className="flex flex-col gap-2">
+            {showHeaders && (
+              <button
+                type="button"
+                onClick={() => setToggled({ ...toggled, [g.key]: !isOpen(g) })}
+                className="flex items-center gap-1.5 text-left text-[11px] font-medium text-foreground"
+              >
+                <span className="text-muted-foreground">{isOpen(g) ? "▾" : "▸"}</span>
+                {t(`imageProviders.group.${g.key}`, g.key)}
+                <span className="font-normal text-muted-foreground">({g.rows.length})</span>
+              </button>
+            )}
+            {isOpen(g) && showHeaders && (
+              <p className="-mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                {t(`imageProviders.groupHint.${g.key}`, { defaultValue: "" })}
+              </p>
+            )}
+            {isOpen(g) && g.rows.map((f) => {
           // 三种控件都用同一份显示值: undefined (没配这项) → 空串, 其余原样转字符串。
           const shown = values[f.key] === undefined ? "" : String(values[f.key]);
           return (
           <div key={f.key} className="flex items-start gap-2">
-            <div className="w-[124px] shrink-0 pt-1">
-              <div className="font-mono text-[11px] text-foreground">{f.key}</div>
-              <div className="text-[10px] leading-tight text-muted-foreground">
+            {/* 人话在上、字段名在下。反过来看了一年也记不住 `image_as_single` 是什么,
+                而字段名仍然要留着 —— 供应商文档和我们自己的报错都按它称呼。 */}
+            <div className="w-[136px] shrink-0 pt-1">
+              <div className="text-[11px] leading-tight text-foreground">
                 {t(`imageProviders.field.${f.key}`, f.key)}
               </div>
+              <div className="font-mono text-[10px] text-muted-foreground">{f.key}</div>
             </div>
             <div className="min-w-0 flex-1">
               {f.control === "bool" && (
@@ -811,6 +1082,29 @@ function TunableEditor({
                   <option value="">{t(`imageProviders.${f.empty_label}`)}</option>
                   <option value="true">true</option>
                   <option value="false">false</option>
+                </select>
+              )}
+              {f.control === "choice" && (
+                <select
+                  value={shown}
+                  onChange={(e) => set(f.key, e.target.value)}
+                  className={inputCls}
+                >
+                  {/* 取值表里没有空串时补一项「未设置」。**不补的话下拉是空白的** ——
+                      `shown` 对没设过的旋钮就是 "", 而 select 的 value 找不到对应
+                      option 时浏览器一个都不选中。resolution_param 正是这种 (取值只有
+                      resolution / mode, 而绝大多数通道从没碰过它)。
+                      protocol 那种自带空串的照旧, 不会多出一项。 */}
+                  {!(f.choices ?? []).includes("") && (
+                    <option value="">{t(`imageProviders.${f.empty_label}`)}</option>
+                  )}
+                  {/* 空串排第一 = 默认那一项 (见后端的 CHAT_PROTOCOL_CHOICES)。它的
+                      名字要说清楚"不选就是这个", 而不是显示成一个空格。 */}
+                  {(f.choices ?? []).map((c) => (
+                    <option key={c} value={c}>
+                      {t(`imageProviders.choice.${f.key}.${c || "default"}`, c || "—")}
+                    </option>
+                  ))}
                 </select>
               )}
               {f.control === "number" && (
@@ -834,6 +1128,8 @@ function TunableEditor({
           </div>
           );
         })}
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -25,8 +25,14 @@ from studio.models import ImageProvider, VideoJob
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
-from studio.services import template_client
-from studio.services.image_client import ImageChannel
+from studio.services import channel_health, template_client
+from studio.services.image_client import (
+    ImageChannel,
+    nearest_duration,
+    parse_durations,
+    resolve_ratio,
+    resolve_resolution,
+)
 from studio.services.listings_utils import DONE_STATUSES, FAILED_STATUSES
 
 from ..context import CanvasAgentContext
@@ -74,18 +80,26 @@ def run_video_job(job: VideoJob) -> None:
         # 而不是变成一个只有日志里能看到的异常 (跟 image.py 的 client 初始化同款)。
         channel = resolve_video_channel(job)
 
-        # 模板通道在这里整条分流出去: 提交、轮询、取结果全在用户填的模板里, 下面那套
-        # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
-        # 同 image.py: 看 spec.template, 别按 kind 名字判。
-        if KIND_SPECS[channel.kind].template:
-            job.result_url = _template_video(job, channel)
-            return
+        # 视频通道没有「测试」按钮 (出片要几分钟, 撑不过一次同步请求 —— 见 KIND_SPECS 的
+        # untestable_reason), 所以**真实生成是它唯一的健康信号**。两个分支都在 watch 里,
+        # 提交和轮询一起算 —— 用户眼里"生成一条视频"就是一次调用。
+        #
+        # 中间那行 job.save 也在里面。挪出去要把 watch 拆成两段 (task_id 必须在提交后
+        # 立刻落库), 而它失败意味着库都写不动了 —— 那时 record 自己也写不进去, 只会记一
+        # 条日志, 不会真在卡片上留下一个假红点。
+        with channel_health.watch(channel):
+            # 模板通道在这里整条分流出去: 提交、轮询、取结果全在用户填的模板里, 下面那套
+            # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
+            # 同 image.py: 看 spec.template, 别按 kind 名字判。
+            if KIND_SPECS[channel.kind].template:
+                job.result_url = _template_video(job, channel)
+                return
 
-        task_id = _submit(job, channel)
-        job.task_id = task_id
-        job.save(update_fields=["task_id", "updated_at"])
+            task_id = _submit(job, channel)
+            job.task_id = task_id
+            job.save(update_fields=["task_id", "updated_at"])
 
-        result = _poll_until_done(task_id, channel)
+            result = _poll_until_done(task_id, channel)
         job.result_url = result["url"]
         job.thumbnail_url = result.get("thumbnail_url", "")
 
@@ -103,6 +117,7 @@ def _template_video(job: VideoJob, channel: ImageChannel) -> str:
     variables = template_client.video_variables(
         channel, prompt=job.prompt, image_urls=list(job.image_urls or []),
         duration=job.duration, aspect_ratio=job.aspect_ratio,
+        resolution=job.resolution,
     )
     return template_client.item_to_url(template_client.execute(channel, variables))
 
@@ -120,6 +135,7 @@ def enqueue_video_generation(
     reference_image_urls: list[str] | None,
     scene_id: str,
     image_model_id: str | None = None,
+    resolution: str = "",
 ) -> str:
     """Pure-args helper: create VideoJob + reserve credit + enqueue Celery + return confirmation.
 
@@ -144,6 +160,9 @@ def enqueue_video_generation(
             image_urls=urls,
             duration=duration_clamped,
             aspect_ratio=aspect_ratio or "16:9",
+            # 不校验取值: 合法档是 per-model 的, 归一在 template_client 那边按
+            # allowed_resolutions 做。LLM 写了个这个模型不收的档 → 落到最近的一档。
+            resolution=(resolution or "").strip(),
             # 先过 resolve_model_id 再进 FK 列: 前端的选择是粘的 (localStorage), 一个被删掉
             # 的 id 会一直跟着每轮聊天发过来 —— 直接塞进外键的话, 合法 UUID 撞约束抛
             # IntegrityError, 不合法字符串抛 ValidationError, 两种都是把"选择已失效"变成
@@ -169,6 +188,7 @@ def generate_video(
     prompt: str,
     duration: int = 5,
     aspect_ratio: str = "16:9",
+    resolution: str = "",
     reference_image_urls: list[str] | None = None,
     runtime: ToolRuntime[CanvasAgentContext] = None,
 ) -> str:
@@ -182,6 +202,9 @@ def generate_video(
         prompt: Detailed description of the motion / scene.
         duration: Clip length in seconds (1–60).
         aspect_ratio: "16:9" (landscape), "9:16" (portrait), "1:1" (square).
+        resolution: Optional quality tier, e.g. "720p" / "1080p" / "4k". Leave
+            blank to use the provider default. Tiers the chosen model does not
+            support are snapped to its nearest supported one.
         reference_image_urls: Optional list of http(s) URLs to seed the video
             (first frame / style reference). Must be publicly reachable.
 
@@ -195,6 +218,7 @@ def generate_video(
         prompt=prompt,
         duration=duration,
         aspect_ratio=aspect_ratio,
+        resolution=resolution,
         reference_image_urls=reference_image_urls,
         scene_id=ctx.scene_id,
         image_model_id=ctx.video_model_id,
@@ -208,12 +232,26 @@ def generate_video(
 def _submit(job: VideoJob, cfg: ImageChannel) -> str:
     endpoint = f"{cfg.base_url.rstrip('/')}/videos/generations"
 
+    # 时长和比例先过一遍这个模型**真的收**的那张表 —— 跟模板通道那条路 (见
+    # template_client.video_variables) 同一条规则, 也跟 KIND_SPECS[VIDEO] 里放出
+    # allowed_ratios / allowed_durations 两个旋钮的承诺对得上。没填就是不限制, 原样发,
+    # 所以对存量通道是空操作。
+    #
+    # **不能只靠工具栏筛**: agent 的 generate_video 自己挑秒数 (`duration: int = 5`),
+    # 而画布上那三档还是粘在 localStorage 里的 —— 两条都绕过选择器, 表现是供应商回一句
+    # invalid duration, 跟"通道配错了"看起来一模一样。
     body: dict[str, Any] = {
         "model": cfg.model,
         "prompt": job.prompt,
-        "duration": job.duration,
-        "aspect_ratio": job.aspect_ratio or "16:9",
+        "duration": nearest_duration(job.duration, parse_durations(cfg.allowed_durations)),
+        "aspect_ratio": resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1],
     }
+    # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
+    # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
+    if job.resolution and cfg.allowed_resolutions:
+        body[cfg.resolution_param or "resolution"] = resolve_resolution(
+            cfg.allowed_resolutions, job.resolution,
+        )[1]
     if job.image_urls:
         # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网
         # URL 原样传 + 可达性预检(防 provider 拿不到 reference 时静默走纯文生视频)。
@@ -225,7 +263,7 @@ def _submit(job: VideoJob, cfg: ImageChannel) -> str:
 
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",
-        endpoint, cfg.model, job.duration, job.aspect_ratio, len(job.image_urls or []),
+        endpoint, cfg.model, body["duration"], body["aspect_ratio"], len(job.image_urls or []),
     )
     resp = _session.post(
         endpoint,

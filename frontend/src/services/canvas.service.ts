@@ -5,7 +5,6 @@ import type {
   CanvasAngleJob,
   CanvasChatMessage,
   CanvasChatStreamEvent,
-  CanvasCurlImportResult,
   CanvasImageEditJob,
   CanvasImageModelChoice,
   CanvasImageProvider,
@@ -21,6 +20,9 @@ import type {
   CanvasSkill,
   CanvasSkillRow,
   CanvasSkillWrite,
+  CanvasWizardParsed,
+  CanvasWizardProbe,
+  CanvasChannelPreset,
   CanvasKindSpec,
   CanvasVideoJob,
   ChatAttachment,
@@ -280,7 +282,8 @@ export interface ImageEditCreatePayload {
   prompt?: string;
   cutout?: boolean;
   size?: string;
-  resolution?: "1K" | "2K" | "4K";
+  /** 画质档。取值随模型而定 (`1K` / `1.5K` / `3K` / `2MP` …), 不是封闭联合。 */
+  resolution?: string;
   n?: 1 | 2 | 4;
   /** 工具栏选中的生图模型 (ImageModel.id)。空 = 后端退到库里第一条启用的通道。 */
   imageModelId?: string;
@@ -293,6 +296,8 @@ export interface VideoCreatePayload {
   image_urls?: string[];
   duration?: number;
   aspect_ratio?: string;
+  /** 画质档 (`720p` / `1080P` / `4k` …)。空 = 不发这个键, 由供应商用自己的默认。 */
+  resolution?: string;
   /** Video tab 选的通道 (kind=video 的 ImageModel.id)。空 = 后端退到库里第一条。 */
   imageModelId?: string;
 }
@@ -395,12 +400,37 @@ export const canvasService = {
     request.post<CanvasImageProviderTestResult>(`${IMAGE_PROVIDERS}${id}/test/`, {
       image_model: imageModelId,
     }),
-  /** 配置表单的字段表。后端从 ImageChannel 的字段声明派生 —— 前端不再抄一份。 */
+  /** 向导第 1 步:curl → 模板。带 task_id 时解析的是"查询任务"那一段。 */
+  /** 向导第 1 步:提交生成的那段 curl → 请求模板。 */
+  wizardParseCurl: (curl: string) =>
+    request.post<CanvasWizardParsed>(`${IMAGE_PROVIDERS}wizard/parse/`, { curl }),
+  /** 向导第 3 步:查询任务的那段 curl → 模板的 `poll` 段。
+   *
+   *  跟上面同一个端点、**完全不同的返回形状**(后端按有没有 `task_id` 分支),所以拆成
+   *  两个方法而不是一个可选参数 —— 合成一个的话两边的字段都得是可选的,提交那条路上
+   *  每个字段都要判空,而它们其实一定在。
+   *
+   *  `notes` 是后端**猜**了什么就说什么(地址里哪一段是任务 id),调用方要显示出来。 */
+  wizardParsePollCurl: (curl: string, poll: { task_id: string; base_url: string }) =>
+    request.post<{ poll: Record<string, unknown>; notes: string[] }>(
+      `${IMAGE_PROVIDERS}wizard/parse/`, { curl, ...poll },
+    ),
+  /** 向导第 2 / 4 步:拿**还没保存**的配置真发一次。会产生一次真实的生成消耗。 */
+  wizardProbe: (body: {
+    /** 建哪种模板通道 —— 决定后端喂给模板的是生图还是视频那张变量表。 */
+    kind: string;
+    base_url: string; api_key: string; model: string;
+    request_template: Record<string, unknown>;
+    poll?: Record<string, unknown>; task_id?: string;
+  }) => request.post<CanvasWizardProbe>(`${IMAGE_PROVIDERS}wizard/probe/`, body),
+  /** 画配置面板要的两样:字段表(后端从 ImageChannel 的字段声明派生)和一键预设。
+   *  同一个端点是因为**两样都拿到才画得出面板**,分开只是多一次往返和一次加载态。 */
   getImageProviderSchema: () =>
-    request.get<{ tunables: Record<string, CanvasKindSpec> }>(`${IMAGE_PROVIDERS}schema/`),
+    request.get<{
+      tunables: Record<string, CanvasKindSpec>;
+      presets?: CanvasChannelPreset[];
+    }>(`${IMAGE_PROVIDERS}schema/`),
   /** 把供应商文档里的示例 curl 转成预填字段(替代内置预设)。 */
-  importImageProviderCurl: (curl: string) =>
-    request.post<CanvasCurlImportResult>(`${IMAGE_PROVIDERS}import-curl/`, { curl }),
   /** 工具栏选择器的列表 —— 不含凭据。 */
   listImageModels: () => request.get<CanvasImageModelChoice[]>(IMAGE_MODELS),
 
@@ -438,6 +468,7 @@ export const canvasService = {
       if (payload.prompt) form.append("prompt", payload.prompt);
       if (payload.duration) form.append("duration", String(payload.duration));
       if (payload.aspect_ratio) form.append("aspect_ratio", payload.aspect_ratio);
+      if (payload.resolution) form.append("resolution", payload.resolution);
       if (payload.imageModelId) form.append("image_model", payload.imageModelId);
       return request.post<{ job_id: string; status: string }>(
         `${SCENES}${sceneId}/video/`,

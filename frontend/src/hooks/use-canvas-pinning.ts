@@ -601,6 +601,10 @@ export interface UseCanvasPinning {
   /** Find or create the scene's chat frame (native Excalidraw frame the
    *  ChatFrameOverlay anchors to). Returns its id, or null if API not mounted. */
   ensureChatFrame: () => string | null;
+  /** 把视口带回聊天框 —— 发消息时调。**只在它不在视野里时才动镜头**: 回复出现在锚在
+   *  这个 frame 上的聊天面板里, 而用户可能正在别处看图。已经看得见还硬要居中的话,
+   *  每发一句话镜头就跳一次, 比看不见更烦。 */
+  focusChatFrame: () => void;
   /** `startAt` overrides the column cursor for this one pin —— used by
    *  `pinAssetResultRows` to stack n>1 results below a placeholder in the
    *  source's column. Omit for default chat left-column stacking. */
@@ -1042,6 +1046,33 @@ export function useCanvasPinning(
     } catch (err) {
       console.error("ensureChatFrame failed", err);
       return null;
+    }
+  }, [apiRef]);
+
+  const focusChatFrame = useCallback(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    try {
+      const frame = findChatFrame(api.getSceneElements());
+      if (!frame) return;
+      const app = api.getAppState();
+      const zoom = app.zoom?.value ?? 1;
+      if (!app.width || !app.height || !zoom) return;   // 还没布局好, 别乱动镜头
+      // 视口的世界坐标矩形。scrollX/Y 是"世界原点在屏幕上的偏移", 所以取负。
+      const vx = -(app.scrollX ?? 0);
+      const vy = -(app.scrollY ?? 0);
+      const vw = app.width / zoom;
+      const vh = app.height / zoom;
+      // **一点都不重叠才动**。判"完全看不见"而不是"没居中": 用户可能正贴着聊天框的
+      // 左上角看一张图, 那时把 2048 见方的 frame 重新框住等于把他的视角掀了。
+      const visible =
+        frame.x < vx + vw && frame.x + frame.width > vx &&
+        frame.y < vy + vh && frame.y + frame.height > vy;
+      if (visible) return;
+      frameToContent(api, [frame]);
+    } catch (err) {
+      // 跟 ensureChatFrame 同一条: 镜头动不了绝不能炸掉发消息主流程。
+      console.error("focusChatFrame failed", err);
     }
   }, [apiRef]);
 
@@ -1607,6 +1638,7 @@ export function useCanvasPinning(
 
   return {
     ensureChatFrame,
+    focusChatFrame,
     pinImage,
     pinVideo,
     pinMergedImage,

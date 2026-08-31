@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -53,13 +54,18 @@ import {
   IMAGE_EDIT_RESOLUTIONS,
   IMAGE_EDIT_SIZES,
   type ImageEditCount,
+  DEFAULT_IMAGE_RESOLUTION,
   type ImageEditResolution,
   type ImageEditSize,
 } from "@/hooks/use-image-edit";
 import {
   VIDEO_ASPECT_RATIOS,
+  DEFAULT_VIDEO_RESOLUTION,
+  nearestDuration,
+  nearestResolution,
   VIDEO_DURATIONS,
   type VideoAspectRatio,
+  type VideoResolution,
   type VideoDuration,
 } from "@/hooks/use-video-edit";
 import { ImageModelSelector } from "@/components/canvas/ImageModelSelector";
@@ -164,6 +170,7 @@ interface ImageEditBarProps {
       prompt: string;
       duration: VideoDuration;
       aspectRatio: VideoAspectRatio;
+      resolution: VideoResolution;
     }) => void;
     onDismissError: () => void;
   };
@@ -591,12 +598,37 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
-  const [resolution, setResolution] = useState<ImageEditResolution>("2K");
+  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
   const [n, setN] = useState<ImageEditCount>(1);
+  const resolutions = useModelResolutions(imageModel);
+  useResolutionFallback(resolutions, resolution, setResolution);
 
   const isMulti = multiImageCount > 0;
   const trimmed = prompt.trim();
   const canApply = !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
+
+  // 这个模型**真的收**哪几种比例 —— 后端下发 (已经合并过三层配置)。空 = 不限制。
+  // 选不中的东西就不该出现在列表里: 实测 apimart 的 gemini-3.1-flash-image-preview 只收
+  // 15 种、别的直接 400, 而同一家的 gpt-image-2 什么都收 —— 这是 per-model 的事实, 所以
+  // 只能问后端, 前端写不出一张表来。
+  //
+  // 交集为空时退回完整列表: 模型收的比例可能一个都不在画布这十个里 (4:5 / 8:1 之类),
+  // 那时给一个空下拉是最糟的结果 —— 宁可让用户选、后端兜底映射到最近的一个。
+  const allowedRatios = useModelAllowed(imageModel, "allowed_ratios");
+  const sizes = useMemo(() => {
+    const hit = IMAGE_EDIT_SIZES.filter((s) => allowedRatios.includes(s.value));
+    return hit.length ? hit : IMAGE_EDIT_SIZES;
+  }, [allowedRatios]);
+
+  // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到对应 option 会显示成
+  // 空白, 而用户以为自己选了个东西。
+  //
+  // 取第一项而不是"最近的一个": IMAGE_EDIT_SIZES 的头两项是 auto 和 1:1, 而后端
+  // `nearest_ratio` 对 auto 这种算不出比值的值也正是"优先 auto, 否则 1:1"。两边同一个
+  // 结果, 不需要在前端再实现一遍比值数学。
+  useEffect(() => {
+    if (!sizes.some((s) => s.value === size)) setSize(sizes[0].value);
+  }, [sizes, size]);
 
   function submitApply() {
     if (!canApply) return;
@@ -651,7 +683,7 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
         disabled={isSubmitting}
         className={selectClass}
       >
-        {IMAGE_EDIT_SIZES.map((s) => (
+        {sizes.map((s) => (
           <option key={s.value} value={s.value}>
             {s.value === "auto" ? t("edit.sizeAuto") : s.label}
           </option>
@@ -660,11 +692,12 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
       <Divider />
       <select
         value={resolution}
-        onChange={(e) => setResolution(e.target.value as ImageEditResolution)}
+        onChange={(e) => setResolution(e.target.value)}
         disabled={isSubmitting}
         className={selectClass}
+        title={t("edit.resolutionTitle")}
       >
-        {IMAGE_EDIT_RESOLUTIONS.map((r) => (
+        {resolutions.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
@@ -704,6 +737,46 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   );
 }
 
+/** 这个模型在某条约束轴上报了哪些值 —— 后端下发 (已合并三层配置)。空数组 = 没报。
+ *
+ *  **只做"读出来 + 稳定成一个数组"这一件事。** 四条轴拿到数组之后做的事不一样: 比例是
+ *  拿它去**筛**画布那几档, 时长和画质是**照它列**; 旧选择失效时有的落到最近的一档、有的
+ *  取第一项。把那些差别也塞进这个 hook, 它就变成一个四参数的开关, 而每个面板真正在做
+ *  什么反而看不出来了 —— 所以差别留在调用处。
+ *
+ *  返回值按逗号串 memo: 后端每次都发新数组, 直接用它当依赖会让下面的 useMemo/useEffect
+ *  每次渲染都重跑。 */
+function useModelAllowed(
+  picker: ChannelPicker,
+  field: "allowed_ratios" | "allowed_durations" | "allowed_resolutions",
+): string[] {
+  const key = (picker.models.find((m) => m.id === picker.value)?.[field] ?? []).join(",");
+  return useMemo(() => (key ? key.split(",") : []), [key]);
+}
+
+/** 画质档: 没报就退回画布那三档。**照它列**而不是拿它筛 —— seedream-5-0-lite 只有
+ *  2K/3K/4K, seedream-5-0-pro 有个 1.5K, flux-2 按 `1MP`~`4MP` 计, 画布那三档筛完要么
+ *  残缺要么全空。 */
+function useModelResolutions(picker: ChannelPicker): string[] {
+  const tiers = useModelAllowed(picker, "allowed_resolutions");
+  return useMemo(
+    () => (tiers.length ? tiers : (IMAGE_EDIT_RESOLUTIONS as string[])),
+    [tiers],
+  );
+}
+
+/** 换了模型之后旧的档可能不在新列表里 —— select 的 value 找不到 option 会显示空白。
+ *  落到**最近的一档**而不是第一档: 第一档是最便宜的那个 (列表由低到高), 从 4K 换到
+ *  seedream-5-0-pro (1K/1.5K/2K) 会直接掉到 1K, 而最近的是 2K。 */
+function useResolutionFallback(
+  tiers: string[], value: string, set: (v: string) => void,
+) {
+  useEffect(() => {
+    if (tiers.includes(value)) return;
+    set(nearestResolution(value, tiers));
+  }, [tiers, value, set]);
+}
+
 // ─── Video panel ────────────────────────────────────────────────────────────
 
 interface VideoPanelProps {
@@ -717,6 +790,7 @@ interface VideoPanelProps {
     prompt: string;
     duration: VideoDuration;
     aspectRatio: VideoAspectRatio;
+    resolution: VideoResolution;
   }) => void;
 }
 
@@ -725,14 +799,52 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("16:9");
+  const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
 
   const trimmed = prompt.trim();
   const canGenerate = canPin && !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
 
+  // 这个模型真的收哪几个时长 / 比例 —— 后端下发 (已经合并过三层配置)。
+  //
+  // 时长跟比例的处理不一样: 比例是拿它去**筛**画布那三档, 时长是**照它列**。因为各家
+  // 收的秒数差得离谱 —— veo3 固定 8 秒、sora 只收 4/8/12/16/20, 画布那三档 (5/10/15)
+  // 一个都不在里面, 筛完会是个空下拉。照它列则显示「8 秒」, 诚实且能用。
+  const allowedDurations = useModelAllowed(videoModel, "allowed_durations");
+  const allowedRatios = useModelAllowed(videoModel, "allowed_ratios");
+  const durations = useMemo(() => {
+    const allowed = allowedDurations.map(Number).filter(Number.isFinite);
+    return allowed.length ? allowed : (VIDEO_DURATIONS as number[]);
+  }, [allowedDurations]);
+  const ratios = useMemo(() => {
+    const hit = VIDEO_ASPECT_RATIOS.filter((r) => allowedRatios.includes(r));
+    return hit.length ? hit : VIDEO_ASPECT_RATIOS;
+  }, [allowedRatios]);
+  // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
+  // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
+  const resolutions = useModelAllowed(videoModel, "allowed_resolutions");
+
+  // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
+  // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。
+  useEffect(() => {
+    if (!durations.includes(duration)) setDuration(nearestDuration(duration, durations));
+  }, [durations, duration]);
+  // 比例取第一项 (16:9) 而不是"最近的一个": 后端 `nearest_ratio` 按长宽比的**比值**挑,
+  // 前端要一致就得把那套比值数学再实现一遍。而这里挑出来的值本身是合法的, 后端会原样
+  // 放行 —— 两边不会打架, 只是"1:1 换到只收横竖的模型"时后端若自己挑会挑 9:16。
+  useEffect(() => {
+    if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
+  }, [ratios, aspectRatio]);
+  // 跟生图那两个面板同一条规则 (见 useResolutionFallback): 落到最近的一档而不是第一档。
+  useResolutionFallback(resolutions, resolution, setResolution);
+
   function submitGenerate() {
     if (!canGenerate) return;
     const finalPrompt = [promptFromTexts, trimmed].filter(Boolean).join("\n");
-    onSubmit({ prompt: finalPrompt, duration, aspectRatio });
+    onSubmit({
+      prompt: finalPrompt, duration, aspectRatio,
+      // 模型没报支持哪几档时发空串 = 后端不下发这个键。
+      resolution: resolutions.length ? resolution : "",
+    });
     setPrompt("");
   }
 
@@ -778,10 +890,26 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
         disabled={isSubmitting}
         className={selectClass}
       >
-        {VIDEO_DURATIONS.map((d) => (
+        {durations.map((d) => (
           <option key={d} value={d}>{t("edit.durationSuffix", { n: d })}</option>
         ))}
       </select>
+      {resolutions.length > 0 && (
+        <>
+          <Divider />
+          <select
+            value={resolution}
+            onChange={(e) => setResolution(e.target.value)}
+            disabled={isSubmitting}
+            className={selectClass}
+            title={t("edit.resolutionTitle")}
+          >
+            {resolutions.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </>
+      )}
       <Divider />
       <select
         value={aspectRatio}
@@ -789,7 +917,7 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
         disabled={isSubmitting}
         className={selectClass}
       >
-        {VIDEO_ASPECT_RATIOS.map((r) => (
+        {ratios.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
@@ -888,7 +1016,11 @@ interface SplitPanelProps {
  *  tweaks, switch to the Image tab. */
 function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
   const { t } = useTranslation("canvasUi");
-  const [resolution, setResolution] = useState<ImageEditResolution>("2K");
+  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
+  // 拆分的两条 leg 跟「图像」标签走同一个模型, 所以档位也照它报的列 —— 否则在这里选
+  // 一个 4K, 而 inpaint 那条 leg 的模型只到 2K。
+  const resolutions = useModelResolutions(imageModel);
+  useResolutionFallback(resolutions, resolution, setResolution);
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (isSubmitting) return;
@@ -902,11 +1034,12 @@ function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
       <Divider />
       <select
         value={resolution}
-        onChange={(e) => setResolution(e.target.value as ImageEditResolution)}
+        onChange={(e) => setResolution(e.target.value)}
         disabled={isSubmitting}
         className={selectClass}
+        title={t("edit.resolutionTitle")}
       >
-        {IMAGE_EDIT_RESOLUTIONS.map((r) => (
+        {resolutions.map((r) => (
           <option key={r} value={r}>{r}</option>
         ))}
       </select>

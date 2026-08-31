@@ -43,13 +43,14 @@ from studio.services.image_channels import (
     resolve_model_id,
 )
 from studio.services.image_client import (
-    size_to_ratio,
     ImageChannel,
     ImageClient,
     build_image_client,
     build_probe_client,
+    resolve_ratio,
+    size_to_ratio,
 )
-from studio.services import template_client
+from studio.services import channel_health, template_client
 from studio.services.listings_utils import handle_poll_if_needed
 
 from ..context import CanvasAgentContext
@@ -137,7 +138,7 @@ def _volc_size(size: str, resolution: str) -> str:
 
 def _single_generation(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
-    client: ImageClient | None = None,
+    client: ImageClient | None = None, deadline: float | None = None,
 ) -> bytes:
     """单次 provider 调用, n=1 固定, 返单张 image bytes.
 
@@ -151,6 +152,9 @@ def _single_generation(
     `client` 留给调用方换重试策略 (worker 要重试, 同步的测试按钮不要 ——
     见 probe_image_channel), 默认走缓存的那个带 retry 的。
 
+    `deadline` 同理, 也只有同步调用方会给: 一个 `time.monotonic()` 时间点, 轮询撞上就停。
+    worker 里不传 —— 那边没人在等, `poll_max_attempts` 就是上限。
+
     **模板通道 (kind=custom_image) 在最前面分流出去**: 它的请求形状由用户填的模板决定,
     下面这些 size_mode / poll_enabled / image_field 的适配一条都不适用。
     """
@@ -162,13 +166,25 @@ def _single_generation(
         return _template_generation(
             channel, prompt=prompt, image_urls=image_urls, size=size,
             resolution=resolution, session=client.session if client else None,
+            deadline=deadline,
         )
     client = client or build_image_client(channel)
+    # 先把用户选的比例换成这个模型**真的收**的那一个。没填 allowed_ratios 就是原样,
+    # 所以这一行对绝大多数通道是空操作。放在 size_mode 适配**之前**: 火山那张像素表按
+    # 比例查, 查的该是映射之后的那个。
+    picked, sent = resolve_ratio(channel.allowed_ratios, size)
+    size = picked
     if channel.size_mode.lower() == "pixel":
         size = _volc_size(size, resolution)
         resolution = ""  # 档位已折进 size 的像素值; resolution 是 apimart 字段, 火山读 size, 不重复下发
     elif channel.poll_enabled:
         size = size_to_ratio(size)
+    # `比例=要发的值` 的右半边 (OpenAI 的 `3:2=1536x1024`)。**最后覆盖**, 因为它比上面
+    # 那两条适配更具体 —— 用户明说了这家要填什么, 而 `size_mode=pixel` 的像素表和
+    # `poll_enabled` 的"归一成比例串"都是我们替他猜的。没写右半边时 `sent`
+    # 就是 picked 本身, 这一行不动任何东西 (模板通道那半在 template_client 里同理)。
+    if sent != picked:
+        size = sent
 
     response = client.generate(
         prompt=prompt, image_urls=image_urls, size=size, n=1, resolution=resolution,
@@ -183,12 +199,14 @@ def _single_generation(
         max_attempts=channel.poll_max_attempts,
         interval=channel.poll_interval,
         req_timeout=channel.poll_timeout,
+        deadline=deadline,
     )
 
 
 def _template_generation(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str,
     resolution: str, session: requests.Session | None = None,
+    deadline: float | None = None,
 ) -> bytes:
     """模板通道的单次生成。请求怎么拼全在 channel.request_template 里。
 
@@ -202,11 +220,28 @@ def _template_generation(
         resolution=resolution, session=sess,
     )
     return template_client.item_to_bytes(
-        template_client.execute(channel, variables, session=sess)
+        template_client.execute(channel, variables, session=sess, deadline=deadline)
     )
 
 
-def probe_image_channel(channel: ImageChannel) -> int:
+# 探针的提示词。**一份, 两个调用方共用** (这里的 ⚡ 和 views 里的向导试跑) —— 分成两份
+# 抄写的话, 用户在两个地方看到两张不同的图, 而它们本该是"同一次体检"。
+#
+# 挑什么图有讲究, 它不是随便一句话:
+#  - 要**一眼认得出是测试图**。看见它就知道"这是探针发的", 不会跟自己生成的东西混。
+#  - 要**画得出来**。任何模型都不会在这句上失败, 否则失败原因就不是通道配置了。
+#  - **不能长得像任何一面国旗或有含义的符号。** 上一版是 "a small red circle on a
+#    white background" —— 白底居中一个红圆, 那就是日章旗, 而向导最后一步会把这张图
+#    直接摆在中文界面上。这是那次改动的直接教训: 探针的图从"没人看得见的字节数"变成
+#    了"界面上一张画", 挑图的标准也跟着变了。具体物件比几何图形安全, 几何图形和纯色块
+#    太容易撞上旗帜。
+PROBE_PROMPT = "a yellow rubber duck toy on a plain white background"
+# 视频探针同一只鸭子 —— 两个探针出来的东西看着是一家的, 更像"体检"而不是"我生成的"。
+# 动作写进提示词里 (漂、晃), 免得模型给一张静止画面。
+PROBE_VIDEO_PROMPT = "a yellow rubber duck toy floating and bobbing gently in clear water"
+
+
+def probe_image_channel(channel: ImageChannel, *, deadline: float | None = None) -> int:
     """配置面板「测试」按钮的生图版 —— 发一次最小的真实调用, 返回拿到的图片字节数。
 
     公开一个函数而不是让 views 直接 import `_single_generation`: angle 那边已经有
@@ -219,13 +254,21 @@ def probe_image_channel(channel: ImageChannel) -> int:
     模板通道也走这里, 而且**不需要在这儿再分一次流**: `_single_generation` 在最前面就把
     它转给执行器, 并且用的正是 `build_probe_client` 那个不重试的 session —— 探针"不重试"
     这条因此只钉在一个地方 (见 build_probe_client)。
+
+    `deadline` 由 view 给 (它才知道这次点击的墙钟预算), 一路传到轮询循环。异步通道靠它
+    停下来, 而不是靠一个从预算换算出来的轮数 —— 换算必须假设每轮都耗尽超时, 于是 600 秒
+    的预算实际只等 96 秒。
     """
-    return len(_single_generation(
-        channel,
-        client=build_probe_client(channel),
-        prompt="a small red circle on a white background",
-        image_urls=[], size="1024x1024", resolution="1K",
-    ))
+    # 探针也记健康 —— 「测试」按钮和一次真实生成对那张卡片上的点是**同一种事实**。
+    # 走 `_single_generation` 而不是 `_generate_on_channel`, 所以两个 watch 不会嵌套。
+    with channel_health.watch(channel):
+        return len(_single_generation(
+            channel,
+            client=build_probe_client(channel),
+            deadline=deadline,
+            prompt=PROBE_PROMPT,
+            image_urls=[], size="1024x1024", resolution="1K",
+        ))
 
 
 def _generate(
@@ -338,9 +381,14 @@ def _generate_on_channel(
     if channel is None:
         raise no_channel_error("生图")
     try:
-        return _call_with_retries(
-            channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
-        )
+        # `watch` 在**重试的外面、包装报错的里面**, 两边都是刻意的:
+        #   - 外面: 两次尝试是"一次生成"的内部细节, 用户点了一次就该记一笔;
+        #   - 里面: 记的是供应商的原文, 不是下面那句加了"未自动切换"的话 —— 卡片上那段
+        #     红字要能直接拿去对文档, 而且它自己已经带了通道名 (见 channel_health.record)。
+        with channel_health.watch(channel):
+            return _call_with_retries(
+                channel, prompt=prompt, image_urls=image_urls, size=size, n=n, resolution=resolution,
+            )
     except Exception as exc:
         # 这里就是终点 —— 这条消息会原样变成 job.error, 再原样变成画布上那行红字。所以
         # 它必须自己说清楚两件事: 挂的是**哪个**通道, 以及我们**没有**替他换一个。否则

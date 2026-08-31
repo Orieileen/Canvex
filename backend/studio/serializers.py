@@ -16,12 +16,15 @@ from .models import (
     VideoJob,
 )
 from .services.agent.skill_md import SkillMdError, parse_skill_md
+from .services.channel_diagnosis import diagnose
 from .services.image_channels import (
     KIND_SPECS,
     POSITIVE_TUNABLES,
     TUNABLE_TYPES,
+    channel_for_model,
     kinds_for_kind,
 )
+from .services.image_client import parse_durations, parse_ratios, parse_resolutions
 from .services.request_template import TemplateError
 from .services.request_template import validate as validate_template
 
@@ -241,7 +244,7 @@ class VideoJobSerializer(serializers.ModelSerializer):
         model = VideoJob
         fields = (
             "id", "scene", "prompt", "image_urls", "duration", "aspect_ratio",
-            "task_id", "result_url", "thumbnail_url",
+            "resolution", "task_id", "result_url", "thumbnail_url",
             "status", "error", "created_at", "updated_at",
         )
         read_only_fields = fields
@@ -260,6 +263,10 @@ class VideoJobCreateSerializer(serializers.Serializer):
     )
     duration = serializers.IntegerField(required=False, min_value=1, max_value=60, default=10)
     aspect_ratio = serializers.CharField(required=False, default="16:9")
+    # 画布上选的画质档 (`720p` / `1080P` / `4k` …)。**不在这里校验取值** —— 合法值是
+    # per-model 的, 而模型是下一个字段才定的; 真正的归一在 template_client 那边按
+    # allowed_resolutions 做 (nearest_resolution)。空 = 不下发这个键, 用供应商默认。
+    resolution = serializers.CharField(required=False, allow_blank=True, default="", max_length=16)
     image_model = _channel_choice_field(ImageProvider.Kind.VIDEO)
 
 
@@ -463,12 +470,27 @@ class ImageProviderSerializer(serializers.ModelSerializer):
     """
 
     models = ImageModelSerializer(many=True, required=False)
+    # 「上次那条报错属于哪一类」。**算出来而不是存一列**: 它是 `last_error` 的纯函数,
+    # 存一列就意味着规则改了之后, 库里躺着的是按旧规则算的答案 —— 而这些规则正是会随着
+    # 又见到一种新报文而长的那种东西。见 services/channel_diagnosis.py。
+    last_error_diagnosis = serializers.SerializerMethodField()
+
+    def get_last_error_diagnosis(self, obj) -> str:
+        # 模板通道和内置通道的"端点不对"要改的不是一处, 所以得告诉诊断这是哪种。
+        return diagnose(obj.last_error, template=KIND_SPECS[obj.kind].template)
 
     class Meta:
         model = ImageProvider
         fields = ("id", "label", "kind", "base_url", "api_key", "defaults",
-                  "request_template", "models", "created_at", "updated_at")
-        read_only_fields = ("id", "created_at", "updated_at")
+                  "request_template", "models", "created_at", "updated_at",
+                  # 通道健康 —— 只读, 由 services/channel_health.py 在每次真实调用后写。
+                  # 前端拿它在卡片上点一个绿/红点。放进这套 payload 而不是单开一个接口:
+                  # 配置面板本来就要拉这张列表, 多一次往返只为三个字段不划算, 而且两次
+                  # 拉取之间的时间差会让点和它旁边的配置对不上号。
+                  "last_status", "last_checked_at", "last_error",
+                  "last_error_diagnosis")
+        read_only_fields = ("id", "created_at", "updated_at",
+                            "last_status", "last_checked_at", "last_error")
 
     def validate_defaults(self, value):
         return _validate_tunables(value)
@@ -590,9 +612,58 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_picker(self, obj) -> str:
         return KIND_SPECS[obj.provider.kind].picker
 
+    @staticmethod
+    def _channel(obj):
+        """这一行合并好的通道, **一行只算一次**。
+
+        下面三个字段全要它, 而 `channel_for_model` 每次都要把三层配置合并一遍、建一个
+        dataclass, 还会为无法识别的键各记一条 warning —— apimart 那两条预设一共七十来个
+        模型, 算三遍就是两百多次合并和三倍的重复日志, 而每次打开工具栏都要拉这张表。
+        缓存挂在行对象上 (它只活到这次响应结束), 不是进程级的 —— 配置改完下一次请求
+        重新算。
+        """
+        chan = getattr(obj, "_merged_channel", None)
+        if chan is None:
+            chan = channel_for_model(obj)
+            obj._merged_channel = chan
+        return chan
+
+    # 这个模型**真的收**哪几种比例。工具栏的比例选择器按它裁 —— 选不中的东西就不该出现
+    # 在列表里, 那比"选了再报 400"好得多。
+    #
+    # 下发的是**合并之后**的值 (kind 默认 → provider.defaults → model.overrides), 不是
+    # 三层原料: 合并规则住在 channel_for_model, 前端再实现一遍必然分叉, 而分叉的表现是
+    # 界面上列出的比例和后端真的会发的那个对不上。
+    allowed_ratios = serializers.SerializerMethodField()
+
+    def get_allowed_ratios(self, obj) -> list[str]:
+        return parse_ratios(self._channel(obj).allowed_ratios)
+
+    # 这个模型**真的收**哪几个时长(秒)。空 = 用画布自己那三档。
+    #
+    # 跟 allowed_ratios 不同, 选择器是**照这个列**而不是拿它去筛画布那三档: veo3 只出
+    # 8 秒, 画布那三档一个都不在里面, 筛完会是空的。
+    allowed_durations = serializers.SerializerMethodField()
+
+    def get_allowed_durations(self, obj) -> list[int]:
+        return parse_durations(self._channel(obj).allowed_durations)
+
+    # 这个模型**真的收**哪几个画质档, 由低到高。空 = 这个模型没有画质旋钮, 工具栏就不显示
+    # 那个下拉 (= 按供应商自己的默认出片, 也就是这个功能之前的行为)。
+    #
+    # 下发的是**左边那一半** (选择器里显示的档), 右边"实际要发的值"是后端渲染模板时才用
+    # 的 —— 可灵那四个模型显示 720P/1080P 而发 std/pro。前端不需要知道这件事。
+    allowed_resolutions = serializers.SerializerMethodField()
+
+    def get_allowed_resolutions(self, obj) -> list[str]:
+        return parse_resolutions(self._channel(obj).allowed_resolutions)
+
     class Meta:
         model = ImageModel
-        fields = ("id", "label", "provider_label", "picker", "sort_order")
+        fields = (
+            "id", "label", "provider_label", "picker", "sort_order",
+            "allowed_ratios", "allowed_durations", "allowed_resolutions",
+        )
 
 
 def _skill_error(code: str, message: str, **params: object) -> serializers.ValidationError:

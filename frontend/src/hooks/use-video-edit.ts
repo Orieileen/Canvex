@@ -8,15 +8,45 @@ import {
   type CanvasEditPinning,
 } from "@/hooks/use-canvas-pinning";
 import { submitCanvasJob } from "@/hooks/submit-canvas-job";
+// 画质档那几个纯函数搬到了 lib —— 生图面板也要用, 不该从一个视频 hook 里 import。
+import { nearestResolution } from "@/lib/canvas-resolution";
+
+export { nearestResolution };
 
 /**
  * Submit an "image-to-video" job. Single-image selections only. Sends
  * `image_urls` JSON when sourceUrl is set, multipart File otherwise.
  */
 
-export type VideoDuration = 5 | 10 | 15;
+/** 秒。**不是一个封闭的联合类型** —— 各家模型收的秒数差得离谱 (veo3 固定 8,
+ *  sora 只收 4/8/12/16/20), 而那张表是后端按供应商文档下发的, 前端写不出穷举。
+ *  后端 VideoJobCreateSerializer 会校验 1~60。 */
+export type VideoDuration = number;
 export type VideoAspectRatio = "16:9" | "9:16" | "1:1";
 
+/** 画质档。**同样不是封闭联合** —— 各家的写法从 `360p` 到 `4k`, 还有 MiniMax 的 `2K`。
+ *  空串 = 不发这个键, 由供应商用自己的默认。 */
+export type VideoResolution = string;
+
+/** 画布这边的偏好档。模型报了自己收哪几档时(见 CanvasImageModelChoice.allowed_resolutions)
+ *  按 `nearestResolution` 落到最近的一档 —— 它是 720p 是因为这是 apimart 那 41 个视频
+ *  模型里绝大多数的文档默认值。 */
+export const DEFAULT_VIDEO_RESOLUTION: VideoResolution = "720p";
+
+/** 用户选的秒数 → 这个模型真的收的那一个。规则同 `nearestResolution`: 挑数值最近的,
+ *  平手取短的 (时长直接决定计费)。后端 `nearest_duration` 是同一份。
+ *
+ *  **不能取列表第一项**: 从 seedance 的 15 秒换到 sora (只收 4/8/12/16/20), 第一项是
+ *  4 秒 —— 用户拿到一条比要的短得多的片子, 而他什么都没改。 */
+export function nearestDuration(want: number, allowed: readonly number[]): number {
+  if (!allowed.length || allowed.includes(want)) return want;
+  return allowed.reduce((best, d) =>
+    Math.abs(d - want) < Math.abs(best - want) ||
+    (Math.abs(d - want) === Math.abs(best - want) && d < best) ? d : best);
+}
+
+/** 画布默认给的三档。**只是默认** —— 模型自己报了支持的秒数时(见
+ *  CanvasImageModelChoice.allowed_durations)选择器照那个列, 不用这三个。 */
 export const VIDEO_DURATIONS: VideoDuration[] = [5, 10, 15];
 export const VIDEO_ASPECT_RATIOS: VideoAspectRatio[] = ["16:9", "9:16", "1:1"];
 
@@ -25,6 +55,7 @@ export interface SubmitVideoEditParams {
   prompt: string;
   duration: VideoDuration;
   aspectRatio: VideoAspectRatio;
+  resolution: VideoResolution;
 }
 
 export function useVideoEdit({
@@ -51,7 +82,7 @@ export function useVideoEdit({
   const inFlightRef = useRef(false);
 
   const submit = useCallback(
-    async ({ selection, prompt, duration, aspectRatio }: SubmitVideoEditParams) => {
+    async ({ selection, prompt, duration, aspectRatio, resolution }: SubmitVideoEditParams) => {
       if (selection.kind !== "single-image") {
         setError("Video requires a single-image selection");
         return;
@@ -71,7 +102,7 @@ export function useVideoEdit({
         createJob: async () => {
           const api = excalidrawApiRef.current!;
           const base = {
-            prompt, duration, aspect_ratio: aspectRatio,
+            prompt, duration, aspect_ratio: aspectRatio, resolution,
             imageModelId: videoModelIdRef.current || undefined,
           };
           if (sourceUrl) {

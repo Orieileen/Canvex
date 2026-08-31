@@ -41,6 +41,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-ok: var(--ok);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -101,6 +102,11 @@
   /* destructive 暂沿用橙(未引入红);white-on-orange */
   --destructive: #ff6825;
   --destructive-foreground: #ffffff;
+
+  /* 调色板里唯一的绿,只用在通道健康那个点上(「上一次调用供应商应答了」)。
+     "坏了"那一头复用 --destructive 的橙,不另开一个红 —— 见上面那条。
+     一个状态灯需要两种能一眼分开的颜色,而这个盘子里橙已经占了"出事"那一格。 */
+  --ok: #3f9e5a;
 
   --border: #e7e5e4;
   --input: #e7e5e4;
