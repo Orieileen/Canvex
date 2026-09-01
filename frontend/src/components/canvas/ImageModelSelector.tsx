@@ -48,8 +48,8 @@ interface ImageModelSelectorProps {
   variant?: "icon" | "text";
   /** 触发按钮的额外 class —— 宿主工具栏的间距规则不同。 */
   className?: string;
-  /** popover 抬头。Angle 面板要说"视角模型"—— 那里列的根本不是生图通道, 顶着
-   *  "Image model" 会让人以为选错了地方。省略即生图。 */
+  /** popover 抬头, 同时也是触发按钮的 aria-label。Angle 面板要说"视角模型"—— 那里
+   *  列的根本不是生图通道, 顶着 "Image model" 会让人以为选错了地方。省略即生图。 */
   title?: string;
 }
 
@@ -69,6 +69,9 @@ export function ImageModelSelector({
   const hoverTitle = selected
     ? `${selected.provider_label} · ${selected.label}`
     : t("imageModels.pick");
+  // 读屏器只有这一句可听: hoverTitle 是"当前选的是什么", 说不出这是哪个面板的下拉。
+  // 三个面板共用本组件, 写死"选择生图模型"会让视频/换视角的下拉都自称生图。
+  const ariaLabel = title ?? t("imageModels.pick");
 
   return (
     <Popover>
@@ -78,7 +81,7 @@ export function ImageModelSelector({
             type="button"
             variant="ghost"
             disabled={buttonDisabled}
-            aria-label={t("imageModels.pick")}
+            aria-label={ariaLabel}
             title={hoverTitle}
             // 跟同一行的 Auto / 2K / ×1 共用一份样式 —— 长得不一样就会被当成动作按钮。
             // hover:bg-transparent / font-normal / rounded-none 是压掉 Button 自带的。
@@ -99,7 +102,7 @@ export function ImageModelSelector({
             size="icon"
             variant="ghost"
             disabled={buttonDisabled}
-            aria-label={t("imageModels.pick")}
+            aria-label={ariaLabel}
             title={hoverTitle}
             className={cn(
               "relative size-8 rounded-lg text-muted-foreground hover:text-foreground",
