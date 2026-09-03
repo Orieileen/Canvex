@@ -595,6 +595,18 @@ class ImageChannel:
     resolution_param: str = field(
         default="resolution", metadata={"choices": RESOLUTION_PARAM_CHOICES},
     )
+    # ── 参考图怎么交给这家 ──
+    # 空 = 内联成 base64 data URI (绝大多数生图端点收, 自托管不需要公网地址)。
+    # 填了路径 = 先 multipart POST 到 `{base_url}{upload_path}` 换一个**供应商自己托管**
+    # 的公开 URL, 再把那个 URL 填进请求体。
+    #
+    # 为什么需要它: apimart 的**视频**端点两条都卡死 —— 文档明写「不再支持在生成接口中
+    # 直接传入 base64」, 而 `image_urls` 又要求公网可达; 自托管的
+    # `http://localhost:28000/media/...` 供应商永远抓不到。这时唯一的出路是我们主动把
+    # 字节推过去。方向仍然是本机往外发, 不需要隧道。
+    upload_path: str = field(default="", metadata={"example": "/uploads/images"})
+    # 上传回包里哪个字段是那个地址 (request_template.extract 的路径语法)。
+    upload_result_path: str = "url"
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False

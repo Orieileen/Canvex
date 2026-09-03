@@ -13,6 +13,7 @@ task to fire when the surrounding tx commits. Import-safe at module top.
   Scene 已无 organization,单工作区无跨租户面。
 """
 import base64
+import hashlib
 import io
 import ipaddress
 import logging
@@ -26,6 +27,7 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.cache import cache
 from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
 from PIL import Image
@@ -363,6 +365,104 @@ def source_to_inline_uri(ref) -> str:
     if is_url:
         return ref  # external public URL → passthrough
     return bytes_to_data_uri(_read_source_bytes(ref))  # bare storage-relative path
+
+
+# 上传的图在供应商那边存 72 小时 (apimart 文档)。缓存留足余量, 免得刚过期就拿去用。
+_UPLOAD_CACHE_SECONDS = 12 * 3600
+
+
+def _source_bytes(ref) -> bytes | None:
+    """能读到字节就返字节; 读不到 (外部公网 URL) 返 None —— 那种原样交给供应商就行。"""
+    if not isinstance(ref, str):
+        return _read_source_bytes(ref)  # FieldFile
+    if ref.startswith("data:"):
+        return base64.b64decode(ref.split(",", 1)[1])
+    rel = our_media_relpath(ref)
+    if rel is not None:
+        return _read_source_bytes(rel)
+    if ref.startswith(("http://", "https://")):
+        return None  # 外部公网图, 供应商自己抓得到
+    return _read_source_bytes(ref)  # 裸 storage 路径
+
+
+def upload_source_to_provider(
+    ref, *, base_url: str, api_key: str, path: str,
+    result_path: str = "url", timeout: int = 120,
+) -> str:
+    """一张画布图 → **供应商自己托管**的公开 URL(multipart 推上去, 换回一个地址)。
+
+    为什么需要这条路: 有的端点既不收 base64, 又要求图片地址公网可达 —— 而自托管的
+    `http://localhost:28000/media/...` 供应商永远抓不到。这两条同时成立时, 内联和
+    "配个公网 media" 都不成立, 只剩"我们主动把字节推过去"。apimart 的视频端点就是这种
+    (文档: 「不再支持在生成接口中直接传入 base64,请使用本接口上传图片」)。
+
+    方向很重要: **是我们往外发请求**, 跟调用生成接口同一个方向。本机不需要被任何人
+    访问, 不需要隧道, 也不需要把 /media/ 暴露出去。
+
+    同一张图重复生成很常见 (改一版提示词再跑), 所以按内容哈希缓存一段时间 —— 供应商
+    那边的地址有有效期, 缓存时长取得比它短得多。缓存不可用时只是多传一次, 不影响正确性。
+    """
+    from studio.services.image_client import bytes_to_data_uri  # noqa: PLC0415,F401 — 保持与 source_to_inline_uri 同一处依赖
+    from studio.services.request_template import extract  # noqa: PLC0415 — 避免 import 环
+
+    data = _source_bytes(ref)
+    if data is None:
+        return ref  # 外部公网图: 不用经手
+
+    key = "provider-upload:" + hashlib.sha256(
+        f"{base_url}|{path}".encode() + data
+    ).hexdigest()
+    cached = cache.get(key)
+    if cached:
+        return cached
+
+    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        files={"file": ("source.png", data, "image/png")},
+        timeout=timeout,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"上传参考图失败 HTTP {resp.status_code} ({url}): {resp.text[:500]}"
+        )
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(f"上传参考图: 回包不是 JSON ({url}): {exc}") from exc
+    got = extract(payload, result_path or "url")
+    if not isinstance(got, str) or not got.startswith(("http://", "https://")):
+        raise RuntimeError(
+            f"上传参考图: 按 `{result_path or 'url'}` 没取到 http 地址, 回包是 "
+            f"{str(payload)[:400]}"
+        )
+    cache.set(key, got, _UPLOAD_CACHE_SECONDS)
+    logger.info("参考图已上传给供应商: %d bytes → %s", len(data), got)
+    return got
+
+
+def source_for_channel(channel, ref) -> str:
+    """一张画布图 → **这条通道真的收得下**的形状。
+
+    只有这一个函数知道该内联还是该上传, 所有生成路径都该走它 —— 之前"要不要内联"散在
+    各条路径里, 结果视频的模板分支漏了一处, 把 `http://localhost:28000/...` 原样发给了
+    供应商, 表现是供应商回一句"抓不到你的图", 看起来像通道配错了。
+
+    - 通道填了 `upload_path` → 推给供应商换一个它托管的 URL (见上面那个函数)
+    - 否则 → 内联成 data URI (绝大多数生图端点收 base64, 自托管无需公网地址)
+    """
+    up = (getattr(channel, "upload_path", "") or "").strip()
+    if not up:
+        return source_to_inline_uri(ref)
+    return upload_source_to_provider(
+        ref,
+        base_url=channel.base_url,
+        api_key=channel.api_key,
+        path=up,
+        result_path=getattr(channel, "upload_result_path", "") or "url",
+        timeout=getattr(channel, "timeout", 120) or 120,
+    )
 
 
 _SOURCE_URL_HEAD_TIMEOUT_SECONDS = 5

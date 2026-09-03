@@ -502,6 +502,7 @@ _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
         "image_field", "image_as_single", "response_format", "quality",
         "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
         "allowed_resolutions", "resolution_param", "protocol",
+        "upload_path", "upload_result_path",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({
@@ -1023,6 +1024,11 @@ PRESETS: tuple[_Preset, ...] = (
         key="apimart_video",
         kind=ImageProvider.Kind.CUSTOM_VIDEO,
         base_url="https://api.apimart.ai/v1",
+        # 参考图得先传上去换个地址。这家的视频端点**不收 base64**(文档:「不再支持在生成
+        # 接口中直接传入 base64,请使用本接口上传图片」), `image_urls` 只认公网可达的
+        # http(s) —— 而自托管的 media 地址它抓不到。生图那条端点目前还收 base64, 所以
+        # 没给它配, 等真收不了了再说。
+        defaults={"upload_path": "/uploads/images"},
         # 文档 /videos/*/generation 各页主推的模型, 逐个对着这家的 /v1/models 核过。
         # **不含**那些走独立端点的操作 (veo3 remix、kling motion-control、
         # MiniMax regeneration / context-ir、wan r2v / videoedit、各家 official 渠道),
