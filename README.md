@@ -96,10 +96,10 @@ Open http://localhost:5173 and click **Channels** in the left sidebar. Nothing w
 
 These are the channel types you can create:
 
-1. **Chat model** — required first; the chat box is dead without it. Point it at a provider that supports OpenAI-style **tool calling** — one that doesn't will reply with markdown and quietly do nothing on the canvas, so don't reuse an image-only key. Leave Base URL blank to use OpenAI's own endpoint. A **protocol** dropdown covers providers whose cheap "coding plan" subscriptions speak Anthropic's `/v1/messages` instead (Zhipu, DeepSeek) — a protocol mismatch returns a 404 that looks exactly like a bad key.
-2. **Image generation · custom template** — needed for the Image / Split tools and for images the agent creates.
-3. *(optional)* **Camera angle re-render** — a [fal.ai](https://fal.ai) key, for the 3D-cube viewpoint tool.
-4. *(optional)* **Video generation · custom template**.
+1. **Chat (LLM agent) model** — Canvex ships a preset for the third-party LLM API provider **[tu-zi](https://api.tu-zi.com/)**: sign up there, take the API key, paste it into the Channels panel and you're running. It has to be a key that supports OpenAI-style **tool calling** — one that doesn't will reply with text and quietly do nothing on the canvas.
+2. **Image generation · custom template** — Canvex ships a preset for the image provider **[APIMart](https://apimart.ai/)**: sign up, take the API key, paste it in. Edit, Split, and the image tool the LLM agent calls all run on this one key.
+3. *(optional)* **Camera angle re-render** — sign up at **[fal.ai](https://fal.ai/)** for an API key; it powers the Angle (change-of-viewpoint) tool.
+4. *(optional)* **Video generation · custom template** — Canvex ships a preset for the video provider **[APIMart](https://apimart.ai/)**: same deal, sign up and paste the key in.
 
 (You may also see two older read-only types — plain **Image generation** and **Video generation** — on channels created by earlier versions. They still run; you just can't make new ones.)
 
