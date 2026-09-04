@@ -383,7 +383,7 @@ _TEMPLATE_TUNABLES = frozenset({
 })
 # 视频专有: 画质档发到哪个键 (`resolution` 还是可灵那种 `mode`)。生图那边没有第二种
 # 叫法, 放出来只会多一个永远不用动的下拉。
-_TEMPLATE_VIDEO_TUNABLES = _TEMPLATE_TUNABLES | {"resolution_param"}
+_TEMPLATE_VIDEO_TUNABLES = _TEMPLATE_TUNABLES | {"resolution_param", "ratio_scope"}
 
 
 KIND_SPECS: dict[str, _KindSpec] = {
@@ -466,7 +466,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
             # 视频模型的可用比例往往比生图还窄 —— 常见只有 16:9 / 9:16 / 1:1。
-            "allowed_ratios", "allowed_durations",
+            "allowed_ratios", "ratio_scope", "allowed_durations",
             "allowed_resolutions", "resolution_param",
         }),
         picker="video",
@@ -501,7 +501,7 @@ _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
         "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
-        "allowed_resolutions", "resolution_param", "protocol",
+        "allowed_resolutions", "resolution_param", "ratio_scope", "protocol",
         "upload_path", "upload_result_path",
     })),
     ("timing", frozenset({"timeout"})),
@@ -745,16 +745,13 @@ _APIMART_IMAGE_RATIOS: dict[str, str] = {
 # gemini-omni-flash-preview 的文档写着「其它值按 16:9 处理」—— 也就是**静默换方向**,
 # 用户拿到一条横屏, 而他选的是方形, 没有任何提示。
 #
-# ── 另一件事, 这张表管不了, 但值得写在这儿 ──
-# 很多模型的比例**只在文生视频时生效**, 图生视频时由首帧图决定。而画布的视频标签
-# **必须先选中一张图**, 所以在那条路径上它们的比例旋钮是装饰品 (不报错, 输出跟着源图):
-#   kling-3.0-turbo「仅文生视频生效」   happyhorse-1.0/1.1「I2V 模式下此参数会被忽略」
-#   pixverse-v6「仅文生视频…生效」      skyreels-v4「I2V 模式下会被忽略」
-#   vidu-q3-pro「仅文生视频模式可用」    wan2.5 / wan2.6 / wan2.7「图生模式下忽略」
-#   sora-2「传入 image_urls 时失效」
-# 另有四个**根本没有比例参数**: MiniMax-Hailuo-02 / -2.3 / -2.3-Fast / wan2.6-i2v-flash。
-# 这些要表达出来需要一个"这个旋钮在这种模式下不存在"的说法, 而那是按模式分的, 不是按
-# 模型分的 —— 不是这张表能装下的东西。留空 = 照发, 供应商忽略, 跟以前一样。
+# ── 另一件事, 这张表管不了 ──
+# 有四个模型**根本没有比例参数**: MiniMax-Hailuo-02 / -2.3 / -2.3-Fast /
+# wan2.6-i2v-flash (整页只有 resolution)。表里写什么都不对 —— 写值会让画布少一档还是
+# 照发一个不存在的键, 留空至少诚实。代价是它们的比例下拉是纯装饰。
+#
+# "只在文生视频时生效"那一族**已经不在这张表里解决了**, 见下面的 _APIMART_VIDEO_T2V_ONLY
+# 和 ImageChannel.ratio_scope。
 _APIMART_VIDEO_RATIOS: dict[str, str] = {
     # ── /videos/veo3 ── 只有横竖两种
     "veo3.1-fast": "16:9, 9:16",
@@ -763,7 +760,9 @@ _APIMART_VIDEO_RATIOS: dict[str, str] = {
     # ── /videos/sora-2 ── 文档给的是一张"方向"表: 横屏 16:9/landscape, 竖屏 9:16/portrait
     "sora-2": "16:9, 9:16",
     "sora-2-pro": "16:9, 9:16",
-    # ── /videos/omni-flash-ext ──
+    # ── /videos/omni-flash-ext ── 文档写的是「**常用值**: 16:9、9:16; 默认 16:9」——
+    # 是"常用"不是"仅支持"(对照隔壁 gemini-omni-flash-preview 才写了「仅支持…其它值按
+    # 16:9 处理」)。这一行是**保守推断**: 宁可少给一档, 也不发一个文档没承认的 1:1。
     "Omni-Flash-Ext": "16:9, 9:16",
     # ── /videos/gemini-omni-flash-preview ── 「仅支持 16:9 / 9:16, 其它值按 16:9 处理」
     "gemini-omni-flash-preview": "16:9, 9:16",
@@ -908,6 +907,38 @@ _APIMART_VIDEO_RESOLUTIONS: dict[str, str] = {
 # 可灵这四个把画质叫 `mode` 而不是 `resolution` (kling-3.0-turbo 不在其中 —— 它用
 # `resolution`)。剩下 37 个模型不用写, `resolution` 就是字段默认值。
 _APIMART_VIDEO_MODE_MODELS = ("kling-v2-6", "kling-v3", "kling-v3-omni", "kling-video-o1")
+
+# 图生视频时**不能带比例参数**的模型。不在表里 = 照发。
+#
+# **只收文档明写禁止、或明写失效且键名对得上的那几个。** 写宽了的代价是真的:
+#   可灵四个        「图生视频时, aspect_ratio **可能被图片实际比例覆盖**」—— 是可能被
+#                    覆盖, 不是失效, 也不报错
+#   viduq3 / -mix   整页 image_urls 必填、aspect_ratio 是正常参数 (default 16:9), 官方
+#                    示例两者并存 —— 这两个**只有**参考生视频一种模式, 写进来等于拆掉
+#                    它们唯一的方向旋钮, 而且不报错
+#   MiniMax-H3      我们把图塞进 image_urls, 文档说这一律按 reference_image 处理, 走
+#                    「多模态参考生视频」那一档:「可选, 默认 adaptive; 也可显式指定」
+#   happyhorse 两代 忽略只在 I2V (first_frame_image); image_urls 走的是 R2V, 而文档写
+#                    「size 仅 T2V/R2V 生效」, 官方 R2V 示例自己就带 "size": "16:9"
+#   seedance-2.5    「size 仅 adaptive」只绑 image_with_roles 的首帧/尾帧任务; 我们发的
+#                    image_urls 一律作 reference_image, 那一行的限制栏写的是"无"
+#
+# 没写进来的那些"文档说忽略"的 (kling-3.0-turbo / skyreels-v4 / MiniMax-Hailuo): 它们收
+# 图的字段是 first_frame_image 而不是 image_urls; 而 pixverse-v6 / wan2.7 / grok 的比例
+# 参数叫 `size` —— 它们的毛病不在这个旋钮上, 见 _STARTER_APIMART_VIDEO 那条已知缺口。
+_APIMART_VIDEO_T2V_ONLY: frozenset[str] = frozenset({
+    # 「只要传入 image_urls(无论 1 张还是 2 张), 就不能同时设置 aspect_ratio」+ 参数
+    # 矩阵里图生那两列标 `-`。**这两个是今天真的每次都在发违规组合的**。
+    "viduq3-pro", "viduq3-turbo",
+    # 「当传入 image_urls(图生视频)时, aspect_ratio 参数失效」
+    "sora-2", "sora-2-pro",
+    # 「图生视频模式不支持此参数」(文档没说是静默忽略还是 400, 取安全的一边)
+    "wan2.6",
+    # 「图生视频的宽高比由输入图片决定, **不要**传 size, 否则会报错」。它的比例参数叫
+    # `size` 而我们今天发的是 `aspect_ratio`, 所以这一条**今天多半是空操作** —— 收进来
+    # 是为键名那条缺口修好之后备着。
+    "wan2.5-preview",
+})
 
 
 PRESETS: tuple[_Preset, ...] = (
@@ -1057,6 +1088,8 @@ PRESETS: tuple[_Preset, ...] = (
                 ),
                 # 这一条的来源是个元组而不是"模型 → 值"的表, 所以不走 _sparse_overrides。
                 **({"resolution_param": "mode"} if m in _APIMART_VIDEO_MODE_MODELS else {}),
+                # 同上, 来源是个集合而不是"模型 → 值"的表, 所以也不走 _sparse_overrides。
+                **({"ratio_scope": "text_only"} if m in _APIMART_VIDEO_T2V_ONLY else {}),
             }
             for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },

@@ -658,11 +658,21 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_allowed_resolutions(self, obj) -> list[str]:
         return parse_resolutions(self._channel(obj).allowed_resolutions)
 
+    # 这个模型在**图生视频**时还收不收比例 ("" = 收, "text_only" = 不收)。画布的视频
+    # 标签恒为图生 (use-video-edit 那两道硬拒), 所以 "text_only" 在那条路上等于"这个
+    # 旋钮不存在" —— 工具栏据此不显示比例下拉, 跟画质下拉同一条规矩 (摆一个用不上的
+    # 控件是在骗人)。后端那边该不该发由 ratio_scope 自己决定, 不依赖前端配合。
+    ratio_scope = serializers.SerializerMethodField()
+
+    def get_ratio_scope(self, obj) -> str:
+        return self._channel(obj).ratio_scope
+
     class Meta:
         model = ImageModel
         fields = (
             "id", "label", "provider_label", "picker", "sort_order",
             "allowed_ratios", "allowed_durations", "allowed_resolutions",
+            "ratio_scope",
         )
 
 

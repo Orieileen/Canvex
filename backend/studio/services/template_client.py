@@ -393,7 +393,14 @@ def video_variables(
     `resolution`, 可灵那 4 个叫 `mode`), 而模板是每条通道一份、模型有 41 个。所以两个都
     摆出来, 由 `channel.resolution_param` 决定填哪个, 另一个渲染成空 → 那个键整个消失。
     """
-    picked, sent = resolve_ratio(channel.allowed_ratios, aspect_ratio)
+    # 报了 text_only 的模型在有参考图时**整个比例键不下发** (见 ImageChannel.ratio_scope)。
+    # **整个跳过 resolve_ratio, 而不是喂它一个空串**: 它没有 resolve_resolution 那条
+    # "空进空出"的闸, 空串会经 nearest_ratio 退回 allowed[0] —— 在配了 allowed_ratios
+    # 的那几个模型上被重新填成 16:9, 而那正是这一改想避免的那个键。
+    if image_urls and channel.ratio_scope == "text_only":
+        picked, sent = "", ""
+    else:
+        picked, sent = resolve_ratio(channel.allowed_ratios, aspect_ratio)
     # 时长同样过一遍。选择器已经按 allowed_durations 列过一次, 这里管它拦不住的:
     # agent 自己挑的秒数, 以及"换了模型之后 localStorage 里那个旧选择失效"。
     secs = nearest_duration(duration, parse_durations(channel.allowed_durations))

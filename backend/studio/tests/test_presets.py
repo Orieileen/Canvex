@@ -17,6 +17,7 @@ from studio.services.image_channels import (
     _UNDOCUMENTED_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_RATIOS,
+    _APIMART_VIDEO_T2V_ONLY,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
     KIND_SPECS,
@@ -412,3 +413,57 @@ class ApimartVideoRatioTests(SimpleTestCase):
                     duration=5, aspect_ratio="1:1",
                 )
                 self.assertEqual(variables["aspect_ratio"], "1:1")
+
+    # ── 图生视频时的比例键 (ratio_scope) ────────────────────────────────────
+    #
+    # 画布的视频标签**恒为图生**, 所以这几条测的是每一次真实生成。
+    # 一刀切("有图就不发")是错的: 文档里有九个模型图生时比例仍然生效, 其中
+    # viduq3 / viduq3-mix **只有**参考生视频一种模式 —— 不发等于拆掉它们唯一的方向
+    # 旋钮, 而且不报错。所以这是一张 per-model 的表, 下面两组分别钉住它的两侧。
+
+    def test_t2v_only_models_drop_the_ratio_when_an_image_is_sent(self):
+        """报了 text_only 的模型带参考图时, 比例两个键都要空 —— 空 = render 把键整个
+        删掉。viduq3-pro / -turbo 的文档写的是「就不能同时设置 aspect_ratio」, 是禁止,
+        不是"传了会被忽略"。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_T2V_ONLY):
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p",
+                    image_urls=["https://x/a.png"], duration=5, aspect_ratio="16:9",
+                )
+                self.assertEqual(variables["aspect_ratio"], "")
+                self.assertEqual(variables["size"], "")
+                # 渲染之后那个键必须真的不在 body 里 —— 只把值置空是不够的。
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+
+    def test_t2v_only_models_keep_the_ratio_without_an_image(self):
+        """没有参考图时照发 —— 通道配置向导的试跑走的正是这条 (image_urls=[])。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_T2V_ONLY):
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p", image_urls=[],
+                    duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["aspect_ratio"], "9:16")
+
+    def test_models_that_still_take_a_ratio_with_an_image_keep_it(self):
+        """反面: 这几个文档明写图生时比例仍然是合法参数, 一个都不能被顺手带走。
+        viduq3 / viduq3-mix 尤其要紧 —— 它们**只有**参考生视频一种模式。"""
+        from studio.services import template_client
+
+        for model in ("kling-v3", "kling-v2-6", "viduq3", "viduq3-mix",
+                      "MiniMax-H3", "happyhorse-1.0", "seedance-2.5"):
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p",
+                    image_urls=["https://x/a.png"], duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["aspect_ratio"], "9:16")
+
+    def test_t2v_only_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_T2V_ONLY), set(self.preset.models))

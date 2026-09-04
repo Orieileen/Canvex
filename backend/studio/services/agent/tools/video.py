@@ -267,8 +267,15 @@ def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
         "model": cfg.model,
         "prompt": job.prompt,
         "duration": nearest_duration(job.duration, parse_durations(cfg.allowed_durations)),
-        "aspect_ratio": resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1],
     }
+    # 比例跟画质档同一个写法 (显式 if, 不是"填空串") —— 这里是手拼 dict, 没有模板通道
+    # request_template.render 那道"空值键整个不下发"的闸, `"aspect_ratio": ""` 会照样
+    # POST 出去。
+    #
+    # 报了 text_only 的模型在有参考图时整个键不发: viduq3-pro / -turbo 的文档写的是
+    # 「就不能同时设置 `aspect_ratio`」—— 是禁止, 不是"传了会被忽略"。
+    if not (image_urls and cfg.ratio_scope == "text_only"):
+        body["aspect_ratio"] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
     # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
     # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
     if job.resolution and cfg.allowed_resolutions:
@@ -282,7 +289,10 @@ def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
 
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",
-        endpoint, cfg.model, body["duration"], body["aspect_ratio"], len(image_urls),
+        endpoint, cfg.model, body["duration"],
+        # `.get` 而不是 `[...]`: 这个键现在可能不存在, 而这只是一行日志 —— 它不该有本事
+        # 把一次已经拼好的提交打成 KeyError。
+        body.get("aspect_ratio", "-"), len(image_urls),
     )
     resp = _session.post(
         endpoint,

@@ -501,6 +501,16 @@ CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
 # 不下发 —— 配得看上去完全正确, 而画质旋钮不起作用, 没有任何报错。
 RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
 
+# 比例参数在**图生视频**时还算不算数。空 = 算 (默认, 也是大多数)。
+# "text_only" = 只有文生视频算 —— 有参考图时整个比例键不下发。
+#
+# 做成 per-model 旋钮而不是"有图就不发": 这是逐模型的事实, 而且**两个方向都有真实
+# 模型**。可灵那四个和 vidu 的 viduq3 / viduq3-mix 文档明写图生时比例仍是合法参数
+# (可灵原话是"可能被图片实际比例覆盖", 不是失效); 而 viduq3 / viduq3-mix **只有**
+# 参考生视频一种模式 (image_urls 必填) —— 一刀切等于把它们唯一的方向旋钮拆了, 用户
+# 选 9:16 永远拿到 16:9, 而且没有任何报错。
+RATIO_SCOPE_CHOICES: tuple[str, ...] = ("", "text_only")
+
 
 @dataclass(frozen=True)
 class ImageChannel:
@@ -578,6 +588,13 @@ class ImageChannel:
     allowed_ratios: str = field(
         default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
     )
+    # 上面那张表管"收哪几种", 这一项管"**什么时候**还收"。见 RATIO_SCOPE_CHOICES。
+    #
+    # 存在的理由是文档里两句话的差别: viduq3-pro 写「只要传入 `image_urls`…就不能同时
+    # 设置 `aspect_ratio`」(禁止), 而 kling-v3 写「可能被图片实际比例覆盖」(仍是合法
+    # 参数)。前者传了是违规组合, 后者不传就丢掉一个真能用的旋钮 —— 一个全局开关表达
+    # 不了这个差别, 所以它跟 allowed_ratios 挂在同一层。
+    ratio_scope: str = field(default="", metadata={"choices": RATIO_SCOPE_CHOICES})
     # 这个模型**真的收**哪几个画质档, 由低到高; 空 = 这个模型没有画质旋钮, 那个键不下发
     # (= 用供应商自己的默认, 也就是这个功能之前的行为)。
     #

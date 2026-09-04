@@ -358,6 +358,12 @@ export interface CanvasImageModelChoice {
    *  各家从 360p 排到 4k,还有 MiniMax 的 `2K`、可灵的 std/pro(后端把它显示成
    *  720P/1080P,发出去才换回 std/pro,前端不用知道这件事)。 */
   allowed_resolutions: string[];
+  /** 这个模型在**图生视频**时还收不收比例。`""` = 收;`"text_only"` = 不收。
+   *
+   *  画布的视频标签恒为图生(必须先选中一张图),所以 `"text_only"` 在那条路上等于
+   *  「这个旋钮不存在」—— 工具栏就不显示比例下拉,跟画质下拉同一条规矩。摆一个对这个
+   *  模型永远不起作用的控件是在骗人。后端那边发不发由它自己判,不依赖前端配合。 */
+  ratio_scope: string;
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

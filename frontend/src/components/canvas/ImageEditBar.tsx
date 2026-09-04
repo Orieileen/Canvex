@@ -826,6 +826,14 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
   // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
   const resolutions = useModelAllowed(videoModel, "allowed_resolutions");
+  // 视频标签恒为图生 —— 报了 text_only 的模型在这条路上根本没有"比例"这个概念
+  // (sora-2 文档: 「传入 image_urls 时 aspect_ratio 参数失效」; viduq3-pro 更狠:
+  // 「就不能同时设置」)。那就别摆一个下拉让人选。同画质下拉那条规矩。
+  //
+  // 不做成 disabled + tooltip: 一个对某个模型**永远**是灰的控件不是状态提示, 是常驻
+  // 噪声 —— 灰色说的是"现在不行", 而这里是"这个模型没有这回事"。
+  const ratioApplies =
+    videoModel.models.find((m) => m.id === videoModel.value)?.ratio_scope !== "text_only";
 
   // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
   // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。
@@ -914,17 +922,21 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
           </select>
         </>
       )}
-      <Divider />
-      <select
-        value={aspectRatio}
-        onChange={(e) => setAspectRatio(e.target.value as VideoAspectRatio)}
-        disabled={isSubmitting}
-        className={selectClass}
-      >
-        {ratios.map((r) => (
-          <option key={r} value={r}>{r}</option>
-        ))}
-      </select>
+      {ratioApplies && (
+        <>
+          <Divider />
+          <select
+            value={aspectRatio}
+            onChange={(e) => setAspectRatio(e.target.value as VideoAspectRatio)}
+            disabled={isSubmitting}
+            className={selectClass}
+          >
+            {ratios.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </>
+      )}
       <Divider />
       <IconButton
         type="submit"
