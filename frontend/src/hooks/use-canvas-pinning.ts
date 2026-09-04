@@ -66,13 +66,28 @@ const PLACEHOLDER_LINE_HEIGHT_PX = 24;
 // Bump down for narrower wrap; up if English-heavy content wraps too eagerly.
 const MAX_LINE_UNITS = 34;
 
+// 视频链接卡的**基准**尺寸。只有"没有占位框"那条路按它落 (pinVideo: 媒体库插入 / 无
+// placeholder 的 job 结果) —— 那两条手上没有任何分辨率信息。走占位框的那条
+// (replacePlaceholderWithVideo) 现在**铺满框**, 而框 = 视频真实画幅。
 const VIDEO_CARD_WIDTH = 300;
 const VIDEO_CARD_HEIGHT = 96;
 const VIDEO_CARD_STROKE = "#111827";
 const VIDEO_CARD_BG = "#f3f4f6";
+/** "▶ Watch video" 在基准卡上的字号。卡片放大时按比例跟着长, 否则 1280×720 的卡上顶
+ *  一个 20px 字小得几乎看不见 —— 跟 PACK_LABEL_FONT_SIZE 当年为 2048² slot 放大到
+ *  64px 是同一条理由。 */
+const VIDEO_CARD_FONT_SIZE = 20;
 
-// Pre-generation placeholder box sizes. Image results get scaled to fit inside
-// this square; video card gets centered within the reserved area.
+/** 视频卡的字号: 跟卡片等比放大, 下限是基准卡的 20px。在基准 300×96 上 scale === 1,
+ *  即 pinVideo 那条路逐像素不变。 */
+function videoCardFontSize(width: number, height: number): number {
+  const scale = Math.min(width / VIDEO_CARD_WIDTH, height / VIDEO_CARD_HEIGHT);
+  return Math.max(VIDEO_CARD_FONT_SIZE, Math.round(VIDEO_CARD_FONT_SIZE * scale));
+}
+
+// 占位框的**兜底**尺寸 —— 只在既没有 resultSize 也没有 anchor 时用。正常提交时框由
+// imageEditOutputSize / videoOutputSize 算出来 (见 createPlaceholder)。现在唯一还会落
+// 到这里的是 resume 那条路 (use-resume-canvas-jobs 只传 kind + label)。
 const PLACEHOLDER_IMAGE_DIM = 400;
 const PLACEHOLDER_VIDEO_WIDTH = 360;
 const PLACEHOLDER_VIDEO_HEIGHT = 200;
@@ -1303,10 +1318,15 @@ export function useCanvasPinning(
       // rect 上方预留 labelPad (= PACK_LABEL_HEIGHT + GAP) 的 label 余量, 否则出现 "phantom band"。
       const slotIdx = toolArgAsNonNegInt(layout?.slotIndex);
 
-      // Loading-box 尺寸 (image 占位, 非 video): 让虚线框和最终结果一样大 —— 结果按
-      // native 尺寸落在框中心 (见 replacePlaceholderWithImage)。优先级: resultSize
-      // (预期生成图尺寸, 如 image-edit / pack 升到 2K/4K) > anchor 源图 rect
-      // (cutout/angle/split 等保持源尺寸) > 固定方块 (agent 无源图)。
+      // Loading-box 尺寸: 让框和最终结果一样大 —— image 按 native 尺寸落在框中心 (见
+      // replacePlaceholderWithImage), video 卡片直接铺满框 (见
+      // replacePlaceholderWithVideo)。优先级对**所有 kind 一致**: resultSize (预期生成
+      // 尺寸: image 走 imageEditOutputSize, video 走 videoOutputSize) > anchor 源图 rect
+      // (cutout/angle/split 保持源尺寸) > per-kind 兜底方块 (什么都不知道时)。
+      //
+      // video 以前在这里被特判成一个写死的 360×200 横框 —— 720p 16:9 的真值是
+      // 1280×720, 边长小 3.6 倍、面积小 12.8 倍, 而且**恒横屏** (竖图生的 9:16 视频,
+      // 框还是躺着的)。现在跟 image 走同一条优先级。
       // Pack-mode (slot_index 横排) 也必须走 resultSize: slot 之间按 `width` 间隔,
       // 若框定死成 400² 而结果是 2048², 每张结果按 native 尺寸落在 416px 间距的
       // slot 中心 → 7 张全叠在一起 (用户报的"叠加")。框=结果尺寸后, slot 间隔
@@ -1314,18 +1334,15 @@ export function useCanvasPinning(
       const hasPositiveSize = (
         b: { width: number; height: number } | undefined,
       ): b is { width: number; height: number } => !!b && b.width > 0 && b.height > 0;
-      const imageBox =
-        kind === "video"
-          ? null
-          : hasPositiveSize(resultSize)
-            ? resultSize
-            : hasPositiveSize(anchor)
-              ? anchor
-              : null;
+      const resultBox = hasPositiveSize(resultSize)
+        ? resultSize
+        : hasPositiveSize(anchor)
+          ? anchor
+          : null;
       const width =
-        kind === "video" ? PLACEHOLDER_VIDEO_WIDTH : imageBox ? imageBox.width : PLACEHOLDER_IMAGE_DIM;
+        resultBox ? resultBox.width : kind === "video" ? PLACEHOLDER_VIDEO_WIDTH : PLACEHOLDER_IMAGE_DIM;
       const height =
-        kind === "video" ? PLACEHOLDER_VIDEO_HEIGHT : imageBox ? imageBox.height : PLACEHOLDER_IMAGE_DIM;
+        resultBox ? resultBox.height : kind === "video" ? PLACEHOLDER_VIDEO_HEIGHT : PLACEHOLDER_IMAGE_DIM;
 
       let x: number;
       let y: number;
@@ -1597,10 +1614,12 @@ export function useCanvasPinning(
     (placeholder: PinPlaceholder, { videoUrl, dedupKey }: { videoUrl: string; dedupKey: string }) => {
       if (!claimForReplace(placeholder, dedupKey)) return;
 
-      const width = Math.min(VIDEO_CARD_WIDTH, placeholder.width);
-      const height = Math.min(VIDEO_CARD_HEIGHT, placeholder.height);
-      const x = placeholder.x + (placeholder.width - width) / 2;
-      const y = placeholder.y + (placeholder.height - height) / 2;
+      // 卡片**铺满**占位框 —— 框现在是按视频真实画幅预留的 (videoOutputSize), 所以
+      // "你看到预留了多大, 结果就落多大", 跟 replacePlaceholderWithImage 同一条契约。
+      // 以前是 min(300×96, 框) 居中: 框一旦按分辨率放大到 1280×720, 中间就飘一张
+      // 300×96 的小灰条 + 四周一大圈死白 (面积差 32 倍), 比不改还难看。
+      const { x, y, width, height } = placeholder;
+      const fontSize = videoCardFontSize(width, height);
       const groupId = crypto.randomUUID();
 
       const created = convertToExcalidrawElements([
@@ -1622,10 +1641,12 @@ export function useCanvasPinning(
         },
         {
           type: "text",
-          x: x + 20,
-          y: y + height / 2 - 14,
+          // 左内边距 1em、竖直居中偏移 0.7em —— 在基准 20px 上正好还原成老的
+          // (x + 20, y + height/2 - 14), 大卡上跟着字号一起长。
+          x: x + Math.round(fontSize),
+          y: y + height / 2 - Math.round(fontSize * 0.7),
           text: "▶ Watch video",
-          fontSize: 20,
+          fontSize,
           strokeColor: VIDEO_CARD_STROKE,
           groupIds: [groupId],
           link: videoUrl,

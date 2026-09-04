@@ -10,6 +10,7 @@ import {
 import { submitCanvasJob } from "@/hooks/submit-canvas-job";
 // 画质档那几个纯函数搬到了 lib —— 生图面板也要用, 不该从一个视频 hook 里 import。
 import { nearestResolution } from "@/lib/canvas-resolution";
+import { videoOutputSize } from "@/lib/canvas-video-output-size";
 
 export { nearestResolution };
 
@@ -99,6 +100,18 @@ export function useVideoEdit({
         sceneId, excalidrawApiRef, sceneAbortRef, pinning, inFlightRef,
         setError, setSubmitting: setIsSubmitting,
         anchor: selection.bounds,
+        // 占位框按视频**真实会出的画幅**预留, 不是一个写死的横向小框。
+        //
+        // 方向取**源图**, 不取用户在下拉里选的 `aspectRatio` —— 这条路恒为图生视频
+        // (上面 `kind !== "single-image"` 那道硬性拒), 而 sora-2 / wan2.5 / wan2.6 /
+        // wan2.7 / kling-3.0-turbo / MiniMax-H3 的文档都写了: 传了参考图之后
+        // aspect_ratio 失效, 方向由参考图决定。`aspectRatio` 仍然照发给后端 (下面那个
+        // `base`) —— 供应商侧的归一和将来的文生视频通道还要用它, 只是不再拿来算这个框。
+        //
+        // 用 `selection.image` 的元素宽高而不是 `selection.bounds`: bounds 是选区并集,
+        // **包含被一起选中的 text** (那是 prompt 输入), 拿它算方向会被一段长文字拉扁。
+        // 同 use-image-edit 的 imageEditSizeSource。
+        resultSize: videoOutputSize(resolution, selection.image),
         createJob: async () => {
           const api = excalidrawApiRef.current!;
           const base = {

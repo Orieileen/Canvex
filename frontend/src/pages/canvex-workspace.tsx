@@ -51,6 +51,7 @@ import {
 } from "@/lib/canvas-scene-files";
 import { skillSlugFromToolCall, toolArgAsNonNegInt, toolArgAsString } from "@/lib/canvas-skill-events";
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
+import { videoAspectSource, videoOutputSize } from "@/lib/canvas-video-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
 import type {
   CanvasChatMessage,
@@ -985,11 +986,18 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
               // mini 偶发把整数 arg 序列化成字符串。helper 集中所有 LLM tool-
               // call arg → non-neg int 的 coercion 逻辑, hook 内还有一次防御纵深。
               const slotIndex = toolArgAsNonNegInt(event.args?.slot_index);
-              // Reserve a box the size of the image the agent will generate
-              // (tier-sized, like the toolbar path). No source image here, so an
-              // "auto"/omitted size falls back to 1:1 at the tier. Pack-mode rows
-              // also consume this (createPlaceholder sizes the box to the result so
-              // pack slots don't overlap); video → undefined.
+              // Reserve a box the size of the asset the agent will generate
+              // (tier-sized, like the toolbar path). Pack-mode rows also consume this
+              // (createPlaceholder sizes the box to the result so pack slots don't
+              // overlap)。
+              //   image: 这条路没有源图, "auto"/省略的 size 落到该档的 1:1。
+              //   video: 方向只能取 args.aspect_ratio —— 这条路手上没有源图元素
+              //     (reference_image_urls 只是 URL, 前端**同步**拿不到宽高, 而
+              //     createPlaceholder 是同步的)。带参考图时供应商实际按参考图定向,
+              //     所以这是个**猜**; 猜错也只是加载框的形状, 而工具栏那条主路径有真
+              //     源图, 不受影响。
+              // 两个 arg 都过 toolArgAsString: LLM 产出的东西不可信, 跟 slot_index /
+              // label 走同一套归一。
               const resultSize =
                 kind === "image"
                   ? imageEditOutputSize(
@@ -997,7 +1005,12 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
                       toolArgAsString(event.args?.resolution),
                       { width: 1, height: 1 },
                     )
-                  : undefined;
+                  : kind === "video"
+                    ? videoOutputSize(
+                        toolArgAsString(event.args?.resolution),
+                        videoAspectSource(toolArgAsString(event.args?.aspect_ratio)),
+                      )
+                    : undefined;
               for (let i = 0; i < count; i++) {
                 const ph = createPlaceholder(
                   kind,
