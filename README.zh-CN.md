@@ -98,8 +98,8 @@ docker compose up -d --build
 
 1. **聊天（LLM agent）模型** —— Canvex 预设了 LLM agent 的第三方供应商 **[兔子 tu-zi](https://api.tu-zi.com/)**：在 tu-zi 注册后拿到 API key，填进 Canvex 的通道配置即可用。必须是支持 OpenAI 风格 **tool calling** 的 key —— 不支持的填进来，聊天框会回一段文字然后画布上什么都不发生。
 2. **图片生成 · 自定义模板** —— Canvex 预设了生成图片的第三方供应商 **[API Mart](https://apimart.ai/)**：在 apimart 注册后拿到 API key，填进配置即可用。编辑图片、拆分图片、以及 LLM agent 调用的生图 tool，都用这一把 key。
-3. *（可选）* **视角重渲染** —— 先去 **[fal.ai](https://fal.ai/)** 注册拿到 API key，用于「换视角」（改变机位）功能。
-4. *（可选）* **视频生成 · 自定义模板** —— Canvex 预设了生成视频的第三方供应商 **[API Mart](https://apimart.ai/)**：同样是注册拿到 API key 填进配置即可用。
+3. **视角重渲染** —— 先去 **[fal.ai](https://fal.ai/)** 注册拿到 API key，用于「换视角」（改变机位）功能。
+4. **视频生成 · 自定义模板** —— Canvex 预设了生成视频的第三方供应商 **[API Mart](https://apimart.ai/)**：同样是注册拿到 API key 填进配置即可用。
 
 （老版本建的通道上你可能还会看到两种只读类型 —— 纯**图片生成**和**视频生成**。它们照常能跑，只是不能再新建了。）
 
