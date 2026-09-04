@@ -1,8 +1,11 @@
 """Shared helpers for canvas LLM tools (Canvex 独立版).
 
-Mostly pure functions. `absolute_media_url` reads `settings.PUBLIC_MEDIA_BASE`,
-`job_lifecycle` writes job rows, and `enqueue_on_commit` schedules a Celery
-task to fire when the surrounding tx commits. Import-safe at module top.
+Mostly pure functions. `absolute_media_url` reads `settings.PUBLIC_MEDIA_BASE`
+(a **browser-facing** base — see its docstring), `source_for_channel` turns a canvas
+image into whatever shape the target channel actually accepts (inline base64, or an
+upload to the provider), `job_lifecycle` writes job rows, and `enqueue_on_commit`
+schedules a Celery task to fire when the surrounding tx commits. Import-safe at
+module top.
 
 从 meired apps/canvas/services/agent/tools/common.py port:
 - 纯工具原样保留(import 路径改写)。
@@ -177,8 +180,8 @@ def _public_media_base() -> str:
 
     settings.py 已定义 PUBLIC_MEDIA_BASE(dev 默认 localhost:28000);这里仍 getattr
     软读 + getenv 兜底 + blank 时 raise,是为了防止它被改没时早炸(而非 AttributeError
-    把整个 import/请求打崩)。生产必须配成 ngrok / CDN / 真实公网 host(见
-    absolute_media_url docstring)。
+    把整个 import/请求打崩)。**只在从别的机器/域名访问这个应用时才需要改** —— 它拼的是
+    给浏览器的地址,不是给供应商的(见 absolute_media_url docstring)。
     """
     base = getattr(settings, "PUBLIC_MEDIA_BASE", None)
     if not base:
@@ -285,9 +288,19 @@ def persist_canvas_image_results(
 def absolute_media_url(media_url: str) -> str:
     """Relative `/media/.../x.png` → absolute `https://host/media/.../x.png`.
 
-    第三方 API (图片 / 视频生成) 需要公网可达的 URL, 浏览器拉 `result_url` 下载图
-    blob 同样需要 —— 两者都走 `settings.PUBLIC_MEDIA_BASE`. dev 默认 localhost:8000
-    (外部 API 拿不到, 测试时 mock); 生产必须设成 ngrok / CDN / 真实公网 host.
+    **它拼出来的地址是给浏览器的, 不是给供应商的。** 两个真实用途:
+    - 「发到聊天」的附件 —— 前端直接拿它当 `<img src>` 渲染、并 fetch 成 blob 落到画布;
+    - 建 job 时把相对 `/media/...` 归一成一个能存进 job 行的绝对地址。
+
+    **供应商永远不会来拉这个地址。** 源图在**提交那一刻**才变成"这家收得下的形状" ——
+    读盘内联成 data URI, 或者由 `upload_path` 决定主动推给供应商换一个它自己托管的地址
+    (见 `source_for_channel`)。所以自托管开箱即用, **不需要 ngrok / CDN / 公网 host**。
+    (这段注释以前写着相反的话。那是 `source_to_inline_uri` 引入之前的事实, 留到现在会
+    让人去搭一套完全用不上的隧道。)
+
+    仍然需要"公网可达"的只有一种: **用户/agent 自己贴进来的外部 URL** —— 那种我们原样
+    透传, 由 `is_public_http_url` 做 SSRF 过滤、`assert_source_url_reachable` 预检。
+
     如果 media_url 已经是绝对 URL (例如 MEDIA_URL 指到 S3), 原样返.
     """
     if media_url.startswith(("http://", "https://")):

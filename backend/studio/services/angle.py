@@ -8,8 +8,9 @@
 
 两层职责:
 - `create_angle_job(...)` — POST /scenes/<id>/angle/ 走这里, 把相对 /media URL
-  过一遍 absolute_media_url + is_public_http_url (外部 provider 要能 GET 到,
-  同时挡掉私网 IP), 落 QUEUED 行.
+  过一遍 absolute_media_url + is_public_http_url (后者是 SSRF 过滤, 挡掉指向私网的
+  **外部** URL; 我们自己的 media 不需要供应商能 GET 到 —— 提交时 `_job_source_uri`
+  会把它读盘内联), 落 QUEUED 行.
 - `run_angle_job(job)` — Celery worker 跑的 executor, 和 image.py/video.py 模式
   一致: job_lifecycle 管 status 翻转 + error 持久化, IO 在 `_job_source_uri` +
   `submit_angle` + `_download_result_images`.
@@ -92,7 +93,8 @@ def create_angle_job(*, scene, validated, image_file=None) -> AngleJob:
         relative = save_canvas_source_image(image_file)
         # default_storage.url() prepends MEDIA_URL (`/media/...`); without it
         # absolute_media_url's urljoin lands on PUBLIC_MEDIA_BASE without the
-        # prefix nginx serves storage from, and provider GET 404s.
+        # prefix nginx serves storage from —— 而那个前缀正是 `our_media_relpath`
+        # 认出"这是我们自己的图、该读盘内联"的依据, 少了它会被当成外部 URL 原样发出去。
         absolute = absolute_media_url(default_storage.url(relative))
     else:
         absolute = absolute_media_url(validated["image_url"].strip())

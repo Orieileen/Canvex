@@ -143,12 +143,13 @@ CELERY_TASK_ROUTES = {
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(20 * 1024 * 1024)))
 FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", str(20 * 1024 * 1024)))
 
-# 媒体公网基址. canvas 图像/视频生成走第三方 API, source_image URL 必须公网可达;
-# 生成产物回写也用它拼绝对 URL。dev 默认 localhost。studio.services.agent.tools.common
-# 软读 settings.PUBLIC_MEDIA_BASE (回落 os.getenv)。
+# 媒体基址 —— **给浏览器的**, 不是给供应商的。用在「发到聊天」的附件 URL, 以及把相对
+# /media/... 归一成能存进 job 行的绝对地址。供应商不会来拉它: 源图在提交那一刻由
+# services.agent.tools.common.source_for_channel 内联成 base64 或推给供应商。
+# 详见那个模块里 absolute_media_url 的 docstring。dev 默认 localhost。
 PUBLIC_MEDIA_BASE = os.getenv("PUBLIC_MEDIA_BASE", "http://localhost:28000")
-# 容器内互调基址 (worker → backend 拉源图时绕公网)。
-INTERNAL_MEDIA_BASE = os.getenv("INTERNAL_MEDIA_BASE", "http://backend:8000")
+# (这里原来还有一个 INTERNAL_MEDIA_BASE, 用途是"worker → backend 拉源图时绕公网"。
+#  那条流程随内联/上传一起没了, 而它定义之后全仓再无第二处引用 —— 已删。)
 
 # ── Canvas (LLM Agent + 媒体生成) ─────────────────────────────────────────────
 # 长任务走独立 queue canvas / canvas_cpu (见 CELERY_TASK_ROUTES + docker-compose

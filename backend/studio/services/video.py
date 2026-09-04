@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 def create_video_job(*, scene, validated, image_file=None):
     """Validated payload (+ optional uploaded file) → QUEUED VideoJob + reserve credit.
 
-    image_urls 可能是相对 `/media/...`. provider 需公网 URL → `absolute_media_url`
-    + `is_public_http_url` SSRF 过滤, 跟 agent tool `enqueue_video_generation` 对称.
+    image_urls 可能是相对 `/media/...`, 这里统一成绝对地址存进行里。**这个地址不是给
+    供应商的** —— 源图在提交那一刻由 `source_for_channel` 变成这条通道收得下的形状
+    (内联 / 上传), 见 run_video_job。`is_public_http_url` 在这儿的职责是 SSRF 过滤:
+    挡掉指向私网的**外部** URL, 我们自己的 media 由 `our_media_relpath` 那半边放行。
+    跟 agent tool `enqueue_video_generation` 对称.
 
     Reserve 在 Canvex 是 no-op(免费);保留调用对齐 meired 契约。
     """
