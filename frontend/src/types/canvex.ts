@@ -358,17 +358,10 @@ export interface CanvasImageModelChoice {
    *  各家从 360p 排到 4k,还有 MiniMax 的 `2K`、可灵的 std/pro(后端把它显示成
    *  720P/1080P,发出去才换回 std/pro,前端不用知道这件事)。 */
   allowed_resolutions: string[];
-  /** 这个模型在**图生视频**时还收不收比例。`""` = 收;`"text_only"` = 不收。
-   *
-   *  画布的视频标签恒为图生(必须先选中一张图),所以 `"text_only"` 在那条路上等于
-   *  「这个旋钮不存在」—— 工具栏就不显示比例下拉,跟画质下拉同一条规矩。摆一个对这个
-   *  模型永远不起作用的控件是在骗人。后端那边发不发由它自己判,不依赖前端配合。 */
-  ratio_scope: string;
-  /** 比例发到哪个键(`aspect_ratio` / `size`)。前端只关心**空**这一种情况 ——
-   *  空 = 这个模型压根没有比例参数(MiniMax-Hailuo 三个、wan2.6-i2v-flash 的文档整页
-   *  没有这个入参),那就别显示那个下拉。跟 `ratio_scope` 是两回事:那个说「图生时不
-   *  发」,这个说「没这个入参」。具体填哪个键是后端渲染模板时的事。 */
-  ratio_param: string;
+  /** 工具栏该不该显示比例下拉。后端算好的**一个事实** —— 两种情况都是「别显示」,
+   *  但原因不同:这个模型在图生视频时不收比例(而画布的视频标签恒为图生),或者它
+   *  压根没有比例这个入参。具体是哪种、以及键名叫什么,前端不用管。 */
+  ratio_applies: boolean;
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

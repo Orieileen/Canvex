@@ -22,17 +22,18 @@ import socket
 import uuid
 from contextlib import contextmanager
 from typing import Iterable, Iterator, Sequence
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, unquote_to_bytes, urljoin, urlparse
 
 import requests
 from django.conf import settings
-from django.core.files.base import ContentFile
 from django.core.cache import cache
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
 from PIL import Image
 
 from studio.models import DataAsset, DataFolder
+from studio.services.http_retry import make_retry_session
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +329,39 @@ def _read_source_bytes(ref) -> bytes:
         return fh.read()
 
 
+def _source_bytes(ref) -> bytes | None:
+    """能读到字节就返字节; 读不到 (外部公网 URL) 返 None —— 那种原样交给供应商就行。
+
+    **"一个 ref 是什么"只在这里判一次。** `source_to_inline_uri` (内联那条路) 和
+    `upload_source_to_provider` (上传那条路) 都从这儿拿字节, 所以同一张图在两条路上
+    必然被认成同一种东西。分成两份判的话, "配没配 upload_path"会变成一个悄悄改变**失败
+    方式**的开关 —— 同一个源, 一条路上是 warning + 透传, 另一条是 job FAILED。
+    """
+    if not isinstance(ref, str):
+        return _read_source_bytes(ref)  # FieldFile
+    if ref.startswith("data:"):
+        # `;base64,` 不是 data URI 的必选项 —— `data:image/svg+xml,<svg …>` 是合法的,
+        # 而对它 b64decode 拿到的是垃圾字节或者一个 binascii.Error。逗号也可能没有。
+        head, sep, payload = ref.partition(",")
+        if not sep:
+            raise ValueError(f"data URI 里没有逗号, 取不到内容: {ref[:64]}")
+        return base64.b64decode(payload) if ";base64" in head else unquote_to_bytes(payload)
+    is_url = ref.startswith(("http://", "https://"))
+    rel = our_media_relpath(ref)
+    if rel is not None:
+        try:
+            return _read_source_bytes(rel)
+        except (FileNotFoundError, OSError) as exc:
+            if is_url:
+                # 同 source_to_inline_uri: 绝对 URL 读盘落空 → 交给供应商自己试一次。
+                logger.warning("source bytes: storage read failed for %r (%s); passthrough", rel, exc)
+                return None
+            raise  # 根相对 /media 路径而文件不在 → fail loud
+    if is_url:
+        return None  # 外部公网图, 供应商自己抓得到
+    return _read_source_bytes(ref)  # 裸 storage 路径
+
+
 def source_to_inline_uri(ref) -> str:
     """Any canvas image source → `data:image/...;base64,...` whenever we can read
     it from our own storage, so providers never need a public URL / tunnel.
@@ -340,49 +374,25 @@ def source_to_inline_uri(ref) -> str:
       provider fetches it directly (caller still asserts reachability)
 
     只对能从本地 storage 读到字节的源内联;读不到(远程 CDN / 外部 URL)原样返,
-    交给 provider 自己 fetch —— 自托管开箱即用,无需 ngrok / PUBLIC_MEDIA_BASE。"""
+    交给 provider 自己 fetch —— 自托管开箱即用,无需 ngrok / PUBLIC_MEDIA_BASE。
+
+    上面那张分类表**不在这里实现** —— 它在 `_source_bytes` 里, 上传那条路也读同一份。
+    """
     from studio.services.image_client import bytes_to_data_uri  # noqa: PLC0415 — avoid import cycle
 
-    if not isinstance(ref, str):
-        return bytes_to_data_uri(_read_source_bytes(ref))  # FieldFile
-    if ref.startswith("data:"):
+    # 已经是 data URI: 直接返回, 别解码再编码一遍。
+    if isinstance(ref, str) and ref.startswith("data:"):
         return ref
-
-    is_url = ref.startswith(("http://", "https://"))
-    # our-media path handles both absolute (http://host/media/x) and root-relative
-    # (/media/x) refs → storage key; bare storage paths (no /media/ prefix) read as-is.
-    rel = our_media_relpath(ref)
-    if rel is not None:
-        try:
-            return bytes_to_data_uri(_read_source_bytes(rel))
-        except (FileNotFoundError, OSError) as exc:
-            if is_url:
-                # Storage miss on an absolute URL → passthrough; a public URL may
-                # still be fetchable by the provider.
-                logger.warning("source_to_inline_uri: storage read failed for %r (%s); passthrough", rel, exc)
-                return ref
-            raise  # root-relative /media path with no file → fail loud
-    if is_url:
-        return ref  # external public URL → passthrough
-    return bytes_to_data_uri(_read_source_bytes(ref))  # bare storage-relative path
+    data = _source_bytes(ref)
+    return bytes_to_data_uri(data) if data is not None else ref
 
 
 # 上传的图在供应商那边存 72 小时 (apimart 文档)。缓存留足余量, 免得刚过期就拿去用。
 _UPLOAD_CACHE_SECONDS = 12 * 3600
 
-
-def _source_bytes(ref) -> bytes | None:
-    """能读到字节就返字节; 读不到 (外部公网 URL) 返 None —— 那种原样交给供应商就行。"""
-    if not isinstance(ref, str):
-        return _read_source_bytes(ref)  # FieldFile
-    if ref.startswith("data:"):
-        return base64.b64decode(ref.split(",", 1)[1])
-    rel = our_media_relpath(ref)
-    if rel is not None:
-        return _read_source_bytes(rel)
-    if ref.startswith(("http://", "https://")):
-        return None  # 外部公网图, 供应商自己抓得到
-    return _read_source_bytes(ref)  # 裸 storage 路径
+# 上传走跟生成同一套重试 (5xx/429/连接抖动都值得再试一次) —— 一次瞬时故障不该把一条
+# 已经排到队、马上要花几分钟的视频任务整条打掉。同 agent/tools/video.py 的 `_session`。
+_upload_session = make_retry_session()
 
 
 def upload_source_to_provider(
@@ -402,7 +412,6 @@ def upload_source_to_provider(
     同一张图重复生成很常见 (改一版提示词再跑), 所以按内容哈希缓存一段时间 —— 供应商
     那边的地址有有效期, 缓存时长取得比它短得多。缓存不可用时只是多传一次, 不影响正确性。
     """
-    from studio.services.image_client import bytes_to_data_uri  # noqa: PLC0415,F401 — 保持与 source_to_inline_uri 同一处依赖
     from studio.services.request_template import extract  # noqa: PLC0415 — 避免 import 环
 
     data = _source_bytes(ref)
@@ -417,7 +426,7 @@ def upload_source_to_provider(
         return cached
 
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-    resp = requests.post(
+    resp = _upload_session.post(
         url,
         headers={"Authorization": f"Bearer {api_key}"},
         files={"file": ("source.png", data, "image/png")},

@@ -91,13 +91,19 @@ def run_video_job(job: VideoJob) -> None:
         # 写着 "inlined from storage at submit, no public URL needed")。这个前提对**每条
         # 通道**都必须成立; 之前只有内置分支兑现, 模板分支把 localhost 地址原样发给了
         # 供应商, 表现是供应商回一句"抓不到你的图", 看起来像通道配错了。
-        image_urls = [source_for_channel(channel, u) for u in (job.image_urls or [])]
+        originals = list(job.image_urls or [])
+        image_urls = [source_for_channel(channel, u) for u in originals]
         # data URI 自包含, 无需可达性检查; 只对 http(s) 远程源做 fail-loud 预检。
         # 放在 channel_health.watch **之外**: 源图读不到 / 源站 404 是我们这端或源站的
         # 问题, 不该在通道卡片上给供应商记一个红点 (同 image.py)。
-        for url in image_urls:
-            if url.startswith(("http://", "https://")):
-                assert_source_url_reachable(url)
+        #
+        # **只查我们原样透传的那些** (`shaped == original`)。上传那条路换回来的是
+        # **供应商刚刚自己签发**的地址 —— 它可不可达不是我们能配错的东西, 而这个预检
+        # 的报错原文写的是 "check PUBLIC_MEDIA_BASE=…", 跟那个地址毫无关系。多查一次
+        # 的代价也是真的: 每张图一次 5 秒预算的 HEAD, 而不少 CDN 对 HEAD 直接回 403/405。
+        for original, shaped in zip(originals, image_urls):
+            if shaped == original and shaped.startswith(("http://", "https://")):
+                assert_source_url_reachable(shaped)
 
         # 视频通道没有「测试」按钮 (出片要几分钟, 撑不过一次同步请求 —— 见 KIND_SPECS 的
         # untestable_reason), 所以**真实生成是它唯一的健康信号**。两个分支都在 watch 里,

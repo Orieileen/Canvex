@@ -138,6 +138,21 @@ class ApimartVideoPresetTests(SimpleTestCase):
         self.assertIn("resolution", names)
         self.assertIn("mode", names)
 
+    def test_every_video_starter_carries_both_ratio_keys(self):
+        """比例那两个键同理, 而且这条**更容易踩**: `ratio_param` 是 custom_video 通道
+        界面上的一个下拉, 用户随手把它设成 `size` —— 模板里没有 `{{size}}` 的话, 比例键
+        会一个都不发 (aspect_ratio 被置空、size 渲染不出来), 比不设还糟。
+
+        所以这条钉的是**每一个视频起点**, 不只 apimart 那个。"""
+        from studio.services.image_channels import KIND_SPECS
+        from studio.models import ImageProvider
+
+        for label, template in KIND_SPECS[ImageProvider.Kind.CUSTOM_VIDEO].starters:
+            with self.subTest(starter=label):
+                names = placeholders(template)
+                self.assertIn("aspect_ratio", names)
+                self.assertIn("size", names)
+
 
 class ApimartImagePresetTests(SimpleTestCase):
     """生图那半: 比例是拿去**筛**画布那十档的, 所以每一项都必须是画布真的有的那十个之一
@@ -437,9 +452,11 @@ class ApimartVideoRatioTests(SimpleTestCase):
                 )
                 self.assertEqual(variables["aspect_ratio"], "")
                 self.assertEqual(variables["size"], "")
-                # 渲染之后那个键必须真的不在 body 里 —— 只把值置空是不够的。
+                # 渲染之后那**两个**键都必须真的不在 body 里 —— 只把值置空是不够的,
+                # 而漏查 size 会放过 wan2.5-preview (它的比例参数正是叫 size)。
                 body = render(self.preset.request_template["body"], variables)
                 self.assertNotIn("aspect_ratio", body)
+                self.assertNotIn("size", body)
 
     def test_t2v_only_models_keep_the_ratio_without_an_image(self):
         """没有参考图时照发 —— 通道配置向导的试跑走的正是这条 (image_urls=[])。"""
@@ -534,18 +551,18 @@ class ApimartVideoRatioTests(SimpleTestCase):
     def test_no_ratio_table_only_names_real_models(self):
         self.assertLessEqual(set(_APIMART_VIDEO_NO_RATIO), set(self.preset.models))
 
-    def test_the_three_ratio_tables_do_not_overlap_by_accident(self):
-        """三张表各管一件事, 交集必须是有意的。今天只有 wan2.5-preview 同时在
-        size + t2v_only 两张里 (「有图不发、没图发到 size」)。"""
-        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_SIZE_MODELS, set())
-        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_T2V_ONLY, set())
-
     def test_size_table_only_names_real_models(self):
         self.assertLessEqual(set(_APIMART_VIDEO_SIZE_MODELS), set(self.preset.models))
 
-    def test_the_two_ratio_tables_do_not_disagree(self):
-        """一个模型同时进两张表是允许的 (wan2.5-preview 就是), 但那意味着"有图不发、
-        没图发到 size" —— 写的时候得是有意的。这条只钉住交集不会悄悄长大。"""
+    def test_the_three_ratio_tables_do_not_overlap_by_accident(self):
+        """三张表各管一件事, 交集必须是**有意的**。
+
+        no_ratio ("整页没这个入参") 跟另外两张互斥 —— 一个模型不可能既没有比例参数,
+        又要求把它发到 size / 又只在文生时收。而 size × t2v_only 的交集是有意义的:
+        「没图时发到 size, 有图时一个键都不发」, 今天只有 wan2.5-preview。这条钉住
+        那个交集不会悄悄长大。"""
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_SIZE_MODELS, set())
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_T2V_ONLY, set())
         self.assertEqual(
             _APIMART_VIDEO_SIZE_MODELS & _APIMART_VIDEO_T2V_ONLY, {"wan2.5-preview"},
         )

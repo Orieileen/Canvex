@@ -389,7 +389,14 @@ def video_variables(
     比例同样过一遍 `allowed_ratios` —— 视频模型的可用比例往往比生图还窄 (常见只有
     16:9 / 9:16 / 1:1)。
 
-    `size` / `aspect_ratio` 的分工同 `image_variables`: 前者是要发的值, 后者永远是比例。
+    **`size` / `aspect_ratio` 的分工跟 `image_variables` 不一样, 别照抄那边的直觉。**
+    生图那边两个占位符是"同一个值的两种形式", 每次都填满 (`aspect_ratio` = 比例、
+    `size` = 要发的值), 模板写哪个都行。视频这边它们是**同一个键的两个名字** ——
+    这家一半模型叫 `aspect_ratio`, 另一半叫 `size` —— 所以由 `channel.ratio_param`
+    选中一个填 "要发的值", 另一个渲染成空 → 那个键整个消失。跟画质档那两个同一套。
+
+    对既有模板的影响: 通道没配 `ratio_param` 时默认 `aspect_ratio`, 于是 `{{size}}`
+    渲染成空。模板里靠 `{{size}}` 拿比例的通道要把 `ratio_param` 改成 `size`。
 
     **画质档两个占位符只填一个**: 同一件事在 apimart 有两个键名 (37 个模型叫
     `resolution`, 可灵那 4 个叫 `mode`), 而模板是每条通道一份、模型有 41 个。所以两个都

@@ -658,29 +658,27 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_allowed_resolutions(self, obj) -> list[str]:
         return parse_resolutions(self._channel(obj).allowed_resolutions)
 
-    # 这个模型在**图生视频**时还收不收比例 ("" = 收, "text_only" = 不收)。画布的视频
-    # 标签恒为图生 (use-video-edit 那两道硬拒), 所以 "text_only" 在那条路上等于"这个
-    # 旋钮不存在" —— 工具栏据此不显示比例下拉, 跟画质下拉同一条规矩 (摆一个用不上的
-    # 控件是在骗人)。后端那边该不该发由 ratio_scope 自己决定, 不依赖前端配合。
-    ratio_scope = serializers.SerializerMethodField()
+    # 工具栏该不该显示比例下拉。**一个派生事实, 不是两个路由字段** —— 隔壁
+    # `resolution_param` 就从来没下发过, 画质下拉的显隐是靠 `allowed_resolutions` 是否
+    # 为空。比例这边借不到那个信号 (allowed_ratios 为空的含义是"三档都收"而不是"没有
+    # 这个旋钮"), 所以单给一个布尔, 而不是把 "text_only" / "" 这两个字面量和它们的组合
+    # 规则搬到前端去。
+    #
+    # 两种情况都是"别显示", 但原因不同: ratio_scope=text_only 是"有参考图时不发"(而画布
+    # 的视频标签恒为图生), ratio_param="" 是"这个模型压根没有比例这个入参"。
+    # 原始的那两个字段仍然在通道配置表单里露着 (走 tunable_schema), 那是另一个消费者。
+    ratio_applies = serializers.SerializerMethodField()
 
-    def get_ratio_scope(self, obj) -> str:
-        return self._channel(obj).ratio_scope
-
-    # 比例发到哪个键。前端只关心一件事: **空 = 这个模型没有比例参数**, 那就别显示那个
-    # 下拉 (跟 ratio_scope 是两回事: 那个说"图生时不发", 这个说"压根没这个入参")。
-    # 具体是 aspect_ratio 还是 size 前端不用管, 后端渲染模板时才用得上。
-    ratio_param = serializers.SerializerMethodField()
-
-    def get_ratio_param(self, obj) -> str:
-        return self._channel(obj).ratio_param
+    def get_ratio_applies(self, obj) -> bool:
+        channel = self._channel(obj)
+        return channel.ratio_scope != "text_only" and channel.ratio_param != ""
 
     class Meta:
         model = ImageModel
         fields = (
             "id", "label", "provider_label", "picker", "sort_order",
             "allowed_ratios", "allowed_durations", "allowed_resolutions",
-            "ratio_scope", "ratio_param",
+            "ratio_applies",
         )
 
 

@@ -55,7 +55,11 @@ def _forward(apps, schema_editor):
 def _backward(apps, schema_editor):
     ImageProvider = apps.get_model("studio", "ImageProvider")
     ImageModel = apps.get_model("studio", "ImageModel")
+    # 名单和取值都要对上才动 —— 反向迁移只该撤掉**这条迁移写进去的**那些, 不该顺手抹掉
+    # 用户自己在别的模型上手配的 ratio_param (同 0025 的 _backward)。
     for m in ImageModel.objects.filter(provider__kind="custom_video"):
+        if m.model not in _SIZE_MODELS:
+            continue
         overrides = dict(m.overrides or {})
         if overrides.pop("ratio_param", None) == "size":
             m.overrides = overrides
