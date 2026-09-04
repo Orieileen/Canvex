@@ -19,7 +19,7 @@ import { ImageModelSelector } from "./ImageModelSelector";
  *   表单 —— 外层点击穿到画布, 只有表单本体拦事件
  *
  * Textarea 固定单行高, resize-none;Enter 发送, Shift+Enter 换行。
- * 流式中 disabled —— 简化版不支持中途打断 (canvex 有 stopMessage, meired 先不加,
+ * 流式中 disabled —— 简化版不支持中途打断 (canvex 有 stopMessage, 上游先不加,
  * AbortController 整条链路都要 plumb)。
  *
  * Skill 选择: 当 `skills` 非空时, textarea 左侧渲染 SkillSelector — 用户

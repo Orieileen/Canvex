@@ -16,7 +16,7 @@ Branches on `job.is_cutout`:
     * Stage 2: `_cutout_and_persist` 读 intermediate_image, rembg 把白转 alpha
       (worker_canvas_cpu, prefork — CPU-bound onnx 推理)
 
-解耦自 meired apps/canvas/services/agent/tools/image.py:
+解耦自上游 apps/canvas/services/agent/tools/image.py:
 - 计费 import 路径改 studio.services.billing(stub no-op,调用全保留)。
 - 模型无 organization / user → enqueue 时不再 set,签名去掉 org_id / user_id。
 - 跨租户 scope 防护(enqueue_scope_or_friendly_message)不 port:单工作区无跨
@@ -623,7 +623,7 @@ def enqueue_image_generation(
         reserve_error = reserve_or_friendly_message(job, action_label="image generation")
         if reserve_error:
             # Canvex billing 是 no-op stub:reserve_error 恒为 None,本分支不触发。
-            # 保留与 meired 一致的调用形状(将来接计费时 helper 会 set_rollback 回滚 atomic)。
+            # 保留与上游一致的调用形状(将来接计费时 helper 会 set_rollback 回滚 atomic)。
             return reserve_error
     job_id = enqueue_on_commit(job, canvas_image_edit_job_task)
     logger.info(

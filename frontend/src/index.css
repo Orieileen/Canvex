@@ -245,14 +245,14 @@
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Excalidraw 原生 UI 处理(从 meired port)。Canvex 自带 sidebar / library /
+   Excalidraw 原生 UI 处理(从上游 port)。Canvex 自带 sidebar / library /
    chat / back-to-latest / minimap / ImageEditBar,所以把原生 chrome 藏掉 +
    套 ember/frost 主题。全局 `.excalidraw.excalidraw` scope(ported workspace
    没有 .canvex-host wrapper);旧的 canvex-shadcn.css / canvex-media-sidebar.css
    已删(scope 在没挂载的 .canvex-host,且不再 import)。
    ──────────────────────────────────────────────────────────────────── */
 
-/* Excalidraw 主题适配: 把默认薰衣草紫调成 meired 红 + 米色, 让画布工具栏
+/* Excalidraw 主题适配: 把默认薰衣草紫调成本项目的暖红 + 米色, 让画布工具栏
  * 与右键浮窗跟整体米底视觉一致. 只覆盖对外的 CSS 变量, 不动元素选择器,
  * Excalidraw 升级时不易破坏.
  *
@@ -311,7 +311,7 @@
   backdrop-filter: blur(24px);
 }
 
-/* Excalidraw 原生 UI 层级修正: layer-ui z-index:4 暴露在父 context 里被 meired
+/* Excalidraw 原生 UI 层级修正: layer-ui z-index:4 暴露在父 context 里被本应用自己的
  * 浮层覆盖。抬到 45: 高于 z-40 内容浮层 (属性面板回到 ImageEditBar 之上),
  * 但仍低于 z-50 角标工具按钮 (minimap / back / chat 保持可点)。 */
 .excalidraw.excalidraw .layer-ui__wrapper {

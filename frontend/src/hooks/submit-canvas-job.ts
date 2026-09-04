@@ -23,7 +23,7 @@ import {
  * Pure async — NOT a hook. Called from inside a hook's `submit` useCallback,
  * which is also where the config (refs, setters, sceneId) is closed over.
  *
- * Canvex: 免费无钱包, 不接 billing —— meired 的 dispatch(loadBilling()) 收尾
+ * Canvex: 免费无钱包, 不接 billing ——上游的 dispatch(loadBilling()) 收尾
  * 已删 (创建失败 / settled 后都无需校准余额)。
  */
 

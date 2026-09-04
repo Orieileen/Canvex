@@ -1,6 +1,6 @@
 """Image-edit job creation service. Single entry point so the view stays thin.
 
-从 meired apps/canvas/services/image.py port (Canvex 独立版):
+从上游 apps/canvas/services/image.py port (Canvex 独立版):
 - 剥 organization / user(单工作区)→ create 不再 set 这两字段,签名去掉它们,
   save_canvas_source_image 不再传 user。
 - billing.reserve 调用保留(stub 空操作),只改 import 路径到 studio.services.billing。
@@ -137,7 +137,7 @@ def create_split_jobs(
         ImageEditJob.objects.filter(pk=background.pk).update(split_partner=cutout)
         background.split_partner = cutout
 
-        # Reserve 是 no-op(免费),顺序无所谓;保留调用对齐 meired 契约。
+        # Reserve 是 no-op(免费),顺序无所谓;保留调用对齐上游契约。
         reserve_canvas_credit(background)
         reserve_canvas_credit(cutout)
 

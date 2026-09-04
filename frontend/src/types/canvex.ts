@@ -1,8 +1,8 @@
 /**
  * Canvas 后端返回的核心数据类型。与 Django model 字段对齐。
  *
- * Ported from meired src/types/api.ts (Canvas section). Canvex 后端 serve 在
- * /api/v1/canvas/...，字段形状与 meired 一致。
+ * Ported from the upstream app's src/types/api.ts (Canvas section)。Canvex 后端 serve 在
+ * /api/v1/canvas/...，字段形状与上游一致。
  */
 
 // ─── Canvas ─────────────────────────────────────────────────────────────────

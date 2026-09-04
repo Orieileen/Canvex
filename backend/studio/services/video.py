@@ -1,6 +1,6 @@
 """Video-job creation service.
 
-从 meired apps/canvas/services/video.py port (Canvex 独立版):
+从上游 apps/canvas/services/video.py port (Canvex 独立版):
 - 剥 organization / user(单工作区)→ create 不再 set,签名去掉,save_canvas_source_image
   不再传 user。
 - billing.reserve 调用保留(stub 空操作),只改 import 路径到 .billing(studio.services.billing)。
@@ -28,7 +28,7 @@ def create_video_job(*, scene, validated, image_file=None):
     挡掉指向私网的**外部** URL, 我们自己的 media 由 `our_media_relpath` 那半边放行。
     跟 agent tool `enqueue_video_generation` 对称.
 
-    Reserve 在 Canvex 是 no-op(免费);保留调用对齐 meired 契约。
+    Reserve 在 Canvex 是 no-op(免费);保留调用对齐上游契约。
     """
     prompt = validated["prompt"].strip()
     raw_urls = [u for u in validated["image_urls"] if u.strip()]

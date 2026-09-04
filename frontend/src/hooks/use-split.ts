@@ -29,7 +29,7 @@ import type { CanvasImageEditJob } from "@/types/canvex";
  * 固定 pin 顺序 (z-order 靠后 append 拿顶层) + 双成功才 pin 的 atomic 约束,
  * 嵌进去会污染共享路径。
  *
- * Canvex: 免费无钱包 —— meired 的 dispatch(loadBilling()) 收尾已删。
+ * Canvex: 免费无钱包 ——上游的 dispatch(loadBilling()) 收尾已删。
  */
 
 export interface SubmitSplitParams {

@@ -54,7 +54,7 @@ def _load_or_skip(
     两种都静默返回 SUCCESS (不触发 Celery 重试).
 
     Billing wrapping: runner 抛异常时 rollback, 正常返回时 commit. Canvex 的
-    billing 是 no-op stub → 这些调用自动空操作, 保留是为了跟 meired 代码结构一致、
+    billing 是 no-op stub → 这些调用自动空操作, 保留是为了跟上游代码结构一致、
     将来若接计费只换 billing.py 一个文件。rollback / commit 自身幂等。
     """
     logger.info(
@@ -81,7 +81,7 @@ def _load_or_skip(
 
     if runner_exc is None:
         # Partial refund: 声明 num_images=N 但实际只产 < N 张时退差额。Canvex
-        # billing no-op → 此调用空操作, 保留以对齐 meired 结构。仅对有 num_images
+        # billing no-op → 此调用空操作, 保留以对齐上游结构。仅对有 num_images
         # + results 反向关系的 job 生效 (ImageEditJob / AngleJob).
         expected = getattr(job, "num_images", None)
         if expected and expected > 1 and hasattr(job, "results"):
@@ -136,7 +136,7 @@ def _check_split_pair_for_refund(job: "ImageEditJob", task_name: str) -> None:
     - 其他组合 (双成功 / 双失败 / partner 仍 RUNNING) → noop
 
     Canvex billing no-op → 真正的 partial_refund 是空操作, 此函数保留是为了对齐
-    meired 结构 + 将来接计费可直接复用。select_for_update 锁 partner row 仍生效。
+    上游结构 + 将来接计费可直接复用。select_for_update 锁 partner row 仍生效。
     """
     with transaction.atomic():
         partner = (

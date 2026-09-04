@@ -6,7 +6,7 @@ download the MP4; stores the provider's URL directly on VideoJob.
 配置来自库里用户在前端配的 `kind=video` 供应商 (见 resolve_video_channel) —— 原来那一路
 `CANVAS_VIDEO_*` env 已经去掉, 老部署的值由迁移 0013 一次性导进库。
 
-解耦自 meired apps/canvas/services/agent/tools/video.py:
+解耦自上游 apps/canvas/services/agent/tools/video.py:
 - 计费 import 路径改 studio.services.billing(stub no-op,调用全保留)。
 - 模型无 organization / user → enqueue 时不再 set,签名去掉 org_id / user_id。
 - 跨租户 scope 防护(enqueue_scope_or_friendly_message)不 port:单工作区无跨
@@ -203,7 +203,7 @@ def enqueue_video_generation(
         reserve_error = reserve_or_friendly_message(job, action_label="video generation")
         if reserve_error:
             # Canvex billing 是 no-op stub:reserve_error 恒为 None,本分支不触发。
-            # 保留与 meired 一致的调用形状(将来接计费时 helper 会 set_rollback 回滚 atomic)。
+            # 保留与上游一致的调用形状(将来接计费时 helper 会 set_rollback 回滚 atomic)。
             return reserve_error
     job_id = enqueue_on_commit(job, canvas_video_job_task)
     logger.info("enqueue_video_generation: job %s scene %s", job_id, scene_id)

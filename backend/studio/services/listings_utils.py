@@ -1,7 +1,7 @@
 """
 图片生成服务通用工具函数（Canvex studio 子集）。
 
-从 meired apps.listings.services.utils 摘出 canvas 链路实际依赖的部分：
+从上游 apps.listings.services.utils 摘出 canvas 链路实际依赖的部分：
 环境变量读取、图片下载、OpenAI 兼容响应解析、异步任务轮询、源图下载异常。
 
 未搬运的 listings 专属函数（canvas 不用）：clean_llm_json / compress_image /

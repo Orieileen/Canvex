@@ -41,3 +41,7 @@ frontend/public/canvex-assets/
 frontend/public/excalidraw-assets/
 
 .claude
+
+# 跨仓库移植的内部规划 —— 引用另一个项目的本机路径和架构, 对 clone 这个仓库的人没有
+# 价值。文件留在磁盘上, 只是不进版本库。
+TODOlist-*.md

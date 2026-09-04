@@ -30,7 +30,7 @@ Design notes:
   SkillsMiddleware re-lists the store in `before_agent` on **every** run, and
   Canvex has no checkpointer, so `skills_metadata` is never carried in state.
 
-解耦自 meired apps/canvas/services/agent/builder.py:
+解耦自上游 apps/canvas/services/agent/builder.py:
 - 多租户 org_id / user_id 已删 —— /memories/ namespace 只按 scene 切;
   invoke / stream / _prepare_agent_call 签名去掉 org_id / user_id。
 - 只挂 generate_image / generate_video 两个 tool(无 flowchart)。

@@ -7,12 +7,12 @@ upload to the provider), `job_lifecycle` writes job rows, and `enqueue_on_commit
 schedules a Celery task to fire when the surrounding tx commits. Import-safe at
 module top.
 
-从 meired apps/canvas/services/agent/tools/common.py port:
+从上游 apps/canvas/services/agent/tools/common.py port:
 - 纯工具原样保留(import 路径改写)。
 - 落库层 library.Asset/Folder → Canvex 的 DataAsset/DataFolder(单工作区,无
   organization/user)。DataAsset 的元数据(width/height/mime/size/tags)逻辑融自
   studio/tools/assets.py 的 _save_asset。
-- meired 的 enqueue_scope_or_friendly_message(跨 org 计费/资产泄漏防护)不 port:
+- 上游的 enqueue_scope_or_friendly_message(跨 org 计费/资产泄漏防护)不 port:
   Scene 已无 organization,单工作区无跨租户面。
 """
 import base64
@@ -176,7 +176,7 @@ def is_gevent_patched() -> bool:
 
 
 def _public_media_base() -> str:
-    """读 PUBLIC_MEDIA_BASE。优先 settings(meired 契约),回落 os.getenv。
+    """读 PUBLIC_MEDIA_BASE。优先 settings(上游契约),回落 os.getenv。
 
     settings.py 已定义 PUBLIC_MEDIA_BASE(dev 默认 localhost:28000);这里仍 getattr
     软读 + getenv 兜底 + blank 时 raise,是为了防止它被改没时早炸(而非 AttributeError

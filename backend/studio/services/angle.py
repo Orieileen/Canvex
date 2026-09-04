@@ -1,6 +1,6 @@
 """Angle job: image camera-angle rerender via fal.ai Qwen-Image-Edit-2511-LoRA.
 
-从 meired apps/canvas/services/angle.py port (Canvex 独立版):
+从上游 apps/canvas/services/angle.py port (Canvex 独立版):
 - 剥 organization / user(单工作区)→ create 不再 set,签名去掉,save_canvas_source_image
   不再传 user。
 - 外部基建 import 改写:apps.common.http_retry → studio.services.http_retry。
@@ -87,7 +87,7 @@ def create_angle_job(*, scene, validated, image_file=None) -> AngleJob:
     SSRF filter applies whether the URL came from `image_url` or a freshly
     saved upload. 400 on rejection — Angle has no prompt-only fallback.
 
-    Reserve 在 Canvex 是 no-op(免费);保留调用对齐 meired 契约。
+    Reserve 在 Canvex 是 no-op(免费);保留调用对齐上游契约。
     """
     if image_file is not None:
         relative = save_canvas_source_image(image_file)

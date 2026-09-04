@@ -110,7 +110,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "UNAUTHENTICATED_USER": None,
     "UNAUTHENTICATED_TOKEN": None,
-    # ChatUserRateThrottle(scope="canvas_chat") 是从 meired port 过来的, 但 rate 没带过来
+    # ChatUserRateThrottle(scope="canvas_chat") 是从上游 port 过来的, 但 rate 没带过来
     # —— 缺这条会让每次 chat POST 在 check_throttles 阶段直接 500 (ImproperlyConfigured),
     # 表现为"一发消息就 Chat failed"。单工作区无登录, UserRateThrottle 按 IP 限流。
     "DEFAULT_THROTTLE_RATES": {
@@ -169,7 +169,7 @@ CANVAS_AGENT_STORE_DSN = os.getenv("CANVAS_AGENT_STORE_DSN", "")
 # 里配一条 kind=video 的记录。原来的 CANVAS_VIDEO_* 由迁移 0013 一次性导入。
 
 # Credit cost (Canvex 独立版 billing 为 no-op stub, 实际成本见 studio.constants;
-# 这几项保留对齐 meired 契约)。
+# 这几项保留对齐上游契约)。
 CANVAS_CREDIT_COST_IMAGE = int(os.getenv("CANVAS_CREDIT_COST_IMAGE", "1") or 1)
 CANVAS_CREDIT_COST_VIDEO = int(os.getenv("CANVAS_CREDIT_COST_VIDEO", "10") or 10)
 CANVAS_CREDIT_COST_ANGLE = int(os.getenv("CANVAS_CREDIT_COST_ANGLE", "1") or 1)

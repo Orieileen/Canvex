@@ -18,7 +18,7 @@ def library_upload_to(instance, filename: str) -> str:
 
 
 def canvas_edit_upload_to(instance, filename: str) -> str:
-    """image-edit 源图。meired 用 UserDatedUploadPath(按 user 隔离);Canvex 单工作区
+    """image-edit 源图。上游用 UserDatedUploadPath(按 user 隔离);Canvex 单工作区
     无 user,退化为纯 date 路径。"""
     ext = Path(filename).suffix.lower()
     now = datetime.utcnow()
@@ -63,7 +63,7 @@ def validate_endpoint_url(value: str) -> None:
 
 
 # ─────────────────────────── 素材库(Canvex 自有,保留)───────────────────────────
-# meired 用独立 apps/library 的 Asset/Folder;Canvex 决策复用自己的 DataAsset/DataFolder
+# 上游用独立 apps/library 的 Asset/Folder;Canvex 决策复用自己的 DataAsset/DataFolder
 # 作为 canvas 结果与附件的存储层(见 services/agent/tools 的落库适配)。
 
 class DataFolder(models.Model):
@@ -122,9 +122,9 @@ class DataAsset(models.Model):
         return self.filename
 
 
-# ─────────────────────── Canvas(从 meired apps/canvas port)───────────────────────
+# ─────────────────────── Canvas(从上游 apps/canvas port)───────────────────────
 # 已剥:organization / user FK(单工作区)、credit_event(无计费)。
-# asset FK 指向上面的 DataAsset(非 meired 的 library.Asset)。
+# asset FK 指向上面的 DataAsset(非上游的 library.Asset)。
 
 class Scene(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

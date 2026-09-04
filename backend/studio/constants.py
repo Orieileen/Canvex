@@ -1,4 +1,4 @@
-"""Canvas 常量 — 从 meired apps/canvas/constants.py port。
+"""Canvas 常量 — 从上游 apps/canvas/constants.py port。
 
 Canvex 无计费体系:成本常量保留接口名但置 0(billing stub 的 cost_credits 恒算 0,
 reserve() 因 cost<=0 短路返 None,全程免费),让 port 过来的代码零改动。

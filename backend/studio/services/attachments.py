@@ -7,7 +7,7 @@ Canvex DataAsset (same lifecycle as generated images, so scene-cascade
 cleanup applies) and return the absolute CDN URL the agent / image
 provider can fetch.
 
-从 meired apps/canvas/services/attachments.py port: library.Asset → DataAsset,
+从上游 apps/canvas/services/attachments.py port: library.Asset → DataAsset,
 剥 organization/user(单工作区)。
 """
 import io
