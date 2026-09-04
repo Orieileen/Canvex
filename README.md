@@ -87,8 +87,6 @@ Prerequisites: Docker + Docker Compose.
 docker compose up -d --build
 ```
 
-This starts Postgres, Redis, the backend (which runs migrations on startup), three Celery workers, and the frontend dev server.
-
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:28000
 

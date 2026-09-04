@@ -87,8 +87,6 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-会启动 Postgres、Redis、后端（启动时自动跑迁移）、三个 Celery worker、以及前端 dev server。
-
 - 前端：http://localhost:5173
 - 后端 API：http://localhost:28000
 
