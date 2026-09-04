@@ -322,7 +322,13 @@ _STARTER_APIMART_VIDEO = {
     "headers": {"Authorization": "Bearer {{api_key}}", "Content-Type": "application/json"},
     "body": {
         "model": "{{model}}", "prompt": "{{prompt}}",
-        "aspect_ratio": "{{aspect_ratio}}", "duration": "{{duration}}",
+        # 比例两个键都摆着, 理由同下面的画质档 —— 空的那个会整个消失。这家一半模型的
+        # 比例参数叫 `aspect_ratio`, 另一半叫 `size` (seedance-2.0 那页的对比表:
+        # 「1.5 Pro: aspect_ratio | 2.0: **size**」), 由 channel.ratio_param 决定填哪个。
+        # 少摆一个的话, 那半边模型的比例旋钮会**静默失效** —— 模板里没那个占位符 = 渲染
+        # 不出来 = 那个键不存在 = 供应商按自己的默认出片, 没有任何报错。
+        "aspect_ratio": "{{aspect_ratio}}", "size": "{{size}}",
+        "duration": "{{duration}}",
         "resolution": "{{resolution}}", "mode": "{{mode}}",
         "image_urls": "{{images}}",
     },
@@ -383,7 +389,7 @@ _TEMPLATE_TUNABLES = frozenset({
 })
 # 视频专有: 画质档发到哪个键 (`resolution` 还是可灵那种 `mode`)。生图那边没有第二种
 # 叫法, 放出来只会多一个永远不用动的下拉。
-_TEMPLATE_VIDEO_TUNABLES = _TEMPLATE_TUNABLES | {"resolution_param", "ratio_scope"}
+_TEMPLATE_VIDEO_TUNABLES = _TEMPLATE_TUNABLES | {"resolution_param", "ratio_scope", "ratio_param"}
 
 
 KIND_SPECS: dict[str, _KindSpec] = {
@@ -466,7 +472,7 @@ KIND_SPECS: dict[str, _KindSpec] = {
             "timeout", "poll_url", "poll_max_attempts",
             "poll_interval", "poll_max_interval", "poll_timeout",
             # 视频模型的可用比例往往比生图还窄 —— 常见只有 16:9 / 9:16 / 1:1。
-            "allowed_ratios", "ratio_scope", "allowed_durations",
+            "allowed_ratios", "ratio_scope", "ratio_param", "allowed_durations",
             "allowed_resolutions", "resolution_param",
         }),
         picker="video",
@@ -501,7 +507,7 @@ _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("shape", frozenset({
         "image_field", "image_as_single", "response_format", "quality",
         "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
-        "allowed_resolutions", "resolution_param", "ratio_scope", "protocol",
+        "allowed_resolutions", "resolution_param", "ratio_scope", "ratio_param", "protocol",
         "upload_path", "upload_result_path",
     })),
     ("timing", frozenset({"timeout"})),
@@ -926,6 +932,24 @@ _APIMART_VIDEO_MODE_MODELS = ("kling-v2-6", "kling-v3", "kling-v3-omni", "kling-
 # 没写进来的那些"文档说忽略"的 (kling-3.0-turbo / skyreels-v4 / MiniMax-Hailuo): 它们收
 # 图的字段是 first_frame_image 而不是 image_urls; 而 pixverse-v6 / wan2.7 / grok 的比例
 # 参数叫 `size` —— 它们的毛病不在这个旋钮上, 见 _STARTER_APIMART_VIDEO 那条已知缺口。
+# 比例参数叫 `size` 而不是 `aspect_ratio` 的模型。不在表里 = 用默认的 `aspect_ratio`。
+#
+# 逐页抄的。最直白的一条来自 seedance-2.0 那页的对比表:「宽高比参数 | 1.5 Pro:
+# `aspect_ratio` | 2.0 / 2.0 fast: **`size`**」。
+#
+# 这一表之前不存在, 所以下面这些模型的比例下拉**一直是个死旋钮** —— 不是被供应商忽略,
+# 是键名压根不对, 它们始终按自己的默认 (多为 16:9) 出片, 而界面上完全看不出来。
+#
+# **没收进来的两个**: seedance-2.5「也接受字段名 `aspect_ratio`」、wan3.0-video
+# 「也可用 aspect_ratio」—— 两边都认, 保持现状零风险。
+# seedance-2.0-face / -fast-face **没有独立文档页**, 按同族推的。
+_APIMART_VIDEO_SIZE_MODELS: frozenset[str] = frozenset({
+    "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini",
+    "seedance-2.0-face", "seedance-2.0-fast-face",
+    "wan2.5-preview", "wan2.7", "pixverse-v6",
+    "happyhorse-1.0", "happyhorse-1.1", "grok-imagine-1.5-video-apimart",
+})
+
 _APIMART_VIDEO_T2V_ONLY: frozenset[str] = frozenset({
     # 「只要传入 image_urls(无论 1 张还是 2 张), 就不能同时设置 aspect_ratio」+ 参数
     # 矩阵里图生那两列标 `-`。**这两个是今天真的每次都在发违规组合的**。
@@ -1090,6 +1114,7 @@ PRESETS: tuple[_Preset, ...] = (
                 **({"resolution_param": "mode"} if m in _APIMART_VIDEO_MODE_MODELS else {}),
                 # 同上, 来源是个集合而不是"模型 → 值"的表, 所以也不走 _sparse_overrides。
                 **({"ratio_scope": "text_only"} if m in _APIMART_VIDEO_T2V_ONLY else {}),
+                **({"ratio_param": "size"} if m in _APIMART_VIDEO_SIZE_MODELS else {}),
             }
             for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },

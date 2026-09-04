@@ -27,6 +27,7 @@ from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
 from studio.services import channel_health, template_client
 from studio.services.image_client import (
+    RATIO_PARAM_CHOICES,
     ImageChannel,
     nearest_duration,
     parse_durations,
@@ -275,7 +276,12 @@ def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
     # 报了 text_only 的模型在有参考图时整个键不发: viduq3-pro / -turbo 的文档写的是
     # 「就不能同时设置 `aspect_ratio`」—— 是禁止, 不是"传了会被忽略"。
     if not (image_urls and cfg.ratio_scope == "text_only"):
-        body["aspect_ratio"] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
+        # 键名也跟着通道走 —— 这家一半模型叫 aspect_ratio, 另一半叫 size
+        # (见 RATIO_PARAM_CHOICES)。认不出的值退回 aspect_ratio 而不是谁都不填:
+        # 下拉框拦得住手填的通道, 拦不住 model.overrides 里的一行 JSON, 而"谁都不填"
+        # 的表现是比例旋钮静默失效。同 resolution_param 那一段。
+        ratio_key = cfg.ratio_param if cfg.ratio_param in RATIO_PARAM_CHOICES else "aspect_ratio"
+        body[ratio_key] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
     # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
     # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
     if job.resolution and cfg.allowed_resolutions:
@@ -290,9 +296,9 @@ def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",
         endpoint, cfg.model, body["duration"],
-        # `.get` 而不是 `[...]`: 这个键现在可能不存在, 而这只是一行日志 —— 它不该有本事
-        # 把一次已经拼好的提交打成 KeyError。
-        body.get("aspect_ratio", "-"), len(image_urls),
+        # `.get` 而不是 `[...]`: 这个键现在可能不存在 (text_only), 也可能叫 size ——
+        # 而这只是一行日志, 不该有本事把一次已经拼好的提交打成 KeyError。
+        body.get("aspect_ratio") or body.get("size") or "-", len(image_urls),
     )
     resp = _session.post(
         endpoint,

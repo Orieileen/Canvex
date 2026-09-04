@@ -501,6 +501,14 @@ CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
 # 不下发 —— 配得看上去完全正确, 而画质旋钮不起作用, 没有任何报错。
 RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
 
+# 比例发到哪个键上。同一件事在 apimart 视频这边有两个键名: 大多数模型叫 `aspect_ratio`,
+# 而 seedance-2.0 全家 / wan2.5 / wan2.7 / pixverse / happyhorse / grok 叫 `size`
+# (seedance-2.0 那页的对比表最直白: 「1.5 Pro: aspect_ratio | 2.0: **size**」)。
+#
+# 跟 RESOLUTION_PARAM_CHOICES 同一个形状, 也同一个理由: 键名错了不会报错, 只是那个旋钮
+# 静默失效 —— 用户选 9:16, 界面毫无异样, 出来的是模型自己的默认 (多为 16:9)。
+RATIO_PARAM_CHOICES: tuple[str, ...] = ("aspect_ratio", "size")
+
 # 比例参数在**图生视频**时还算不算数。空 = 算 (默认, 也是大多数)。
 # "text_only" = 只有文生视频算 —— 有参考图时整个比例键不下发。
 #
@@ -595,6 +603,11 @@ class ImageChannel:
     # 参数)。前者传了是违规组合, 后者不传就丢掉一个真能用的旋钮 —— 一个全局开关表达
     # 不了这个差别, 所以它跟 allowed_ratios 挂在同一层。
     ratio_scope: str = field(default="", metadata={"choices": RATIO_SCOPE_CHOICES})
+    # 比例发到哪个键上。见 RATIO_PARAM_CHOICES —— 这一项跟 resolution_param 是同一件事的
+    # 另一半: 那边管画质档的键名, 这边管比例的。
+    ratio_param: str = field(
+        default="aspect_ratio", metadata={"choices": RATIO_PARAM_CHOICES},
+    )
     # 这个模型**真的收**哪几个画质档, 由低到高; 空 = 这个模型没有画质旋钮, 那个键不下发
     # (= 用供应商自己的默认, 也就是这个功能之前的行为)。
     #

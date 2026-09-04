@@ -17,6 +17,7 @@ from studio.services.image_channels import (
     _UNDOCUMENTED_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_RATIOS,
+    _APIMART_VIDEO_SIZE_MODELS,
     _APIMART_VIDEO_T2V_ONLY,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
@@ -445,11 +446,12 @@ class ApimartVideoRatioTests(SimpleTestCase):
 
         for model in sorted(_APIMART_VIDEO_T2V_ONLY):
             with self.subTest(model=model):
+                ch = _channel(self.preset, model)
                 variables = template_client.video_variables(
-                    _channel(self.preset, model), prompt="p", image_urls=[],
-                    duration=5, aspect_ratio="9:16",
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
                 )
-                self.assertEqual(variables["aspect_ratio"], "9:16")
+                # 盯**路由到的那个键** —— 一半模型叫 aspect_ratio, 另一半叫 size。
+                self.assertEqual(variables[ch.ratio_param], "9:16")
 
     def test_models_that_still_take_a_ratio_with_an_image_keep_it(self):
         """反面: 这几个文档明写图生时比例仍然是合法参数, 一个都不能被顺手带走。
@@ -459,11 +461,60 @@ class ApimartVideoRatioTests(SimpleTestCase):
         for model in ("kling-v3", "kling-v2-6", "viduq3", "viduq3-mix",
                       "MiniMax-H3", "happyhorse-1.0", "seedance-2.5"):
             with self.subTest(model=model):
+                ch = _channel(self.preset, model)
                 variables = template_client.video_variables(
-                    _channel(self.preset, model), prompt="p",
-                    image_urls=["https://x/a.png"], duration=5, aspect_ratio="9:16",
+                    ch, prompt="p", image_urls=["https://x/a.png"],
+                    duration=5, aspect_ratio="9:16",
                 )
-                self.assertEqual(variables["aspect_ratio"], "9:16")
+                self.assertEqual(variables[ch.ratio_param], "9:16")
 
     def test_t2v_only_table_only_names_real_models(self):
         self.assertLessEqual(set(_APIMART_VIDEO_T2V_ONLY), set(self.preset.models))
+
+    # ── 比例发到哪个键 (ratio_param) ──────────────────────────────────────
+    #
+    # 键名错了**不会报错**, 只是那个旋钮静默失效: 用户选 9:16, 界面毫无异样, 出来的是
+    # 模型自己的默认。所以这几条钉的是"填对了一个、另一个必须空"。
+
+    def test_size_models_route_the_ratio_to_size(self):
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_SIZE_MODELS):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "size")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["size"], "9:16")
+                # 另一个必须空, 否则等于两个键都发 —— 而这条端点对未知键宽不宽容没有
+                # 任何文档, 它已经在 base64 那件事上证明过跟生图不是同一套校验。
+                self.assertEqual(variables["aspect_ratio"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+                self.assertEqual(body["size"], "9:16")
+
+    def test_other_models_still_route_to_aspect_ratio(self):
+        from studio.services import template_client
+
+        for model in ("seedance-2.5", "viduq3", "veo3.1-fast", "MiniMax-H3", "kling-v3"):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "aspect_ratio")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["aspect_ratio"], "9:16")
+                self.assertEqual(variables["size"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("size", body)
+
+    def test_size_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_SIZE_MODELS), set(self.preset.models))
+
+    def test_the_two_ratio_tables_do_not_disagree(self):
+        """一个模型同时进两张表是允许的 (wan2.5-preview 就是), 但那意味着"有图不发、
+        没图发到 size" —— 写的时候得是有意的。这条只钉住交集不会悄悄长大。"""
+        self.assertEqual(
+            _APIMART_VIDEO_SIZE_MODELS & _APIMART_VIDEO_T2V_ONLY, {"wan2.5-preview"},
+        )
