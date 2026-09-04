@@ -14,7 +14,7 @@ Language: [中文](./README.zh-CN.md)
 
 ## Features
 
-- **Chat to create** — type a prompt in the box at the bottom of the canvas; the agent generates one or more images (or a video) and pins them onto the board. The transcript itself lives on the canvas as a resizable frame you can move, zoom and scroll like any other element. (A finished video lands as a **"▶ Watch video" card** that opens the clip — the canvas is not a player.)
+- **Chat to create** — type a prompt in the box at the bottom of the canvas; the agent generates one or more images (or a video) and pins them onto the board. The transcript itself lives on the canvas as a resizable frame you can move, zoom and scroll like any other element.
 - **AI toolbar on any image** — select an image to get a floating toolbar:
   - **Edit** — restyle / change anything by prompt.
   - **Cutout** — one-click background removal to a transparent subject.
