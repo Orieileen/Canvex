@@ -328,8 +328,11 @@ class ImageEditJob(models.Model):
         FAILED = "FAILED", "Failed"
 
     class Resolution(models.TextChoices):
-        # 画质档位(像素面积). 1K=1024×1024, 2K=2048×2048 (默认), 4K=4096×4096.
-        # 1K 主要给 apimart 主通道; 火山 fallback 最低 ~2K, _volc_size 会把 1K 抬到 2K.
+        # 画布自己那三档 —— **只是默认和兜底**, 不是合法值的全集。真实档位是逐模型的
+        # (见 ImageChannel.allowed_resolutions): 0.5K / 1.5K / 3K, flux-2 一族按百万
+        # 像素计的 1MP~4MP, gpt-image-2 和两个 grok 是小写 1k/2k/4k。所以下面那个字段
+        # **不挂 choices** —— 挂了只会让人以为这三个是全集, 而 Django 的 choices 在
+        # `objects.create()` 这条路上根本不校验, 拦不住任何东西。
         ONE_K = "1K", "1K"
         TWO_K = "2K", "2K"
         FOUR_K = "4K", "4K"
@@ -340,9 +343,9 @@ class ImageEditJob(models.Model):
 
     prompt = models.TextField()
     size = models.CharField(max_length=32, default="1024x1024", blank=True)
-    resolution = models.CharField(
-        max_length=4, choices=Resolution.choices, default=Resolution.TWO_K,
-    )
+    # max_length 跟 VideoJob.resolution 对齐 —— 原来是 4, 刚好装得下今天所有生图档位
+    # (`1.5K` / `1MP` 都是 4 以内), 但那是巧合: 多一个 `1024p` 这样的档就会在写库时炸。
+    resolution = models.CharField(max_length=16, default=Resolution.TWO_K, blank=True)
     num_images = models.PositiveSmallIntegerField(default=1)
     # 用户在工具栏选中的模型。**必须落在 job 行上**, 因为这条路径是异步的 —— 请求早就
     # 返回了, celery worker 之后才捞这条记录去跑, 光靠请求参数传不到那时候。

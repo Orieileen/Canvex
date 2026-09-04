@@ -51,6 +51,49 @@ def _channel(preset, model):
     )
 
 
+class TierReachesTheEndpointTests(SimpleTestCase):
+    """预设里任何模型可能报出的档位, 接收它的端点都必须收得下。
+
+    这条不变量断过一次: 画质档改成逐模型下发之后, 工具栏照模型列 (gpt-image-2 报的是
+    **小写** `1k, 2k, 4k`, flux-2 一族报 `1MP`~`4MP`, seedream-5-0-pro 有 `1.5K`), 而
+    image-edit 的入参还是当年那个 `ChoiceField(1K/2K/4K)` —— 用户选一下就 400, 而且
+    400 发生在建 job 之前, 库里连条记录都不留。拆分和视频当时一起放宽了, 只有它漏了。
+
+    所以这里钉的不是"某几个字面量合法", 是**两端对得上**: 表里加一个新档位而端点没跟着
+    放, 这条就会红。
+    """
+
+    def test_every_image_tier_a_preset_can_report_is_accepted(self):
+        from studio.serializers import ImageEditJobCreateSerializer
+        from studio.services.image_client import parse_resolutions
+
+        preset = _preset("apimart_image")
+        seen = set()
+        for model in preset.models:
+            for tier in parse_resolutions(_channel(preset, model).allowed_resolutions):
+                seen.add(tier)
+        self.assertTrue(seen, "预设一个档位都没报, 这条测试就白写了")
+        for tier in sorted(seen):
+            with self.subTest(tier=tier):
+                s = ImageEditJobCreateSerializer(data={"prompt": "p", "resolution": tier})
+                self.assertTrue(s.is_valid(), f"{tier} 被端点拒了: {s.errors}")
+
+    def test_every_video_tier_a_preset_can_report_is_accepted(self):
+        from studio.serializers import VideoJobCreateSerializer
+        from studio.services.image_client import parse_resolutions
+
+        preset = _preset("apimart_video")
+        seen = set()
+        for model in preset.models:
+            for tier in parse_resolutions(_channel(preset, model).allowed_resolutions):
+                seen.add(tier)
+        self.assertTrue(seen)
+        for tier in sorted(seen):
+            with self.subTest(tier=tier):
+                s = VideoJobCreateSerializer(data={"prompt": "p", "resolution": tier})
+                self.assertTrue(s.is_valid(), f"{tier} 被端点拒了: {s.errors}")
+
+
 class ApimartVideoPresetTests(SimpleTestCase):
     def setUp(self):
         self.preset = _preset("apimart_video")

@@ -165,9 +165,16 @@ class ImageEditJobCreateSerializer(serializers.Serializer):
     prompt = serializers.CharField(required=False, allow_blank=True, default="")
     cutout = serializers.BooleanField(required=False, default=False)
     size = serializers.CharField(required=False, allow_blank=True, default="1024x1024")
-    resolution = serializers.ChoiceField(
-        choices=ImageEditJob.Resolution.choices, required=False,
-        default=ImageEditJob.Resolution.TWO_K,
+    # 画质档。**不在这里校验取值** —— 合法值是 per-model 的, 而模型是下面那个字段才定
+    # 的; 真正的归一在 _generate_on_channel 那边按 allowed_resolutions 做
+    # (resolve_resolution)。同 SplitJobCreateSerializer / VideoJobCreateSerializer。
+    #
+    # 这里原来是 ChoiceField(1K/2K/4K) —— 那是"画质档只有写死三档"年代的东西。档位改成
+    # 逐模型下发之后它就成了一道**打在主路径上**的闸: gpt-image-2 (生图预设的默认模型)
+    # 报的是小写 `1k, 2k, 4k`, flux-2 一族报 `1MP`~`4MP`, seedream-5-0-pro 有 `1.5K`
+    # —— 工具栏照模型列、用户选一下, 这里全 400。拆分和视频当时一起放宽了, 只有这条漏了。
+    resolution = serializers.CharField(
+        required=False, allow_blank=True, default=ImageEditJob.Resolution.TWO_K,
     )
     n = serializers.ChoiceField(choices=[1, 2, 4], required=False, default=1)
     image_model = _channel_choice_field(ImageProvider.Kind.IMAGE)
