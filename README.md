@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Canvex</h1>
-  <p>Canvex is an infinite-canvas LLM agent that can chat, use skills, generate, and edit images and videos. With scene management, you can organize multiple canvases for different projects.</p>
+  <p>Canvex 是一个具有对话、skills、生成和编辑图像和视频能力的无限画布 LLM Agent。通过场景管理，可以将多个画布用于不同的项目。</p>
   <p>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB" alt="Frontend"></a>
     <a href="https://www.djangoproject.com/"><img src="https://img.shields.io/badge/Backend-Django%20%2B%20DRF-092E20" alt="Backend"></a>
@@ -10,233 +10,216 @@
   </p>
 </div>
 
-Language: [中文](./README.zh-CN.md)
+语言：[English](./README.en.md)
 
-## Features
+## 功能
 
-- **Chat to create** — type a prompt in the box at the bottom of the canvas; the agent generates one or more images (or a video) and pins them onto the board. The transcript itself lives on the canvas as a resizable frame you can move, zoom and scroll like any other element.
-- **AI toolbar on any image** — select an image to get a floating toolbar:
-  - **Edit** — restyle / change anything by prompt.
-  - **Cutout** — one-click background removal to a transparent subject.
-  - **Split** — two stacked results from one image: a transparent subject + a clean subject-removed background.
-  - **Angle** — drag a 3D cube to re-render the shot from a new camera viewpoint (fal.ai LoRA).
-  - **Video** — animate a still into a clip. Duration, aspect ratio and quality tier all come from **the model you picked**, not from a fixed canvas list: veo3 only does 8-second clips, sora-2 does 4/8/12/16/20, seven models don't take 1:1, and ten don't take an aspect ratio at all — those dropdowns simply don't appear.
-  - **Mockup** — wrap a design image onto another image using depth, with Depth / Mask / Opacity controls.
-  - **Merge / Adjust / Download / Send to chat** — flatten a selection locally, a Lightroom-style color panel, export the canvas, or attach an image as a reference for the LLM agent.
-- **Combine several images** — marquee-select up to 8 images and the Image tab switches to "Combine N images…"; the provider receives all of them. The other tools are single-image and grey out.
-- **Box & arrow annotations** — fine-grained image editing: draw a box, arrow, or text label over an image to point the AI at a region.
-- **Skills** — playbooks the agent loads on its own when they match your request (e.g. `image-prompt-sop` for high-quality single images, `amazon-listing-pack-sop` for a coordinated 7-image listing set). **Skills** in the sidebar installs your own: drop in a `SKILL.md` (or write one in the browser), and the agent picks it up on the next message — no restart. Disable or delete them there too; from the chat box you can also skip one for a single message.
-- **Scenes** — multiple independent canvases in the sidebar: create, rename, delete, quick switching; edits autosave. **Pin to top** is a per-browser preference (localStorage), not a synced setting.
-- **Originals stay original** — images you drag, paste or open go in at their **native pixel size**; Canvex uploads them through the backend instead of letting the canvas downscale them to 1440px. Toolbar and paste imports get a placement preview that follows the cursor.
-- **You can watch it work** — the moment you hit generate, a box the size of the *result* is reserved on the canvas; a failure turns into a card carrying the provider's own error, not a red tombstone. Reload the page mid-render and it picks the job back up.
-- **Media library** — saves every image / video you generate, grouped per canvas; click a thumbnail to drop it back onto the current board.
+- **聊天即创作** —— 在画布底部聊天框输入提示词，llm agent 生成一张或多张图片（或一段视频）并落到画布上。chat框（聊天记录）本身就是画布上的一个框，能像别的元素一样拖动、缩放、滚动。
+- **任意图片上的 AI 工具栏** —— 选中图片即弹出基于excalidraw原生选框和箭头工作的浮动工具栏：
+  - **编辑** —— 用提示词改风格/改内容。
+  - **抠图** —— 一键去背景抠出主体。
+  - **拆分** —— 从一张图产出上下两张：抠出主体图 + 去掉主体的干净背景图。
+  - **换视角** —— 通过改变摄像头位置，从新机位重新渲染不同角度的图片（fal.ai LoRA）。
+  - **视频** —— 把静图变成一段动画。时长、比例、画质三个旋钮**全部按你选的模型来**
+  - **样机** —— 借深度把一张设计图贴到另一张图上，带 深度 / 蒙版 / 不透明度 控制。
+  - **合并 / 调整 / 下载 / 发到聊天** —— 本地拍平选区、Lightroom 风格调色面板、导出画布、或把图作为LLM Agent参考附件。
+- **多图合成** —— 一次框选最多 8 张图，「图像」页签会变成「合成 N 张图…」，这些图会一起发给api供应商。其余工具是单图操作，多选时置灰。
+- **框 & 箭头标注** —— 精细化编辑图片：在图上画框/箭头/文字来指向要改的区域。
+- **Skills（技能）** —— agent 会自己判断该不该用skill（如Canvex预置的 `image-prompt-sop` 把模糊需求改写成高质量单图提示词、`amazon-listing-pack-sop` 一键生成协调的 7 张亚马逊套图）。在侧栏「技能库」可以装自己的skill：拖一个 `SKILL.md` 进去（或者直接在浏览器里写），下一条消息 agent 就能使用，**不需要重启应用**。
+- **场景** —— 侧栏里多个独立画布：新建、重命名、删除、快速切换；编辑自动保存。**置顶是浏览器本地的偏好**（localStorage），不跨设备同步。
+- **素材库** —— 保存你生成过的所有图片/视频，按画布分组；点缩略图即可重新插回当前画布。
 
-## Architecture at a glance
+## 架构概览
 
 ```mermaid
 flowchart LR
-  subgraph FE["Frontend — React + Excalidraw"]
-    Chat["Chat box"]
-    Bar["AI toolbar"]
+  subgraph FE["前端 — React + Excalidraw"]
+    Chat["聊天框"]
+    Bar["AI 工具栏"]
   end
-  subgraph BE["Backend — Django + DRF"]
+  subgraph BE["后端 — Django + DRF"]
     Agent["deepagents agent<br/>(skills + tools)"]
-    API["job endpoints"]
+    API["job 端点"]
   end
-  Q[["Celery queues<br/>canvas · canvas_cpu"]]
-  Prov["image / video / fal.ai providers"]
+  Q[["Celery 队列<br/>canvas · canvas_cpu"]]
+  Prov["图像 / 视频 / fal.ai 供应商"]
 
   Chat -->|"POST /chat/ (SSE)"| Agent
   Agent -->|"generate_image · generate_video"| Q
-  Bar -->|"edit · cutout · split · angle · video"| API --> Q
+  Bar -->|"编辑 · 抠图 · 拆分 · 换视角 · 视频"| API --> Q
   Q --> Prov --> Q
-  Q -->|"poll job → pin result"| FE
+  Q -->|"轮询 job → 落到画布"| FE
 ```
 
-- The chat agent is **deepagents** (`create_deep_agent`) with two tools (`generate_image`, `generate_video`), a per-scene memory file, and progressively-disclosed **SKILL.md** skills. Chat history is replayed from the database each turn (no separate memory store required).
-- Every generation is an async **job**: the API creates a `QUEUED` row and enqueues a Celery task on commit; the frontend polls the job until the result is ready, then pins it. Cutout runs as a 2-stage chain (LLM white-out → CPU rembg alpha).
+- 聊天（llm agent）是 **deepagents**（`create_deep_agent`），带两个工具（`generate_image`、`generate_video`）、一份按场景隔离的 memory 文件、以及按需展开的 **SKILL.md** 技能。每轮对话历史从数据库回放（不需要独立的记忆存储）。
+- 每次生成都是异步 **job**：API 建一条 `QUEUED` 记录、提交后入 Celery 队列；前端轮询 job 直到结果就绪再落到画布。抠图是两段链（LLM 出白底 → CPU rembg 出 alpha）。
 
-## Setup
+## 部署
 
-### 1) Clone
+### 1）克隆
 
 ```bash
 git clone https://github.com/Orieileen/Canvex.git
 cd Canvex
 ```
 
-### 2) Configure
+### 2）配置
 
 ```bash
 cp .env.example .env
 ```
 
-The defaults work as-is for a local run — **no API keys go in here.** Channels are configured in the app (step 4). `.env` only holds infrastructure settings: ports, database, and `PUBLIC_MEDIA_BASE` (see the table below).
+cp .env.example .env后默认值直接可用，不需要更改.env里的任何一行**这里不填任何 API key** —— api key在应用内配置（第 4 步）。`.env` 只管基础设施：端口、数据库，以及 `PUBLIC_MEDIA_BASE`（见下表）。
 
-### 3) Run (Docker)
+### 3）启动（Docker）
 
-Prerequisites: Docker + Docker Compose.
+前置：Docker + Docker Compose。
 
-- Docker Desktop: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
-- Docker Compose install docs: [https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
+- Docker Desktop：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
+- Docker Compose 安装文档：[https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
 
 ```bash
 docker compose up -d --build
 ```
 
-- Frontend: http://localhost:5173
-- Backend API: http://localhost:28000
+- 前端：http://localhost:5173
+- 后端 API：http://localhost:28000
 
-### 4) Add your channels
+### 4）添加通道
 
-Open http://localhost:5173 and click **Channels** in the left sidebar. Nothing works until there is at least one channel, so start here.
+由于各家供应商的请求参数各不相同，Canvex 预设了一套 API 供应商格式（不是广告）：
 
-> **A channel** = one endpoint + one key + one request shape, with one or more **models** under it.
-> **Provider** means the *company* (tu-zi, APIMart, OpenAI) — one company can back several channels.
+1. **聊天（LLM agent）模型** —— Canvex 预设了 LLM agent 的第三方供应商 **[兔子 tu-zi](https://api.tu-zi.com/)**：在 tu-zi 注册后拿到 API key，填进 Canvex 的通道配置即可用。必须是支持 OpenAI 风格 **tool calling** 的 key —— 不支持的填进来，聊天框会回一段文字然后画布上什么都不发生。
+2. **图片生成 · 自定义模板** —— Canvex 预设了生成图片的第三方供应商 **[API Mart](https://apimart.ai/)**：在 apimart 注册后拿到 API key，填进配置即可用。编辑图片、拆分图片、以及 LLM agent 调用的生图 tool，都用这一把 key。
+3. **视角重渲染** —— 先去 **[fal.ai](https://fal.ai/)** 注册拿到 API key，用于「换视角」（改变机位）功能。
+4. **视频生成 · 自定义模板** —— Canvex 预设了生成视频的第三方供应商 **[API Mart](https://apimart.ai/)**：同样是注册拿到 API key 填进配置即可用。
 
-No two providers name their request parameters the same way, so Canvex ships a ready-made set of them:
 
-1. **Chat (LLM agent) model** — Canvex ships a preset for the third-party LLM API provider **[tu-zi](https://api.tu-zi.com/)**: sign up there, take the API key, paste it into the Channels panel and you're running. It has to be a key that supports OpenAI-style **tool calling** — one that doesn't will reply with text and quietly do nothing on the canvas.
-2. **Image generation · custom template** — Canvex ships a preset for the image provider **[APIMart](https://apimart.ai/)**: sign up, take the API key, paste it in. Edit, Split, and the image tool the LLM agent calls all run on this one key.
-3. **Camera angle re-render** — sign up at **[fal.ai](https://fal.ai/)** for an API key; it powers the Angle (change-of-viewpoint) tool.
-4. **Video generation · custom template** — Canvex ships a preset for the video provider **[APIMart](https://apimart.ai/)**: same deal, sign up and paste the key in.
+#### apikey使用步骤：
+**快捷配置** —— 打开 http://localhost:5173，点左侧栏的「通道配置」。在「快捷配置」中填入对应供应商的key即可。下面列出Canvex可用预设：
 
-(You may also see two older read-only types — plain **Image generation** and **Video generation** — on channels created by earlier versions. They still run; you just can't make new ones.)
-
-The panel has three ways in, in descending order of how much you have to know:
-
-**Quick setup** — one-click presets grouped by role. Click one and a key field appears right there; filling it in is the whole setup.
-
-| Role | Presets |
+| 角色 | 预设 |
 | --- | --- |
-| Chat | **[tu-zi](https://api.tu-zi.com/)**, OpenAI, Google, DeepSeek, Zhipu GLM |
-| Image | **[APIMart](https://apimart.ai/)**, OpenAI, Google |
-| Video | **[APIMart](https://apimart.ai/)** |
-| Angle | **[fal.ai](https://fal.ai/)** |
+| 聊天 | **[兔子 tu-zi](https://api.tu-zi.com/)**、OpenAI、Google、DeepSeek、智谱 GLM |
+| 生图 | **[API Mart](https://apimart.ai/)**、OpenAI、Google |
+| 视频 | **[API Mart](https://apimart.ai/)** |
+| 换视角 | **[fal.ai](https://fal.ai/)** |
 
-**[tu-zi](https://api.tu-zi.com/) for chat and [APIMart](https://apimart.ai/) for images and video are the pair this project actually runs on** — every feature here was built and tested against them, so they are the shortest path to a working install. The rest are there so you aren't forced onto those two. Angle has a single option because the viewpoint LoRA only exists on [fal.ai](https://fal.ai/).
+### 以下有三种方法可以使用：
+**1.聊天/llm agent用[兔子](https://api.tu-zi.com/)、生图和视频用 [API Mart](https://apimart.ai/)，变换视角使用[fal.ai](https://fal.ai/)是这个项目经过测试得出跑的最稳最便宜的供应商** —— 这里每个功能都是对着它们做出来、验过来的，所以想最快跑通就配这两家。其余几条聊天/llm agent官方供应商通道也可以使用，不过openai等国外供应商一方面比较贵，一方面api并不好买，除了tu-zi也可以使用国内llm厂商，而图片apimart则是便宜+稳定。换视角只有一个选项，因为视角 LoRA 只在 [fal.ai](https://fal.ai/) 上。
 
-The APIMart image and video presets arrive carrying every model from that provider's docs (dozens each), along with the ratios, durations and quality tiers each one actually accepts.
+**2.从一段 curl 开始配置供应商** —— 如果要使用不在Canvex列表的供应商走这条：把你需要的api供应商文档里的示例 `curl` 粘进去，Canvex向导会替你自动把通道拼出来，不用写 JSON。（这个功能可能不适配所有供应商）
 
-**Set up a provider from a curl example** — for anything else, paste the example `curl` from the provider's docs and the wizard builds the channel: no JSON to write. Chat and Angle channels take two steps (it just lifts the endpoint, key and model name out of the command). Image and video channels take three, because there the wizard **sends one real request** to work out where the result sits in the response and whether the provider is async — their docs usually won't tell you — and then shows you the image it just generated.
+**3.新建自定义供应商配置** —— 完全自己写请求模板。你需要知道供应商所有的请求参数以及值怎么写，并手动拼成json填入自定义供应商
 
-**New custom provider config** — the back door: write the request template yourself.
+模型行右边的 ⚡ 会真发一次最小生成。它只出现在生图和换视角通道上：聊天通道要验的是它认不认 `tools` 参数，直接在聊天框里说「生成一张图」最快；视频则太慢，撑不过一次同步测试 —— 对视频来说，画布上第一条真片子就是那次测试。
 
-The ⚡ button next to a model sends one real minimal generation. It exists for image and Angle channels only: chat channels are verified by asking the chat box to generate something (what matters there is whether the provider honours the `tools` parameter), and video is too slow to survive a synchronous test — for video, the first real clip on the canvas *is* the test.
+每条通道名字左边有一个**状态点**：绿 = 上次调用通了，橙 = 上次失败，空心 = 还没调用过。真实生成也会更新它，不只是 ⚡ —— 一条通道哪天悄悄坏了（key 过期、额度打光、供应商换端点），在这里一眼能看见，而不是变成又一次莫名其妙的生成失败。展开失败的卡片，能看到供应商返回的原文，**上面还有一句**说这属于哪类问题、该改哪儿：key 过期、余额打光、模型名供应商不认、以及人家自己挂了，在原始报错里长得都差不多，而其中只有一部分是靠改配置能解决的。
 
-Every channel carries a **status dot** next to its name: green = the last call went through, orange = it failed, hollow = never called yet. Real generations update it too, not just ⚡ — so a channel that quietly breaks (expired key, exhausted quota, moved endpoint) shows up here instead of as one more mystifying failed generation. Expand a failed card and you get the provider's raw response **with a line above it** naming which kind of problem this is and what to change: an expired key, an exhausted balance, a model name the provider doesn't know and a provider that is simply down all look alike in a raw error, and only some of them are fixed by editing a field.
+每个模型行下面还能挂自己的**覆盖项** —— 一条通道底下挂着四十个在时长、比例、键名上互相不一致的模型，而不是建四十条通道，靠的就是它。如果你是手写通道：这些旋钮填错**大多不会报错**，只是静默失效 —— 比例发到一个供应商不读的键上不是错误，只是那个设置永远不起作用。
 
-Each model row can also carry its own **Overrides** — that is how one channel holds forty models that disagree about durations, ratios and tier names, instead of forty channels. If you build a channel by hand, note that most of these knobs fail *silently* when wrong: a ratio sent under the key the provider doesn't read isn't an error, it's just a setting that never takes effect.
+## 环境变量
 
-## Environment variables
+最少需要这些就能跑起来（完整列表 + 调优旋钮见 [.env.example](./.env.example)）（Canvex已经配置好了环境变量，所以以下只做展示说明，不需要任何更改）：
 
-**After `cp .env.example .env` in step 2, you do not have to edit a single line of it.**
-Every entry already has a working default; `docker compose up` needs the file to *exist*, not
-to be filled in. (Full list and tuning knobs in [.env.example](./.env.example).)
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `PUBLIC_MEDIA_BASE` | – | **你的浏览器**访问这个后端的地址（默认 `http://localhost:28000`）。只用在「发到聊天」附件那几个绝对 URL 上；从别的机器/域名打开这个应用时才需要改。**供应商永远不会来拉它** —— 源图要么内联成 base64、要么由我们主动推给供应商，所以自托管不需要任何隧道、CDN 或公网地址。 |
+| `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆；同时要设 `CANVAS_AGENT_STORE_DSN`，并装上 `langgraph-checkpoint-postgres`）。 |
+| `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
+| `BACKEND_PORT` / `FRONTEND_PORT` | – | 宿主端口，默认 `28000` / `5173`。 |
+| `VITE_API_URL` | – | 前端调用的后端地址。Docker Compose 会传 `http://localhost:28000`；不走 Compose 直接跑 dev server 又不设它的话，代码回落到 `:8000`，连不上。 |
 
-These three are the ones you might change, and only in specific situations:
-
-| Variable | When you'd change it |
-| --- | --- |
-| `BACKEND_PORT` / `FRONTEND_PORT` | Something else already owns `28000` / `5173`. |
-| `PUBLIC_MEDIA_BASE` | You open the app **from another machine or domain**. It is where your browser reaches the backend (default `http://localhost:28000`), used only for the absolute URLs behind Send-to-chat attachments. **Providers never fetch from it** — source images are inlined as base64 or uploaded to the provider, so a self-hosted install needs no tunnel, CDN or public address. |
-| `CANVAS_AGENT_STORE_BACKEND` | You want agent memory to **survive a restart**: set it to `postgres`, add `CANVAS_AGENT_STORE_DSN`, and install `langgraph-checkpoint-postgres`. The default `memory` is in-process. |
-
-Notes:
-
-- Upgrading from an older version: your existing `CANVAS_CHAT_*` / `CANVAS_IMAGE_PRIMARY_*` / `CANVAS_IMAGE_FALLBACK_*` / `CANVAS_ANGLE_FAL_*` / `CANVAS_VIDEO_*` values are imported into the database once by migrations `0008` / `0010` / `0013` / `0015`. After that they are no longer read and can be deleted from `.env`.
-- The product is free and single-workspace: there is no auth, and billing is a no-op stub (`CANVAS_CREDIT_COST_*` are inert).
 
 ## API
 
-All routes are under `/api/v1/canvas/`.
+所有路由在 `/api/v1/canvas/` 下。
 
-| Purpose | Endpoint |
+| 用途 | 端点 |
 | --- | --- |
-| Scenes (CRUD) | `GET/POST /scenes/`, `GET/PATCH/DELETE /scenes/{id}/` |
-| Chat (SSE stream) | `POST /scenes/{id}/chat/` |
-| Image edit / generate | `POST /scenes/{id}/image-edit/` → `GET /image-edit-jobs/{job_id}/` |
-| Split (subject + background) | `POST /scenes/{id}/split/` → two jobs, both polled at `/image-edit-jobs/{job_id}/` |
-| Video | `POST /scenes/{id}/video/` → `GET /video-jobs/{job_id}/` |
-| Angle (fal.ai) | `POST /scenes/{id}/angle/` → `GET /angle-jobs/{job_id}/` |
-| Active jobs (resume polling) | `GET /scenes/{id}/active-jobs/` |
-| Job history per scene | `GET /scenes/{id}/image-edit-jobs/`, `/video-jobs/`, `/angle-jobs/` |
-| Send-to-chat upload | `POST /scenes/{id}/upload-attachment/` |
-| Media library | `GET /media-library/folders/`, `GET /media-library/folders/{scene_id}/items/` |
-| Skills the agent can see | `GET /skills/` |
-| Install / uninstall skills | `GET` / `POST /skill-library/`, `PATCH` / `DELETE /skill-library/{id}/` |
-| Channels (CRUD + nested models) | `GET/POST /image-providers/`, `GET/PATCH/PUT/DELETE /image-providers/{id}/` |
-| ⚡ test a channel | `POST /image-providers/{id}/test/` — failures come back **200** with the raw response + a diagnosis code |
-| Form schema + presets | `GET /image-providers/schema/` |
-| curl wizard | `POST /image-providers/wizard/parse/` (parse only), `POST /image-providers/wizard/probe/` (one real generation on an unsaved channel) |
-| Models for the toolbar pickers | `GET /image-models/` (no base URL / key in the payload) |
+| 场景（CRUD） | `GET/POST /scenes/`、`GET/PATCH/DELETE /scenes/{id}/` |
+| 聊天（SSE 流） | `POST /scenes/{id}/chat/` |
+| 图像编辑 / 生成 | `POST /scenes/{id}/image-edit/` → `GET /image-edit-jobs/{job_id}/` |
+| 拆分（主体 + 背景） | `POST /scenes/{id}/split/` → 返回两个 job，都在 `/image-edit-jobs/{job_id}/` 轮询 |
+| 视频 | `POST /scenes/{id}/video/` → `GET /video-jobs/{job_id}/` |
+| 换视角（fal.ai） | `POST /scenes/{id}/angle/` → `GET /angle-jobs/{job_id}/` |
+| 进行中的 job（恢复轮询） | `GET /scenes/{id}/active-jobs/` |
+| 每个场景的 job 历史 | `GET /scenes/{id}/image-edit-jobs/`、`/video-jobs/`、`/angle-jobs/` |
+| 发到聊天的上传 | `POST /scenes/{id}/upload-attachment/` |
+| 素材库 | `GET /media-library/folders/`、`GET /media-library/folders/{scene_id}/items/` |
+| Agent 当前看得见的技能 | `GET /skills/` |
+| 装 / 卸技能 | `GET` / `POST /skill-library/`、`PATCH` / `DELETE /skill-library/{id}/` |
+| 通道（CRUD + 嵌套的模型） | `GET/POST /image-providers/`、`GET/PATCH/PUT/DELETE /image-providers/{id}/` |
+| ⚡ 测一条通道 | `POST /image-providers/{id}/test/` —— 失败也返 **200**，带原始报文 + 诊断码 |
+| 表单字段表 + 一键预设 | `GET /image-providers/schema/` |
+| curl 向导 | `POST /image-providers/wizard/parse/`（只解析不发送）、`POST /image-providers/wizard/probe/`（拿**还没保存**的通道真发一次生成） |
+| 工具栏选择器读的模型列表 | `GET /image-models/`（回包里**不含** base URL / key） |
 
-The chat endpoint streams **SSE** (`text/event-stream`, each event framed as `data: <json>\n\n`). Event types: `user_created`, `assistant_delta` (per-token text — the highest-volume one), `tool_call`, `tool_result`, `canvas_asset` (`{url}`, an image the agent produced mid-turn that the client should place), `assistant_final`, `assistant`, `error`, `done`.
+聊天端点走 **SSE**（`text/event-stream`，每个事件的帧格式是 `data: <json>\n\n`）。事件类型：`user_created`、`assistant_delta`（逐 token 的文字流，实际量最大的就是它）、`tool_call`、`tool_result`、`canvas_asset`（`{url}`，agent 本轮产出、客户端要落到画布的图）、`assistant_final`、`assistant`、`error`、`done`。
 
-## Backend
+## 后端
 
-Tech stack: **Django + DRF + Celery + Redis + PostgreSQL + deepagents** (LangChain / LangGraph under the hood).
+技术栈：**Django + DRF + Celery + Redis + PostgreSQL + deepagents**（底层是 LangChain / LangGraph）。
 
 ```
 backend/
-├── config/                      # Django project (settings, celery, urls, wsgi/asgi)
-└── studio/                      # Main app, mounted at /api/v1/canvas/
+├── config/                      # Django 工程 (settings, celery, urls, wsgi/asgi)
+└── studio/                      # 主 app，挂在 /api/v1/canvas/
     ├── models.py                # Scene, ChatMessage, ImageEditJob/Result, VideoJob,
     │                            #   AngleJob/Result, DataFolder/DataAsset,
-    │                            #   ImageProvider/ImageModel (channels), Skill
+    │                            #   ImageProvider/ImageModel (通道), Skill
     ├── views.py  serializers.py  urls.py
     ├── tasks.py                 # Celery: canvas.image_edit_job / image_edit_cutout_job
     │                            #   / video_job / angle_job / cutout_llm_step
-    ├── tests/                    # presets ↔ endpoint contracts, curl import, ratios,
-    │                             #   channel diagnosis, chat protocols, request templates
+    ├── tests/                    # 预设与端点的契约、curl 导入、比例、通道诊断、
+    │                             #   聊天协议、请求模板
     └── services/
-        ├── image.py video.py                 # job creation only (the provider call lives
-        │                                     #   in agent/tools/, see below)
-        ├── angle.py                          # job creation + the fal.ai call
-        ├── image_client.py                   # OpenAI-compatible image client, built from
-        │                                     #   an ImageChannel (DB is the only source)
-        ├── image_channels.py                 # DB rows → the one ImageChannel each caller
-        │                                     #   consumes; kind specs, presets, form schema
-        ├── template_client.py                # runs a user-written request template:
-        │                                     #   send, poll, dig the result out
-        ├── request_template.py               # the template format itself (placeholders)
-        ├── curl_import.py                    # a provider's example curl → that template
-        ├── channel_health.py                 # writes the status dot after every round-trip
-        ├── channel_diagnosis.py              # provider error → "which kind of problem"
-        ├── attachments.py scenes.py billing.py (no-op) http_retry.py listings_utils.py
+        ├── image.py video.py                 # **只**建 job —— 真正调供应商的在
+        │                                     #   agent/tools/ 里, 见下
+        ├── angle.py                          # 建 job + 调 fal.ai
+        ├── image_client.py                   # OpenAI 兼容图像客户端, 由一个 ImageChannel
+        │                                     #   构造 (库是唯一配置来源)
+        ├── image_channels.py                 # 库里那两级行 → 每个调用点消费的那一个
+        │                                     #   ImageChannel; 通道类型规则、预设、表单
+        ├── template_client.py                # 真正跑一条用户写的请求模板: 发送、轮询、
+        │                                     #   从回包里把结果挖出来
+        ├── request_template.py               # 模板格式本身 (占位符放哪儿)
+        ├── curl_import.py                    # 供应商的示例 curl → 那份模板
+        ├── channel_health.py                 # 每次真实往返之后写那个状态点
+        ├── channel_diagnosis.py              # 供应商报错 → 「这属于哪类问题」
+        ├── attachments.py scenes.py billing.py (空操作) http_retry.py listings_utils.py
         └── agent/
             ├── builder.py        # create_deep_agent (model, tools, skills, memory, store)
             ├── skills.py  context.py
-            ├── skill_md.py       # parse + vet an uploaded SKILL.md
-            ├── tools/            # NOT just the agent's tools — this is where every image
-                                  #   and video job actually runs, toolbar ones included
+            ├── skill_md.py       # 解析 + 准入检查上传的 SKILL.md
+            ├── tools/            # **不只是 agent 的工具** —— 全产品每一个图/视频 job
+                                  #   都在这儿真正执行, 包括工具栏发起的
                                   #   (common.py, image.py, video.py)
-            └── skills/           # factory seed only — migration 0018 imports these into the DB,
-                                  #   which is the runtime source of truth (editing these files does nothing)
+            └── skills/           # 只是出厂种子 —— 迁移 0018 把它导进库, 运行时以库为准
+                                  #   (改这些文件不生效)
 ```
 
-### Async job pipeline
+### 异步 job 流水线
 
-A generation request creates a `QUEUED` job in a transaction and enqueues a Celery task on commit (returns `202` with `{job_id, status}` — Split returns two, one per leg). Tasks run on dedicated queues:
+一个生成请求会在事务里建 `QUEUED` job、提交后入 Celery 队列（返回 `202` + `{job_id, status}` —— 拆分返回两个，两条 leg 各一个）。任务跑在专用队列上：
 
-| Queue (worker) | Pool | Tasks |
+| 队列（worker） | 池 | 任务 |
 | --- | --- | --- |
-| `canvas` (`worker_canvas`) | gevent | `image_edit_job`, `video_job`, `angle_job`, `cutout_llm_step` |
-| `canvas_cpu` (`worker_canvas_cpu`) | prefork | `image_edit_cutout_job` (rembg alpha, CPU-bound) |
-| `excalidraw` (`worker`) | prefork | default queue |
+| `canvas`（`worker_canvas`） | gevent | `image_edit_job`、`video_job`、`angle_job`、`cutout_llm_step` |
+| `canvas_cpu`（`worker_canvas_cpu`） | prefork | `image_edit_cutout_job`（rembg alpha，CPU 密集） |
+| `excalidraw`（`worker`） | prefork | 默认队列 |
 
-Cutout / Split is a 2-stage chain: stage 1 (LLM, on `canvas`) produces a white-background image, stage 2 (rembg, on `canvas_cpu`) turns white → transparent alpha. The frontend polls the job endpoints (or `/active-jobs/`) and pins results when ready. Image/video tools invoked by the chat agent create the same jobs — the agent returns a "queued" confirmation and does not block on the render.
+抠图/拆分是两段链：第一段（LLM，跑 `canvas`）出白底图，第二段（rembg，跑 `canvas_cpu`）把白底转透明 alpha。前端轮询 job 端点（或 `/active-jobs/`），就绪后落到画布。聊天 agent 调用的图像/视频工具建的是同样的 job —— agent 返回一句"已入队"，不阻塞等渲染。
 
 ## FAQ
 
-- **Check logs** for a failed job — include all three workers:
+- **查日志**（某个 job 失败时）—— 要带上三个 worker：
 
   ```bash
   docker compose logs -f backend worker worker_canvas worker_canvas_cpu
   ```
 
-- **Image looks wrong or errors** — check the channel's base URL, key and model name under **Channels** in the sidebar, and use the ⚡ test button. Video channels are configured in the same panel but have no ⚡ (see step 4): there, the first real clip is the test.
-- **Video seems stuck** — it probably isn't. Video providers take minutes; the polling budget runs to roughly 50 minutes for template channels, sized off a real APIMart run. The canvas keeps a placeholder box for the whole wait, and survives a page reload.
-- **A generation failed on the source image** — it will say so: the job flips to FAILED with the provider's own message, which the canvas shows on the placeholder card. This is *not* a `PUBLIC_MEDIA_BASE` problem — Canvex inlines your source image as base64 or uploads it to the provider, and never asks anyone to fetch your machine. The one case that still needs public reachability is an **external URL you pasted in yourself**. For image-to-video, see the next entry.
-- **Image-to-video says it can't download your image** — some video providers refuse base64 source images *and* require a publicly fetchable URL. For those, the channel's `upload_path` points at the provider's own upload endpoint and Canvex pushes the bytes there before generating (still an outbound call — your machine is never fetched). The APIMart video preset ships with this set; a hand-built video channel needs it filled in.
-- **Frontend requests blocked by CORS** — keep `CORS_ALLOW_ALL_ORIGINS=true` (default) or list your origin in `CORS_ALLOWED_ORIGINS`.
+- **图像结果不对或报错** —— 在侧栏「通道配置」里核对 base URL、key 和模型名，用 ⚡ 测一下。视频通道也在同一个面板里配，但**没有 ⚡**（见第 4 步）：对它来说，画布上第一条真片子就是那次测试。
+- **视频好像卡住了** —— 多半没有。视频供应商本来就要几分钟；模板通道的轮询预算给到了约 50 分钟，那个数是照 APIMart 一次真实出片实测定的。整个等待期间画布上都留着那个占位框，刷新页面也还在。
+- **某次生成栽在源图上** —— 它会直说：job 翻成 FAILED，带着供应商自己的报错原文，画布会把它显示在占位卡片上。这**不是** `PUBLIC_MEDIA_BASE` 的问题 —— Canvex 要么把源图内联成 base64，要么主动推给供应商，从不指望谁来访问你的机器。唯一还需要「公网可达」的，是**你自己粘进来的外部 URL**。图生视频那一类：有些视频供应商既不收 base64、又要求图片地址公网可达，对这种，通道上的 `upload_path` 指向供应商自己的上传端点，Canvex 在生成之前先把字节推过去。API Mart 的视频预设自带这一项；手写的视频通道要自己填。
+- **前端请求被 CORS 拦** —— 保持 `CORS_ALLOW_ALL_ORIGINS=true`（默认），或把你的来源加进 `CORS_ALLOWED_ORIGINS`。
