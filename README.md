@@ -94,7 +94,7 @@ Open http://localhost:5173 and click **Channels** in the left sidebar. Nothing w
 > **A channel** = one endpoint + one key + one request shape, with one or more **models** under it.
 > **Provider** means the *company* (tu-zi, APIMart, OpenAI) — one company can back several channels.
 
-These are the channel types you can create:
+No two providers name their request parameters the same way, so Canvex ships a ready-made set of them:
 
 1. **Chat (LLM agent) model** — Canvex ships a preset for the third-party LLM API provider **[tu-zi](https://api.tu-zi.com/)**: sign up there, take the API key, paste it into the Channels panel and you're running. It has to be a key that supports OpenAI-style **tool calling** — one that doesn't will reply with text and quietly do nothing on the canvas.
 2. **Image generation · custom template** — Canvex ships a preset for the image provider **[APIMart](https://apimart.ai/)**: sign up, take the API key, paste it in. Edit, Split, and the image tool the LLM agent calls all run on this one key.

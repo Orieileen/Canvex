@@ -94,7 +94,7 @@ docker compose up -d --build
 > **一条「通道」** = 一个端点 + 一把 key + 一套请求形状，下面挂若干个**模型**。
 > 「供应商」在文档和界面里只指那家**公司**（tu-zi / APIMart / OpenAI）—— 同一家公司底下可以有好几条通道。
 
-能新建的通道类型有这几种：
+由于各家供应商的请求参数各不相同，Canvex 预设了一套 API 供应商：
 
 1. **聊天（LLM agent）模型** —— Canvex 预设了 LLM agent 的第三方供应商 **[兔子 tu-zi](https://api.tu-zi.com/)**：在 tu-zi 注册后拿到 API key，填进 Canvex 的通道配置即可用。必须是支持 OpenAI 风格 **tool calling** 的 key —— 不支持的填进来，聊天框会回一段文字然后画布上什么都不发生。
 2. **图片生成 · 自定义模板** —— Canvex 预设了生成图片的第三方供应商 **[API Mart](https://apimart.ai/)**：在 apimart 注册后拿到 API key，填进配置即可用。编辑图片、拆分图片、以及 LLM agent 调用的生图 tool，都用这一把 key。
