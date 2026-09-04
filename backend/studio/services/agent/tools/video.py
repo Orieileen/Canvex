@@ -281,7 +281,9 @@ def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
         # 下拉框拦得住手填的通道, 拦不住 model.overrides 里的一行 JSON, 而"谁都不填"
         # 的表现是比例旋钮静默失效。同 resolution_param 那一段。
         ratio_key = cfg.ratio_param if cfg.ratio_param in RATIO_PARAM_CHOICES else "aspect_ratio"
-        body[ratio_key] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
+        # 空 = 这个模型没有比例参数, 一个键都不发。
+        if ratio_key:
+            body[ratio_key] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
     # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
     # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
     if job.resolution and cfg.allowed_resolutions:

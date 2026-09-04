@@ -667,12 +667,20 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_ratio_scope(self, obj) -> str:
         return self._channel(obj).ratio_scope
 
+    # 比例发到哪个键。前端只关心一件事: **空 = 这个模型没有比例参数**, 那就别显示那个
+    # 下拉 (跟 ratio_scope 是两回事: 那个说"图生时不发", 这个说"压根没这个入参")。
+    # 具体是 aspect_ratio 还是 size 前端不用管, 后端渲染模板时才用得上。
+    ratio_param = serializers.SerializerMethodField()
+
+    def get_ratio_param(self, obj) -> str:
+        return self._channel(obj).ratio_param
+
     class Meta:
         model = ImageModel
         fields = (
             "id", "label", "provider_label", "picker", "sort_order",
             "allowed_ratios", "allowed_durations", "allowed_resolutions",
-            "ratio_scope",
+            "ratio_scope", "ratio_param",
         )
 
 

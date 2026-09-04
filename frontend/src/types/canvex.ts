@@ -364,6 +364,11 @@ export interface CanvasImageModelChoice {
    *  「这个旋钮不存在」—— 工具栏就不显示比例下拉,跟画质下拉同一条规矩。摆一个对这个
    *  模型永远不起作用的控件是在骗人。后端那边发不发由它自己判,不依赖前端配合。 */
   ratio_scope: string;
+  /** 比例发到哪个键(`aspect_ratio` / `size`)。前端只关心**空**这一种情况 ——
+   *  空 = 这个模型压根没有比例参数(MiniMax-Hailuo 三个、wan2.6-i2v-flash 的文档整页
+   *  没有这个入参),那就别显示那个下拉。跟 `ratio_scope` 是两回事:那个说「图生时不
+   *  发」,这个说「没这个入参」。具体填哪个键是后端渲染模板时的事。 */
+  ratio_param: string;
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

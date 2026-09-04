@@ -751,13 +751,10 @@ _APIMART_IMAGE_RATIOS: dict[str, str] = {
 # gemini-omni-flash-preview 的文档写着「其它值按 16:9 处理」—— 也就是**静默换方向**,
 # 用户拿到一条横屏, 而他选的是方形, 没有任何提示。
 #
-# ── 另一件事, 这张表管不了 ──
-# 有四个模型**根本没有比例参数**: MiniMax-Hailuo-02 / -2.3 / -2.3-Fast /
-# wan2.6-i2v-flash (整页只有 resolution)。表里写什么都不对 —— 写值会让画布少一档还是
-# 照发一个不存在的键, 留空至少诚实。代价是它们的比例下拉是纯装饰。
-#
-# "只在文生视频时生效"那一族**已经不在这张表里解决了**, 见下面的 _APIMART_VIDEO_T2V_ONLY
-# 和 ImageChannel.ratio_scope。
+# ── 这张表只管"收哪几种", 另外两件事各有各的出口 ──
+#   "整页没有比例参数"      → _APIMART_VIDEO_NO_RATIO (ratio_param="")
+#   "只在文生视频时生效"    → _APIMART_VIDEO_T2V_ONLY (ratio_scope="text_only")
+#   "比例参数不叫这个名字"  → _APIMART_VIDEO_SIZE_MODELS (ratio_param="size")
 _APIMART_VIDEO_RATIOS: dict[str, str] = {
     # ── /videos/veo3 ── 只有横竖两种
     "veo3.1-fast": "16:9, 9:16",
@@ -950,6 +947,14 @@ _APIMART_VIDEO_SIZE_MODELS: frozenset[str] = frozenset({
     "happyhorse-1.0", "happyhorse-1.1", "grok-imagine-1.5-video-apimart",
 })
 
+# **整页没有比例参数**的模型 —— 不是"忽略", 是这个入参根本不存在。发了只是多一个被丢掉
+# 的键, 而工具栏上那个下拉是纯装饰: 用户选了 9:16, 出来永远是模型自己的画幅。
+# MiniMax-Hailuo 三个和 wan2.6-i2v-flash 的文档里只有 resolution 一档旋钮。
+_APIMART_VIDEO_NO_RATIO: frozenset[str] = frozenset({
+    "MiniMax-Hailuo-02", "MiniMax-Hailuo-2.3", "MiniMax-Hailuo-2.3-Fast",
+    "wan2.6-i2v-flash",
+})
+
 _APIMART_VIDEO_T2V_ONLY: frozenset[str] = frozenset({
     # 「只要传入 image_urls(无论 1 张还是 2 张), 就不能同时设置 aspect_ratio」+ 参数
     # 矩阵里图生那两列标 `-`。**这两个是今天真的每次都在发违规组合的**。
@@ -1115,6 +1120,7 @@ PRESETS: tuple[_Preset, ...] = (
                 # 同上, 来源是个集合而不是"模型 → 值"的表, 所以也不走 _sparse_overrides。
                 **({"ratio_scope": "text_only"} if m in _APIMART_VIDEO_T2V_ONLY else {}),
                 **({"ratio_param": "size"} if m in _APIMART_VIDEO_SIZE_MODELS else {}),
+                **({"ratio_param": ""} if m in _APIMART_VIDEO_NO_RATIO else {}),
             }
             for m, r in _APIMART_VIDEO_RESOLUTIONS.items()
         },

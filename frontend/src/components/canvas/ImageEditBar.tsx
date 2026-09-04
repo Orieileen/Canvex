@@ -832,8 +832,14 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   //
   // 不做成 disabled + tooltip: 一个对某个模型**永远**是灰的控件不是状态提示, 是常驻
   // 噪声 —— 灰色说的是"现在不行", 而这里是"这个模型没有这回事"。
-  const ratioApplies =
-    videoModel.models.find((m) => m.id === videoModel.value)?.ratio_scope !== "text_only";
+  //
+  // 两种情况都不显示, 但原因不同: text_only 是"图生时不发"(而这条路恒为图生),
+  // ratio_param 为空是"这个模型压根没有比例这个入参"。
+  const ratioApplies = (() => {
+    const m = videoModel.models.find((x) => x.id === videoModel.value);
+    if (!m) return true; // 还没选到模型 —— 别在加载态里把控件闪掉
+    return m.ratio_scope !== "text_only" && m.ratio_param !== "";
+  })();
 
   // 换了模型之后旧选择可能不在新列表里 —— select 的 value 找不到 option 会显示空白,
   // 而用户以为自己选了个东西, 然后拿到一个 invalid duration。

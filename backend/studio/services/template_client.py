@@ -39,6 +39,7 @@ from studio.services.http_retry import make_retry_session
 from studio.services.image_client import (
     BODY_TRUNC,
     RATIO_PARAM_CHOICES,
+    RATIO_PARAM_KEYS,
     RESOLUTION_PARAM_CHOICES,
     ImageChannel,
     _url_to_data_uri,
@@ -417,13 +418,15 @@ def video_variables(
     # **跟生图那边"两个键都发"不一样**: 生图那边两个键的值完全一样, 多发一个不会有歧义;
     # 而视频这边发的是同一个值的两个名字, 供应商对未知键宽不宽容这条**没有任何文档**,
     # 而这条端点已经在 base64 那件事上证明过它跟生图不是同一套校验。取排他的那一边。
+    # 空是合法取值 = 这个模型没有比例参数, 两个键都不填。认不出的值 (比如手填错) 退回
+    # aspect_ratio 而不是空 —— "谁都不填"的表现是比例旋钮静默失效, 那正是这一改在修的事。
     ratio_param = channel.ratio_param if channel.ratio_param in RATIO_PARAM_CHOICES else "aspect_ratio"
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
         "duration": secs,
         # 填进去的是 `sent` —— `allowed_ratios` 里 `=` 右半边那个"要发的值"。没配映射时
         # 它跟 `picked` (显示值) 相同, apimart 这 41 个模型目前都是这种。
-        **{name: (sent if name == ratio_param else "") for name in RATIO_PARAM_CHOICES},
+        **{name: (sent if name == ratio_param else "") for name in RATIO_PARAM_KEYS},
         **{name: (tier if name == param else "") for name in RESOLUTION_PARAM_CHOICES},
     }
 

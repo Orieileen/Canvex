@@ -17,6 +17,7 @@ from studio.services.image_channels import (
     _UNDOCUMENTED_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_RATIOS,
+    _APIMART_VIDEO_NO_RATIO,
     _APIMART_VIDEO_SIZE_MODELS,
     _APIMART_VIDEO_T2V_ONLY,
     _APIMART_VIDEO_MODE_MODELS,
@@ -508,6 +509,36 @@ class ApimartVideoRatioTests(SimpleTestCase):
                 self.assertEqual(variables["size"], "")
                 body = render(self.preset.request_template["body"], variables)
                 self.assertNotIn("size", body)
+
+    def test_models_without_a_ratio_param_send_neither_key(self):
+        """整页没有比例参数的四个: 一个比例键都不该发。发了只是多一个被丢掉的键, 而
+        工具栏上那个下拉是纯装饰。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_NO_RATIO):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                    resolution="720p",
+                )
+                self.assertEqual(variables["aspect_ratio"], "")
+                self.assertEqual(variables["size"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+                self.assertNotIn("size", body)
+                # 画质档是它们**唯一**的旋钮 —— 别把它跟着一起带走。
+                self.assertIn(ch.resolution_param or "resolution", body)
+
+    def test_no_ratio_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_NO_RATIO), set(self.preset.models))
+
+    def test_the_three_ratio_tables_do_not_overlap_by_accident(self):
+        """三张表各管一件事, 交集必须是有意的。今天只有 wan2.5-preview 同时在
+        size + t2v_only 两张里 (「有图不发、没图发到 size」)。"""
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_SIZE_MODELS, set())
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_T2V_ONLY, set())
 
     def test_size_table_only_names_real_models(self):
         self.assertLessEqual(set(_APIMART_VIDEO_SIZE_MODELS), set(self.preset.models))

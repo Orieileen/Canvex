@@ -507,7 +507,12 @@ RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
 #
 # 跟 RESOLUTION_PARAM_CHOICES 同一个形状, 也同一个理由: 键名错了不会报错, 只是那个旋钮
 # 静默失效 —— 用户选 9:16, 界面毫无异样, 出来的是模型自己的默认 (多为 16:9)。
-RATIO_PARAM_CHOICES: tuple[str, ...] = ("aspect_ratio", "size")
+# 真实存在的两个键名 (用来遍历"填一个、另一个清空")。
+RATIO_PARAM_KEYS: tuple[str, ...] = ("aspect_ratio", "size")
+# 界面上的可选项 = 两个键名 + 一个空。**空不是"没配", 是"这个模型压根没有比例参数"**
+# —— MiniMax-Hailuo 三个和 wan2.6-i2v-flash 的文档整页没有这个入参, 发了只是多一个
+# 被忽略的键, 而界面上还摆着一个永远不起作用的下拉。
+RATIO_PARAM_CHOICES: tuple[str, ...] = (*RATIO_PARAM_KEYS, "")
 
 # 比例参数在**图生视频**时还算不算数。空 = 算 (默认, 也是大多数)。
 # "text_only" = 只有文生视频算 —— 有参考图时整个比例键不下发。
@@ -605,6 +610,8 @@ class ImageChannel:
     ratio_scope: str = field(default="", metadata={"choices": RATIO_SCOPE_CHOICES})
     # 比例发到哪个键上。见 RATIO_PARAM_CHOICES —— 这一项跟 resolution_param 是同一件事的
     # 另一半: 那边管画质档的键名, 这边管比例的。
+    # 默认 aspect_ratio 而不是空: 空在这里有确切含义 ("这个模型没有比例参数"), 拿它当
+    # "还没配"的话, 任何一条没填这项的通道都会静默地不发比例。
     ratio_param: str = field(
         default="aspect_ratio", metadata={"choices": RATIO_PARAM_CHOICES},
     )
