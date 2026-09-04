@@ -130,15 +130,17 @@ Each model row can also carry its own **Overrides** — that is how one channel 
 
 ## Environment variables
 
-Minimum to get started (full list and tuning knobs in [.env.example](./.env.example)):
+**After `cp .env.example .env` in step 2, you do not have to edit a single line of it.**
+Every entry already has a working default; `docker compose up` needs the file to *exist*, not
+to be filled in. (Full list and tuning knobs in [.env.example](./.env.example).)
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `PUBLIC_MEDIA_BASE` | – | Where **your browser** reaches this backend (default `http://localhost:28000`). Used for the absolute URLs behind Send-to-chat attachments; change it only if you open the app from another machine or domain. **Providers never fetch from it** — source images are inlined as base64 or uploaded to the provider, so a self-hosted install needs no tunnel, CDN or public address. |
-| `CANVAS_AGENT_STORE_BACKEND` | – | `memory` (default, in-process) or `postgres` (persistent agent memory; set `CANVAS_AGENT_STORE_DSN` too, and install `langgraph-checkpoint-postgres`). |
-| `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | Default all `canvex`. |
-| `BACKEND_PORT` / `FRONTEND_PORT` | – | Host ports, default `28000` / `5173`. |
-| `VITE_API_URL` | – | Backend URL the frontend calls. Docker Compose passes `http://localhost:28000`; running the dev server outside Compose without it falls back to `:8000` and won't connect. |
+These three are the ones you might change, and only in specific situations:
+
+| Variable | When you'd change it |
+| --- | --- |
+| `BACKEND_PORT` / `FRONTEND_PORT` | Something else already owns `28000` / `5173`. |
+| `PUBLIC_MEDIA_BASE` | You open the app **from another machine or domain**. It is where your browser reaches the backend (default `http://localhost:28000`), used only for the absolute URLs behind Send-to-chat attachments. **Providers never fetch from it** — source images are inlined as base64 or uploaded to the provider, so a self-hosted install needs no tunnel, CDN or public address. |
+| `CANVAS_AGENT_STORE_BACKEND` | You want agent memory to **survive a restart**: set it to `postgres`, add `CANVAS_AGENT_STORE_DSN`, and install `langgraph-checkpoint-postgres`. The default `memory` is in-process. |
 
 Notes:
 

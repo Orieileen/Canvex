@@ -122,15 +122,17 @@ docker compose up -d --build
 
 ## 环境变量
 
-最少需要这些就能跑起来（完整列表 + 调优旋钮见 [.env.example](./.env.example)）：
+**照第 2 步 `cp .env.example .env` 之后，这个文件一行都不用改。** 里面每一项都有能直接跑
+的默认值；`docker compose up` 需要它**存在**，但不需要你动它。（完整列表 + 调优旋钮见
+[.env.example](./.env.example)。）
 
-| 变量 | 必填 | 说明 |
-| --- | --- | --- |
-| `PUBLIC_MEDIA_BASE` | – | **你的浏览器**访问这个后端的地址（默认 `http://localhost:28000`）。只用在「发到聊天」附件那几个绝对 URL 上；从别的机器/域名打开这个应用时才需要改。**供应商永远不会来拉它** —— 源图要么内联成 base64、要么由我们主动推给供应商，所以自托管不需要任何隧道、CDN 或公网地址。 |
-| `CANVAS_AGENT_STORE_BACKEND` | – | `memory`（默认，进程内）或 `postgres`（持久化 agent 记忆；同时要设 `CANVAS_AGENT_STORE_DSN`，并装上 `langgraph-checkpoint-postgres`）。 |
-| `POSTGRES_DB` / `_USER` / `_PASSWORD` | – | 默认都是 `canvex`。 |
-| `BACKEND_PORT` / `FRONTEND_PORT` | – | 宿主端口，默认 `28000` / `5173`。 |
-| `VITE_API_URL` | – | 前端调用的后端地址。Docker Compose 会传 `http://localhost:28000`；不走 Compose 直接跑 dev server 又不设它的话，代码回落到 `:8000`，连不上。 |
+下面三项是**只在特定情况下**才需要改的：
+
+| 变量 | 什么时候要改 |
+| --- | --- |
+| `BACKEND_PORT` / `FRONTEND_PORT` | `28000` / `5173` 被别的程序占了。 |
+| `PUBLIC_MEDIA_BASE` | 你从**别的机器或域名**打开这个应用。它是浏览器访问后端的地址（默认 `http://localhost:28000`），只用在「发到聊天」附件的绝对 URL 上。**供应商永远不会来拉它** —— 源图要么内联成 base64、要么由我们主动推给供应商，所以自托管不需要任何隧道、CDN 或公网地址。 |
+| `CANVAS_AGENT_STORE_BACKEND` | 你想让 agent 记忆**跨重启保留**：改成 `postgres`，同时设 `CANVAS_AGENT_STORE_DSN`，并装上 `langgraph-checkpoint-postgres`。默认 `memory` 是进程内的。 |
 
 说明：
 
