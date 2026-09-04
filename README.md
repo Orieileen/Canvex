@@ -105,7 +105,18 @@ These are the channel types you can create:
 
 The panel has three ways in, in descending order of how much you have to know:
 
-**Quick setup** — one-click presets grouped by role: five chat providers (tu-zi, OpenAI, Google, DeepSeek, Zhipu GLM), three image ones (APIMart, OpenAI, Google), one video (APIMart) and one Angle (fal.ai). Click one and a key field appears right there — that's the whole setup. The APIMart image and video presets arrive carrying every model from that provider's docs (dozens each) along with the ratios, durations and quality tiers each one actually accepts.
+**Quick setup** — one-click presets grouped by role. Click one and a key field appears right there; filling it in is the whole setup.
+
+| Role | Presets |
+| --- | --- |
+| Chat | **[tu-zi](https://api.tu-zi.com/)**, OpenAI, Google, DeepSeek, Zhipu GLM |
+| Image | **[APIMart](https://apimart.ai/)**, OpenAI, Google |
+| Video | **[APIMart](https://apimart.ai/)** |
+| Angle | **[fal.ai](https://fal.ai/)** |
+
+**[tu-zi](https://api.tu-zi.com/) for chat and [APIMart](https://apimart.ai/) for images and video are the pair this project actually runs on** — every feature here was built and tested against them, so they are the shortest path to a working install. The rest are there so you aren't forced onto those two. Angle has a single option because the viewpoint LoRA only exists on [fal.ai](https://fal.ai/).
+
+The APIMart image and video presets arrive carrying every model from that provider's docs (dozens each), along with the ratios, durations and quality tiers each one actually accepts.
 
 **Set up a provider from a curl example** — for anything else, paste the example `curl` from the provider's docs and the wizard builds the channel: no JSON to write. Chat and Angle channels take two steps (it just lifts the endpoint, key and model name out of the command). Image and video channels take three, because there the wizard **sends one real request** to work out where the result sits in the response and whether the provider is async — their docs usually won't tell you — and then shows you the image it just generated.
 
