@@ -30,8 +30,6 @@ Language: [中文](./README.zh-CN.md)
 - **Originals stay original** — images you drag, paste or open go in at their **native pixel size**; Canvex uploads them through the backend instead of letting the canvas downscale them to 1440px. Toolbar and paste imports get a placement preview that follows the cursor.
 - **You can watch it work** — the moment you hit generate, a box the size of the *result* is reserved on the canvas; a failure turns into a card carrying the provider's own error, not a red tombstone. Reload the page mid-render and it picks the job back up.
 - **Media library** — saves every image / video you generate, grouped per canvas; click a thumbnail to drop it back onto the current board.
-- **Per-model constraints, transcribed from the docs** — a video model that only makes 8-second clips, an image model that tops out at 1K, one that measures quality in megapixels instead of "K": the toolbar dropdowns list **what the model you picked actually accepts**, because each preset ships that table for every model under it. No dead knobs, and nothing 400s for being out of range. The canvas defaults (1K / 2K / 4K, 5/10/15 s, 16:9 / 9:16 / 1:1) are just the fallback for a model that reports nothing.
-- **Bring your own providers** — endpoint, key, model name and the whole request shape live in the UI, not in `.env`. Configure as many channels as you like, then pick which one runs each generation from the toolbar: Google for this image, GPT for the next. (The chat model is deliberately *not* in that picker — there is one chat LLM per install, set in the Channels panel.)
 
 ## Architecture at a glance
 
