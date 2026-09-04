@@ -358,6 +358,10 @@ export interface CanvasImageModelChoice {
    *  各家从 360p 排到 4k,还有 MiniMax 的 `2K`、可灵的 std/pro(后端把它显示成
    *  720P/1080P,发出去才换回 std/pro,前端不用知道这件事)。 */
   allowed_resolutions: string[];
+  /** 工具栏该不该显示比例下拉。后端算好的**一个事实** —— 两种情况都是「别显示」,
+   *  但原因不同:这个模型在图生视频时不收比例(而画布的视频标签恒为图生),或者它
+   *  压根没有比例这个入参。具体是哪种、以及键名叫什么,前端不用管。 */
+  ratio_applies: boolean;
 }
 
 /** POST /image-providers/<id>/test/ 的结果。ok=false 也是 HTTP 200 ——

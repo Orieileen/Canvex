@@ -501,6 +501,29 @@ CHAT_PROTOCOL_CHOICES: tuple[str, ...] = ("", "openai", "anthropic")
 # 不下发 —— 配得看上去完全正确, 而画质旋钮不起作用, 没有任何报错。
 RESOLUTION_PARAM_CHOICES: tuple[str, ...] = ("resolution", "mode")
 
+# 比例发到哪个键上。同一件事在 apimart 视频这边有两个键名: 大多数模型叫 `aspect_ratio`,
+# 而 seedance-2.0 全家 / wan2.5 / wan2.7 / pixverse / happyhorse / grok 叫 `size`
+# (seedance-2.0 那页的对比表最直白: 「1.5 Pro: aspect_ratio | 2.0: **size**」)。
+#
+# 跟 RESOLUTION_PARAM_CHOICES 同一个形状, 也同一个理由: 键名错了不会报错, 只是那个旋钮
+# 静默失效 —— 用户选 9:16, 界面毫无异样, 出来的是模型自己的默认 (多为 16:9)。
+# 真实存在的两个键名 (用来遍历"填一个、另一个清空")。
+RATIO_PARAM_KEYS: tuple[str, ...] = ("aspect_ratio", "size")
+# 界面上的可选项 = 两个键名 + 一个空。**空不是"没配", 是"这个模型压根没有比例参数"**
+# —— MiniMax-Hailuo 三个和 wan2.6-i2v-flash 的文档整页没有这个入参, 发了只是多一个
+# 被忽略的键, 而界面上还摆着一个永远不起作用的下拉。
+RATIO_PARAM_CHOICES: tuple[str, ...] = (*RATIO_PARAM_KEYS, "")
+
+# 比例参数在**图生视频**时还算不算数。空 = 算 (默认, 也是大多数)。
+# "text_only" = 只有文生视频算 —— 有参考图时整个比例键不下发。
+#
+# 做成 per-model 旋钮而不是"有图就不发": 这是逐模型的事实, 而且**两个方向都有真实
+# 模型**。可灵那四个和 vidu 的 viduq3 / viduq3-mix 文档明写图生时比例仍是合法参数
+# (可灵原话是"可能被图片实际比例覆盖", 不是失效); 而 viduq3 / viduq3-mix **只有**
+# 参考生视频一种模式 (image_urls 必填) —— 一刀切等于把它们唯一的方向旋钮拆了, 用户
+# 选 9:16 永远拿到 16:9, 而且没有任何报错。
+RATIO_SCOPE_CHOICES: tuple[str, ...] = ("", "text_only")
+
 
 @dataclass(frozen=True)
 class ImageChannel:
@@ -578,6 +601,20 @@ class ImageChannel:
     allowed_ratios: str = field(
         default="", metadata={"example": "16:9, 1:1, 4:3, auto  或  16:9=1536x1024"},
     )
+    # 上面那张表管"收哪几种", 这一项管"**什么时候**还收"。见 RATIO_SCOPE_CHOICES。
+    #
+    # 存在的理由是文档里两句话的差别: viduq3-pro 写「只要传入 `image_urls`…就不能同时
+    # 设置 `aspect_ratio`」(禁止), 而 kling-v3 写「可能被图片实际比例覆盖」(仍是合法
+    # 参数)。前者传了是违规组合, 后者不传就丢掉一个真能用的旋钮 —— 一个全局开关表达
+    # 不了这个差别, 所以它跟 allowed_ratios 挂在同一层。
+    ratio_scope: str = field(default="", metadata={"choices": RATIO_SCOPE_CHOICES})
+    # 比例发到哪个键上。见 RATIO_PARAM_CHOICES —— 这一项跟 resolution_param 是同一件事的
+    # 另一半: 那边管画质档的键名, 这边管比例的。
+    # 默认 aspect_ratio 而不是空: 空在这里有确切含义 ("这个模型没有比例参数"), 拿它当
+    # "还没配"的话, 任何一条没填这项的通道都会静默地不发比例。
+    ratio_param: str = field(
+        default="aspect_ratio", metadata={"choices": RATIO_PARAM_CHOICES},
+    )
     # 这个模型**真的收**哪几个画质档, 由低到高; 空 = 这个模型没有画质旋钮, 那个键不下发
     # (= 用供应商自己的默认, 也就是这个功能之前的行为)。
     #
@@ -595,6 +632,18 @@ class ImageChannel:
     resolution_param: str = field(
         default="resolution", metadata={"choices": RESOLUTION_PARAM_CHOICES},
     )
+    # ── 参考图怎么交给这家 ──
+    # 空 = 内联成 base64 data URI (绝大多数生图端点收, 自托管不需要公网地址)。
+    # 填了路径 = 先 multipart POST 到 `{base_url}{upload_path}` 换一个**供应商自己托管**
+    # 的公开 URL, 再把那个 URL 填进请求体。
+    #
+    # 为什么需要它: apimart 的**视频**端点两条都卡死 —— 文档明写「不再支持在生成接口中
+    # 直接传入 base64」, 而 `image_urls` 又要求公网可达; 自托管的
+    # `http://localhost:28000/media/...` 供应商永远抓不到。这时唯一的出路是我们主动把
+    # 字节推过去。方向仍然是本机往外发, 不需要隧道。
+    upload_path: str = field(default="", metadata={"example": "/uploads/images"})
+    # 上传回包里哪个字段是那个地址 (request_template.extract 的路径语法)。
+    upload_result_path: str = "url"
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False

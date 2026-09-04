@@ -38,6 +38,8 @@ import requests
 from studio.services.http_retry import make_retry_session
 from studio.services.image_client import (
     BODY_TRUNC,
+    RATIO_PARAM_CHOICES,
+    RATIO_PARAM_KEYS,
     RESOLUTION_PARAM_CHOICES,
     ImageChannel,
     _url_to_data_uri,
@@ -387,13 +389,29 @@ def video_variables(
     比例同样过一遍 `allowed_ratios` —— 视频模型的可用比例往往比生图还窄 (常见只有
     16:9 / 9:16 / 1:1)。
 
-    `size` / `aspect_ratio` 的分工同 `image_variables`: 前者是要发的值, 后者永远是比例。
+    **`size` / `aspect_ratio` 的分工跟 `image_variables` 不一样, 别照抄那边的直觉。**
+    生图那边两个占位符是"同一个值的两种形式", 每次都填满 (`aspect_ratio` = 比例、
+    `size` = 要发的值), 模板写哪个都行。视频这边它们是**同一个键的两个名字** ——
+    这家一半模型叫 `aspect_ratio`, 另一半叫 `size` —— 所以由 `channel.ratio_param`
+    选中一个填 "要发的值", 另一个渲染成空 → 那个键整个消失。跟画质档那两个同一套。
+
+    对既有模板的影响: 通道没配 `ratio_param` 时默认 `aspect_ratio`, 于是 `{{size}}`
+    渲染成空。模板里靠 `{{size}}` 拿比例的通道要把 `ratio_param` 改成 `size`。
 
     **画质档两个占位符只填一个**: 同一件事在 apimart 有两个键名 (37 个模型叫
     `resolution`, 可灵那 4 个叫 `mode`), 而模板是每条通道一份、模型有 41 个。所以两个都
     摆出来, 由 `channel.resolution_param` 决定填哪个, 另一个渲染成空 → 那个键整个消失。
     """
-    picked, sent = resolve_ratio(channel.allowed_ratios, aspect_ratio)
+    # 报了 text_only 的模型在有参考图时**整个比例键不下发** (见 ImageChannel.ratio_scope)。
+    # **整个跳过 resolve_ratio, 而不是喂它一个空串**: 它没有 resolve_resolution 那条
+    # "空进空出"的闸, 空串会经 nearest_ratio 退回 allowed[0] —— 在配了 allowed_ratios
+    # 的那几个模型上被重新填成 16:9, 而那正是这一改想避免的那个键。
+    if image_urls and channel.ratio_scope == "text_only":
+        sent = ""
+    else:
+        # `[1]` = 要发的值 (`allowed_ratios` 里 `=` 右半边); 左半边那个"显示值"是给
+        # 选择器用的, 到不了请求体。
+        sent = resolve_ratio(channel.allowed_ratios, aspect_ratio)[1]
     # 时长同样过一遍。选择器已经按 allowed_durations 列过一次, 这里管它拦不住的:
     # agent 自己挑的秒数, 以及"换了模型之后 localStorage 里那个旧选择失效"。
     secs = nearest_duration(duration, parse_durations(channel.allowed_durations))
@@ -401,12 +419,21 @@ def video_variables(
     # 认不出的键名退回 `resolution` 而不是谁都不填: 下拉框拦得住手填的通道, 拦不住
     # model.overrides 里的一行 JSON —— 而"谁都不填"的表现是画质旋钮静默失效。
     param = channel.resolution_param if channel.resolution_param in RESOLUTION_PARAM_CHOICES else "resolution"
+    # 比例的键名同理 —— 这家一半模型叫 `aspect_ratio`, 另一半叫 `size` (见
+    # RATIO_PARAM_CHOICES)。两个都摆出来、只填一个, 另一个渲染成空 → 那个键整个消失。
+    #
+    # **跟生图那边"两个键都发"不一样**: 生图那边两个键的值完全一样, 多发一个不会有歧义;
+    # 而视频这边发的是同一个值的两个名字, 供应商对未知键宽不宽容这条**没有任何文档**,
+    # 而这条端点已经在 base64 那件事上证明过它跟生图不是同一套校验。取排他的那一边。
+    # 空是合法取值 = 这个模型没有比例参数, 两个键都不填。认不出的值 (比如手填错) 退回
+    # aspect_ratio 而不是空 —— "谁都不填"的表现是比例旋钮静默失效, 那正是这一改在修的事。
+    ratio_param = channel.ratio_param if channel.ratio_param in RATIO_PARAM_CHOICES else "aspect_ratio"
     return {
         **_base_variables(channel, prompt=prompt, image_urls=image_urls, session=session),
-        # 跟生图那张表同一个分工: `aspect_ratio` 永远是比例, `size` 是**这家要的那个值**
-        # (`allowed_ratios` 里 `=` 右半边)。没配映射时两者相同。视频这边以前只有前者,
-        # 于是那半个字段在视频通道上是个静默的空操作。
-        "duration": secs, "aspect_ratio": picked, "size": sent,
+        "duration": secs,
+        # 填进去的是 `sent` —— `allowed_ratios` 里 `=` 右半边那个"要发的值"。没配映射时
+        # 它跟 `picked` (显示值) 相同, apimart 这 41 个模型目前都是这种。
+        **{name: (sent if name == ratio_param else "") for name in RATIO_PARAM_KEYS},
         **{name: (tier if name == param else "") for name in RESOLUTION_PARAM_CHOICES},
     }
 

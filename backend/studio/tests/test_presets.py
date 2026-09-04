@@ -17,6 +17,9 @@ from studio.services.image_channels import (
     _UNDOCUMENTED_IMAGE_MODELS,
     _APIMART_VIDEO_DURATIONS,
     _APIMART_VIDEO_RATIOS,
+    _APIMART_VIDEO_NO_RATIO,
+    _APIMART_VIDEO_SIZE_MODELS,
+    _APIMART_VIDEO_T2V_ONLY,
     _APIMART_VIDEO_MODE_MODELS,
     _APIMART_VIDEO_RESOLUTIONS,
     KIND_SPECS,
@@ -134,6 +137,21 @@ class ApimartVideoPresetTests(SimpleTestCase):
         names = placeholders(_STARTER_ASYNC_VIDEO)
         self.assertIn("resolution", names)
         self.assertIn("mode", names)
+
+    def test_every_video_starter_carries_both_ratio_keys(self):
+        """比例那两个键同理, 而且这条**更容易踩**: `ratio_param` 是 custom_video 通道
+        界面上的一个下拉, 用户随手把它设成 `size` —— 模板里没有 `{{size}}` 的话, 比例键
+        会一个都不发 (aspect_ratio 被置空、size 渲染不出来), 比不设还糟。
+
+        所以这条钉的是**每一个视频起点**, 不只 apimart 那个。"""
+        from studio.services.image_channels import KIND_SPECS
+        from studio.models import ImageProvider
+
+        for label, template in KIND_SPECS[ImageProvider.Kind.CUSTOM_VIDEO].starters:
+            with self.subTest(starter=label):
+                names = placeholders(template)
+                self.assertIn("aspect_ratio", names)
+                self.assertIn("size", names)
 
 
 class ApimartImagePresetTests(SimpleTestCase):
@@ -412,3 +430,139 @@ class ApimartVideoRatioTests(SimpleTestCase):
                     duration=5, aspect_ratio="1:1",
                 )
                 self.assertEqual(variables["aspect_ratio"], "1:1")
+
+    # ── 图生视频时的比例键 (ratio_scope) ────────────────────────────────────
+    #
+    # 画布的视频标签**恒为图生**, 所以这几条测的是每一次真实生成。
+    # 一刀切("有图就不发")是错的: 文档里有九个模型图生时比例仍然生效, 其中
+    # viduq3 / viduq3-mix **只有**参考生视频一种模式 —— 不发等于拆掉它们唯一的方向
+    # 旋钮, 而且不报错。所以这是一张 per-model 的表, 下面两组分别钉住它的两侧。
+
+    def test_t2v_only_models_drop_the_ratio_when_an_image_is_sent(self):
+        """报了 text_only 的模型带参考图时, 比例两个键都要空 —— 空 = render 把键整个
+        删掉。viduq3-pro / -turbo 的文档写的是「就不能同时设置 aspect_ratio」, 是禁止,
+        不是"传了会被忽略"。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_T2V_ONLY):
+            with self.subTest(model=model):
+                variables = template_client.video_variables(
+                    _channel(self.preset, model), prompt="p",
+                    image_urls=["https://x/a.png"], duration=5, aspect_ratio="16:9",
+                )
+                self.assertEqual(variables["aspect_ratio"], "")
+                self.assertEqual(variables["size"], "")
+                # 渲染之后那**两个**键都必须真的不在 body 里 —— 只把值置空是不够的,
+                # 而漏查 size 会放过 wan2.5-preview (它的比例参数正是叫 size)。
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+                self.assertNotIn("size", body)
+
+    def test_t2v_only_models_keep_the_ratio_without_an_image(self):
+        """没有参考图时照发 —— 通道配置向导的试跑走的正是这条 (image_urls=[])。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_T2V_ONLY):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                )
+                # 盯**路由到的那个键** —— 一半模型叫 aspect_ratio, 另一半叫 size。
+                self.assertEqual(variables[ch.ratio_param], "9:16")
+
+    def test_models_that_still_take_a_ratio_with_an_image_keep_it(self):
+        """反面: 这几个文档明写图生时比例仍然是合法参数, 一个都不能被顺手带走。
+        viduq3 / viduq3-mix 尤其要紧 —— 它们**只有**参考生视频一种模式。"""
+        from studio.services import template_client
+
+        for model in ("kling-v3", "kling-v2-6", "viduq3", "viduq3-mix",
+                      "MiniMax-H3", "happyhorse-1.0", "seedance-2.5"):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=["https://x/a.png"],
+                    duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables[ch.ratio_param], "9:16")
+
+    def test_t2v_only_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_T2V_ONLY), set(self.preset.models))
+
+    # ── 比例发到哪个键 (ratio_param) ──────────────────────────────────────
+    #
+    # 键名错了**不会报错**, 只是那个旋钮静默失效: 用户选 9:16, 界面毫无异样, 出来的是
+    # 模型自己的默认。所以这几条钉的是"填对了一个、另一个必须空"。
+
+    def test_size_models_route_the_ratio_to_size(self):
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_SIZE_MODELS):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "size")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["size"], "9:16")
+                # 另一个必须空, 否则等于两个键都发 —— 而这条端点对未知键宽不宽容没有
+                # 任何文档, 它已经在 base64 那件事上证明过跟生图不是同一套校验。
+                self.assertEqual(variables["aspect_ratio"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+                self.assertEqual(body["size"], "9:16")
+
+    def test_other_models_still_route_to_aspect_ratio(self):
+        from studio.services import template_client
+
+        for model in ("seedance-2.5", "viduq3", "veo3.1-fast", "MiniMax-H3", "kling-v3"):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "aspect_ratio")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                )
+                self.assertEqual(variables["aspect_ratio"], "9:16")
+                self.assertEqual(variables["size"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("size", body)
+
+    def test_models_without_a_ratio_param_send_neither_key(self):
+        """整页没有比例参数的四个: 一个比例键都不该发。发了只是多一个被丢掉的键, 而
+        工具栏上那个下拉是纯装饰。"""
+        from studio.services import template_client
+
+        for model in sorted(_APIMART_VIDEO_NO_RATIO):
+            with self.subTest(model=model):
+                ch = _channel(self.preset, model)
+                self.assertEqual(ch.ratio_param, "")
+                variables = template_client.video_variables(
+                    ch, prompt="p", image_urls=[], duration=5, aspect_ratio="9:16",
+                    resolution="720p",
+                )
+                self.assertEqual(variables["aspect_ratio"], "")
+                self.assertEqual(variables["size"], "")
+                body = render(self.preset.request_template["body"], variables)
+                self.assertNotIn("aspect_ratio", body)
+                self.assertNotIn("size", body)
+                # 画质档是它们**唯一**的旋钮 —— 别把它跟着一起带走。
+                self.assertIn(ch.resolution_param or "resolution", body)
+
+    def test_no_ratio_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_NO_RATIO), set(self.preset.models))
+
+    def test_size_table_only_names_real_models(self):
+        self.assertLessEqual(set(_APIMART_VIDEO_SIZE_MODELS), set(self.preset.models))
+
+    def test_the_three_ratio_tables_do_not_overlap_by_accident(self):
+        """三张表各管一件事, 交集必须是**有意的**。
+
+        no_ratio ("整页没这个入参") 跟另外两张互斥 —— 一个模型不可能既没有比例参数,
+        又要求把它发到 size / 又只在文生时收。而 size × t2v_only 的交集是有意义的:
+        「没图时发到 size, 有图时一个键都不发」, 今天只有 wan2.5-preview。这条钉住
+        那个交集不会悄悄长大。"""
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_SIZE_MODELS, set())
+        self.assertEqual(_APIMART_VIDEO_NO_RATIO & _APIMART_VIDEO_T2V_ONLY, set())
+        self.assertEqual(
+            _APIMART_VIDEO_SIZE_MODELS & _APIMART_VIDEO_T2V_ONLY, {"wan2.5-preview"},
+        )

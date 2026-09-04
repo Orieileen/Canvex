@@ -658,11 +658,27 @@ class ImageModelChoiceSerializer(serializers.ModelSerializer):
     def get_allowed_resolutions(self, obj) -> list[str]:
         return parse_resolutions(self._channel(obj).allowed_resolutions)
 
+    # 工具栏该不该显示比例下拉。**一个派生事实, 不是两个路由字段** —— 隔壁
+    # `resolution_param` 就从来没下发过, 画质下拉的显隐是靠 `allowed_resolutions` 是否
+    # 为空。比例这边借不到那个信号 (allowed_ratios 为空的含义是"三档都收"而不是"没有
+    # 这个旋钮"), 所以单给一个布尔, 而不是把 "text_only" / "" 这两个字面量和它们的组合
+    # 规则搬到前端去。
+    #
+    # 两种情况都是"别显示", 但原因不同: ratio_scope=text_only 是"有参考图时不发"(而画布
+    # 的视频标签恒为图生), ratio_param="" 是"这个模型压根没有比例这个入参"。
+    # 原始的那两个字段仍然在通道配置表单里露着 (走 tunable_schema), 那是另一个消费者。
+    ratio_applies = serializers.SerializerMethodField()
+
+    def get_ratio_applies(self, obj) -> bool:
+        channel = self._channel(obj)
+        return channel.ratio_scope != "text_only" and channel.ratio_param != ""
+
     class Meta:
         model = ImageModel
         fields = (
             "id", "label", "provider_label", "picker", "sort_order",
             "allowed_ratios", "allowed_durations", "allowed_resolutions",
+            "ratio_applies",
         )
 
 

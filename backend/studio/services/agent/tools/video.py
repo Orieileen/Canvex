@@ -27,6 +27,7 @@ from studio.services.http_retry import make_retry_session
 from studio.services.image_channels import KIND_SPECS, require_channel, resolve_model_id
 from studio.services import channel_health, template_client
 from studio.services.image_client import (
+    RATIO_PARAM_CHOICES,
     ImageChannel,
     nearest_duration,
     parse_durations,
@@ -42,7 +43,7 @@ from .common import (
     is_public_http_url,
     job_lifecycle,
     our_media_relpath,
-    source_to_inline_uri,
+    source_for_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,30 @@ def run_video_job(job: VideoJob) -> None:
         # 而不是变成一个只有日志里能看到的异常 (跟 image.py 的 client 初始化同款)。
         channel = resolve_video_channel(job)
 
+        # 源图变形在**分流之前** —— 同 image.py `_generate_and_persist`。具体变成什么由
+        # 通道决定 (见 source_for_channel): 收 base64 的内联成 data URI, 只收公网地址的
+        # 先推给供应商换一个它托管的 URL。外部公网图两种情况都原样传。
+        #
+        # **别再挪回任何一条分支里**: job.image_urls 里存的就是
+        # `http://localhost:28000/media/...` —— services/video.py:37 和本文件那个 agent
+        # 入口都是拿「提交时会处理」当前提, 才敢把一个外部不可达的地址存进库 (那两行注释
+        # 写着 "inlined from storage at submit, no public URL needed")。这个前提对**每条
+        # 通道**都必须成立; 之前只有内置分支兑现, 模板分支把 localhost 地址原样发给了
+        # 供应商, 表现是供应商回一句"抓不到你的图", 看起来像通道配错了。
+        originals = list(job.image_urls or [])
+        image_urls = [source_for_channel(channel, u) for u in originals]
+        # data URI 自包含, 无需可达性检查; 只对 http(s) 远程源做 fail-loud 预检。
+        # 放在 channel_health.watch **之外**: 源图读不到 / 源站 404 是我们这端或源站的
+        # 问题, 不该在通道卡片上给供应商记一个红点 (同 image.py)。
+        #
+        # **只查我们原样透传的那些** (`shaped == original`)。上传那条路换回来的是
+        # **供应商刚刚自己签发**的地址 —— 它可不可达不是我们能配错的东西, 而这个预检
+        # 的报错原文写的是 "check PUBLIC_MEDIA_BASE=…", 跟那个地址毫无关系。多查一次
+        # 的代价也是真的: 每张图一次 5 秒预算的 HEAD, 而不少 CDN 对 HEAD 直接回 403/405。
+        for original, shaped in zip(originals, image_urls):
+            if shaped == original and shaped.startswith(("http://", "https://")):
+                assert_source_url_reachable(shaped)
+
         # 视频通道没有「测试」按钮 (出片要几分钟, 撑不过一次同步请求 —— 见 KIND_SPECS 的
         # untestable_reason), 所以**真实生成是它唯一的健康信号**。两个分支都在 watch 里,
         # 提交和轮询一起算 —— 用户眼里"生成一条视频"就是一次调用。
@@ -92,10 +117,10 @@ def run_video_job(job: VideoJob) -> None:
             # `_submit` / `_poll_until_done` 的写死形状一条都不适用。
             # 同 image.py: 看 spec.template, 别按 kind 名字判。
             if KIND_SPECS[channel.kind].template:
-                job.result_url = _template_video(job, channel)
+                job.result_url = _template_video(job, channel, image_urls)
                 return
 
-            task_id = _submit(job, channel)
+            task_id = _submit(job, channel, image_urls)
             job.task_id = task_id
             job.save(update_fields=["task_id", "updated_at"])
 
@@ -104,8 +129,13 @@ def run_video_job(job: VideoJob) -> None:
         job.thumbnail_url = result.get("thumbnail_url", "")
 
 
-def _template_video(job: VideoJob, channel: ImageChannel) -> str:
+def _template_video(job: VideoJob, channel: ImageChannel, image_urls: list[str]) -> str:
     """模板通道的整条视频生成 —— 返回结果地址。
+
+    `image_urls` 是**已经按通道变形过**的 (调用方在分流前做, 见 run_video_job): 里面是
+    data URI 或供应商能抓到的公网地址, 不会是 `http://localhost:28000/media/...`。别改回
+    直接读 job.image_urls —— 模板里写 `{{images}}` 时 template_client 是原样透传的
+    (只有 `{{images_base64}}` 才会去下载, 而那条对本机地址同样抓不到)。
 
     不落字节: 视频跟内置 video 通道一样只存外链 (`job.result_url`)。`task_id` 也不回写
     job 行, 因为那是内置形状的概念 (模板里叫什么、在哪一层, 由用户决定)。
@@ -115,7 +145,7 @@ def _template_video(job: VideoJob, channel: ImageChannel) -> str:
     """
     # session 不传: video_variables / execute 都默认走 template_client.SHARED_SESSION。
     variables = template_client.video_variables(
-        channel, prompt=job.prompt, image_urls=list(job.image_urls or []),
+        channel, prompt=job.prompt, image_urls=list(image_urls),
         duration=job.duration, aspect_ratio=job.aspect_ratio,
         resolution=job.resolution,
     )
@@ -229,7 +259,7 @@ def generate_video(
 # Submit + poll internals
 # ---------------------------------------------------------------------------
 
-def _submit(job: VideoJob, cfg: ImageChannel) -> str:
+def _submit(job: VideoJob, cfg: ImageChannel, image_urls: list[str]) -> str:
     endpoint = f"{cfg.base_url.rstrip('/')}/videos/generations"
 
     # 时长和比例先过一遍这个模型**真的收**的那张表 —— 跟模板通道那条路 (见
@@ -244,26 +274,39 @@ def _submit(job: VideoJob, cfg: ImageChannel) -> str:
         "model": cfg.model,
         "prompt": job.prompt,
         "duration": nearest_duration(job.duration, parse_durations(cfg.allowed_durations)),
-        "aspect_ratio": resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1],
     }
+    # 比例跟画质档同一个写法 (显式 if, 不是"填空串") —— 这里是手拼 dict, 没有模板通道
+    # request_template.render 那道"空值键整个不下发"的闸, `"aspect_ratio": ""` 会照样
+    # POST 出去。
+    #
+    # 报了 text_only 的模型在有参考图时整个键不发: viduq3-pro / -turbo 的文档写的是
+    # 「就不能同时设置 `aspect_ratio`」—— 是禁止, 不是"传了会被忽略"。
+    if not (image_urls and cfg.ratio_scope == "text_only"):
+        # 键名也跟着通道走 —— 这家一半模型叫 aspect_ratio, 另一半叫 size
+        # (见 RATIO_PARAM_CHOICES)。认不出的值退回 aspect_ratio 而不是谁都不填:
+        # 下拉框拦得住手填的通道, 拦不住 model.overrides 里的一行 JSON, 而"谁都不填"
+        # 的表现是比例旋钮静默失效。同 resolution_param 那一段。
+        ratio_key = cfg.ratio_param if cfg.ratio_param in RATIO_PARAM_CHOICES else "aspect_ratio"
+        # 空 = 这个模型没有比例参数, 一个键都不发。
+        if ratio_key:
+            body[ratio_key] = resolve_ratio(cfg.allowed_ratios, job.aspect_ratio or "16:9")[1]
     # 画质档只在通道报了支持哪几档时才发 —— 没配过 allowed_resolutions 的通道保持原样
     # 不多发一个键 (多发的后果是 400, 而这条内置形状是给"配好就在用"的老通道跑的)。
     if job.resolution and cfg.allowed_resolutions:
         body[cfg.resolution_param or "resolution"] = resolve_resolution(
             cfg.allowed_resolutions, job.resolution,
         )[1]
-    if job.image_urls:
-        # 我们自己的 media 读盘内联成 base64 data URI(免公网 URL / 隧道);外部公网
-        # URL 原样传 + 可达性预检(防 provider 拿不到 reference 时静默走纯文生视频)。
-        inlined = [source_to_inline_uri(u) for u in job.image_urls]
-        for u in inlined:
-            if u.startswith(("http://", "https://")):
-                assert_source_url_reachable(u)
-        body["image_urls"] = inlined
+    if image_urls:
+        # 内联 + 可达性预检已经在 run_video_job 里做过 (分流之前, 两条通道共用一份)。
+        # 这里拿到的就是最终要发的形状: data URI 或真正的公网地址。
+        body["image_urls"] = list(image_urls)
 
     logger.info(
         "video submit: endpoint=%s model=%s duration=%s aspect=%s images=%d",
-        endpoint, cfg.model, body["duration"], body["aspect_ratio"], len(job.image_urls or []),
+        endpoint, cfg.model, body["duration"],
+        # `.get` 而不是 `[...]`: 这个键现在可能不存在 (text_only), 也可能叫 size ——
+        # 而这只是一行日志, 不该有本事把一次已经拼好的提交打成 KeyError。
+        body.get("aspect_ratio") or body.get("size") or "-", len(image_urls),
     )
     resp = _session.post(
         endpoint,

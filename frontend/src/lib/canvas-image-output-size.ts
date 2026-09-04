@@ -56,8 +56,11 @@ export function imageEditOutputSize(
  *  width/height ratio. Returns null for "auto" / undefined / unparseable (the
  *  caller then uses the source aspect). Accepts the same W:H / WxH forms as the
  *  backend's `_canvas_size_to_ratio`, but yields a numeric ratio (not a reduced
- *  string) and also handles "auto"/undefined. */
-function parseAspect(size: string | undefined): { w: number; h: number } | null {
+ *  string) and also handles "auto"/undefined.
+ *
+ *  Exported for `canvas-video-output-size` 的 agent 分支 (那边只有一个 aspect 字符串,
+ *  没有源图)。视频侧**不**复用 imageEditOutputSize —— 理由见那个文件的文件头。 */
+export function parseAspect(size: string | undefined): { w: number; h: number } | null {
   if (!size || size === "auto") return null;
   const lower = size.toLowerCase();
   const sep = lower.includes(":") ? ":" : lower.includes("x") ? "x" : null;
