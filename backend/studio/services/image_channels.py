@@ -1011,10 +1011,14 @@ PRESETS: tuple[_Preset, ...] = (
     # 生图。**走模板通道而不是内置那条**: apimart 是异步的、尺寸只吃比例、结果藏在
     # `data.result.images[0].url[0]`, 用内置那十四个旋钮拼不出来 —— 这个项目最早那条
     # 「主通道」就是这么坏掉的。模板这条是真跑通过的形状。
+    # **域名是 apib.ai 不是 apimart.ai。** 同一家、同一套接口、同一把 key ——
+    # apib.ai 是 apimart 的大陆可访问域名, 而 api.apimart.ai 在墙内连不上。
+    # 这个项目的用户主要在大陆, 所以预设走 apib.ai。对外(UI 的 label、README)
+    # 仍然叫 apimart, 那是这家公司的名字。
     _Preset(
         key="apimart_image",
         kind=ImageProvider.Kind.CUSTOM_IMAGE,
-        base_url="https://api.apimart.ai/v1",
+        base_url="https://api.apib.ai/v1",
         # 文档 /images/*/generation 各页的模型, 逐个对着这家的 /v1/models 核过。
         # 全都是 `POST /v1/images/generations` + 异步 task_id, 跟视频那条同一个道理:
         # 一条通道几十行模型, 不是几十条通道。
@@ -1113,7 +1117,7 @@ PRESETS: tuple[_Preset, ...] = (
     _Preset(
         key="apimart_video",
         kind=ImageProvider.Kind.CUSTOM_VIDEO,
-        base_url="https://api.apimart.ai/v1",
+        base_url="https://api.apib.ai/v1",
         # 参考图得先传上去换个地址。这家的视频端点**不收 base64**(文档:「不再支持在生成
         # 接口中直接传入 base64,请使用本接口上传图片」), `image_urls` 只认公网可达的
         # http(s) —— 而自托管的 media 地址它抓不到。生图那条端点目前还收 base64, 所以

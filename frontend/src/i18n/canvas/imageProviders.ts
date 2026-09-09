@@ -41,7 +41,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai — 26 image models, async, request shape wired up",
+        hint: "api.apib.ai — 26 image models, async, request shape wired up",
         channel: "apimart images",
       },
       openai_chat: {
@@ -76,7 +76,7 @@ export const imageProviders = {
       },
       apimart_video: {
         label: "apimart",
-        hint: "api.apimart.ai — 41 video models, async",
+        hint: "api.apib.ai — 41 video models, async",
         channel: "apimart video",
       },
       fal_angle: {
@@ -264,7 +264,7 @@ export const imageProviders = {
       },
       apimart_image: {
         label: "apimart",
-        hint: "api.apimart.ai —— 26 个生图模型,异步,请求形状已经配好",
+        hint: "api.apib.ai —— 26 个生图模型,异步,请求形状已经配好",
         channel: "apimart 生图",
       },
       openai_chat: {
@@ -299,7 +299,7 @@ export const imageProviders = {
       },
       apimart_video: {
         label: "apimart",
-        hint: "api.apimart.ai —— 41 个视频模型,异步",
+        hint: "api.apib.ai —— 41 个视频模型,异步",
         channel: "apimart 视频",
       },
       fal_angle: {
