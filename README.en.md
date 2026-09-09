@@ -91,7 +91,7 @@ Providers all take different request parameters — names, values and structure 
 
 1. **Chat (LLM agent) model** — Canvex ships a preset for the third-party LLM agent provider **[tu-zi](https://api.tu-zi.com/)**: sign up at tu-zi, take the API key, paste it into the Channels panel and it works. It has to be a key that supports OpenAI-style **tool calling** — one that doesn't will reply with a block of text while nothing at all happens on the canvas.
 2. **Image generation · custom template** — Canvex ships a preset for the image provider **[API Mart](https://apimart.ai/)**: sign up at apimart, take the API key, paste it in. Edit, Split, and the image tool the LLM agent calls all run on this one key.
-3. **Camera angle re-render** — sign up at **[fal.ai](https://fal.ai/)** for an API key; it powers the Angle (change of camera position) feature.
+3. **Camera angle re-render** — sign up at **[fal.ai](https://fal.ai/)** for an API key; it powers the Angle (change of camera position) feature. The model it runs is `fal-ai/qwen-image-edit-2511-multiple-angles`.
 4. **Video generation · custom template** — Canvex ships a preset for the video provider **[API Mart](https://apimart.ai/)**: same again, sign up, take the key, paste it in.
 
 
