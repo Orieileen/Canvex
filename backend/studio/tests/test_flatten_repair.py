@@ -9,10 +9,12 @@
   真图上的效果靠人眼验, 不靠断言。
 """
 import io
+import json
 from unittest import mock
 
 import numpy as np
-from django.test import SimpleTestCase
+from django.db import IntegrityError, transaction
+from django.test import SimpleTestCase, TestCase
 from PIL import Image
 
 from studio.services.agent.tools import image as image_tools
@@ -21,8 +23,7 @@ from studio.services.agent.tools.image import (
     _looks_flattened,
     repair_flattened_alpha,
 )
-from studio.services.image_channels import PRESETS, tunable_schema
-from studio.models import ImageProvider
+from studio.models import AppSetting, ImageEditJob, Scene
 
 
 def _png(array: np.ndarray, mode: str = "RGB") -> bytes:
@@ -117,28 +118,81 @@ class RepairFlattenedAlphaTests(SimpleTestCase):
             self.assertEqual(repair_flattened_alpha(original), original)
 
 
-class FlattenRepairWiringTests(SimpleTestCase):
-    """旋钮接没接上去 —— 函数写对了但没人调用是这类改动最典型的失败方式。"""
+class FlattenRepairWiringTests(TestCase):
+    """接线。函数写对了但没人调用, 是这类改动最典型的失败方式。"""
 
-    def _preset(self, key):
-        return next(p for p in PRESETS if p.key == key)
+    def test_default_is_on(self):
+        """**默认必须是开的。**
 
-    def test_gpt_image_2_ships_with_the_repair_on(self):
-        overrides = self._preset("apimart_image").model_overrides
-        self.assertIs(overrides["gpt-image-2"]["flatten_repair"], True)
+        这个毛病的表现 (拿一张白底产品图去编辑, 回来是黑底) 对用户来说完全没有线索指向
+        "某个开关没打开" —— 他只会以为模型坏了。默认关等于这个功能对绝大多数人不存在。
+        """
+        self.assertTrue(AppSetting.load().flatten_repair)
 
-    def test_models_without_the_defect_do_not_get_it(self):
-        """实测 seedream 三次都是 0% 纯黑。没这个毛病的不该被顺手打开 —— 那样这一项就
-        从"记录一条实测事实"退化成"给所有模型套一个启发式"。"""
-        overrides = self._preset("apimart_image").model_overrides
-        for model, over in overrides.items():
-            if model != "gpt-image-2":
-                self.assertNotIn("flatten_repair", over, model)
+    def test_singleton_refuses_a_second_row(self):
+        """单行表, 而且**凭空造一个实例存下去会响亮地失败**。
 
-    def test_knob_reaches_the_custom_image_form(self):
-        """表单由后端 schema 下发。不在 tunables 里 = 用户永远看不见、也关不掉。"""
-        rows = tunable_schema()[ImageProvider.Kind.CUSTOM_IMAGE]["tunables"]
-        row = next((r for r in rows if r["key"] == "flatten_repair"), None)
+        它不静默合并是有意的: 那样的实例没读过的字段都是字段默认值, 存下去等于把用户
+        改过的其余所有设置悄悄重置回默认。取实例只有 `load()` 一条路。
+        """
+        AppSetting.load()
 
-        self.assertIsNotNone(row, "flatten_repair 没有下发给 custom_image 表单")
-        self.assertEqual(row["control"], "bool")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            AppSetting(flatten_repair=False).save()
+
+        self.assertEqual(AppSetting.objects.count(), 1)
+        self.assertTrue(AppSetting.load().flatten_repair)
+
+    def _run_generate(self):
+        """跑一遍 `_generate_and_persist`, 把出网和落盘都挡掉, 只看修复调没调。"""
+        scene = Scene.objects.create(title="t")
+        job = ImageEditJob.objects.create(scene=scene, prompt="p", num_images=1)
+        with (
+            mock.patch.object(image_tools, "_generate_on_channel", return_value=[b"raw"]),
+            mock.patch.object(image_tools, "_persist_results", return_value=[]) as persist,
+            mock.patch.object(
+                image_tools, "repair_flattened_alpha", return_value=b"fixed",
+            ) as repair,
+        ):
+            image_tools._generate_and_persist(job)
+        return repair, persist
+
+    def test_repair_runs_when_the_setting_is_on(self):
+        AppSetting.objects.update_or_create(pk=1, defaults={"flatten_repair": True})
+
+        repair, persist = self._run_generate()
+
+        repair.assert_called_once_with(b"raw")
+        self.assertEqual(persist.call_args.args[1], [b"fixed"])
+
+    def test_repair_is_skipped_when_the_setting_is_off(self):
+        """关掉之后**一次都不能调** —— 关掉的用户要的是"供应商给什么我拿什么"。"""
+        AppSetting.objects.update_or_create(pk=1, defaults={"flatten_repair": False})
+
+        repair, persist = self._run_generate()
+
+        repair.assert_not_called()
+        self.assertEqual(persist.call_args.args[1], [b"raw"])
+
+
+class AppSettingApiTests(TestCase):
+    URL = "/api/v1/canvas/settings/"
+
+    def test_get_creates_the_row_on_first_call(self):
+        """前端因此永远不用处理"还没有设置"这个状态。"""
+        AppSetting.objects.all().delete()
+
+        resp = self.client.get(self.URL)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"flatten_repair": True})
+
+    def test_patch_round_trips(self):
+        resp = self.client.patch(
+            self.URL, data=json.dumps({"flatten_repair": False}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["flatten_repair"])
+        self.assertFalse(AppSetting.load().flatten_repair)

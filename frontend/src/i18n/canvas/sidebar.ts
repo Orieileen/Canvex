@@ -4,6 +4,10 @@ export const sidebar = {
     newCanvas: 'New canvas',
     expandSidebar: 'Expand sidebar',
     collapseSidebar: 'Collapse sidebar',
+    flattenRepair: 'Fix black bg',
+    settingsSaveFailed: 'Could not save that setting',
+    flattenRepairHint:
+      'Some providers deliver a transparent background flattened onto black, so an edit of a white-background product photo comes back black. When that is what happened, Canvex cuts the subject back out. It only acts on the exact fingerprint of a flatten — anything else is passed through untouched, including a background you asked to be black.',
     mediaLibrary: 'Media library',
     selectCanvasFirst: 'Select a canvas first',
     loading: 'Loading…',
@@ -52,6 +56,10 @@ export const sidebar = {
     newCanvas: '新建画布',
     expandSidebar: '展开侧栏',
     collapseSidebar: '收起侧栏',
+    flattenRepair: '自动修复黑底',
+    settingsSaveFailed: '设置没保存上',
+    flattenRepairHint:
+      '有些供应商会把模型返回的透明背景压平成黑底交付 —— 表现是拿一张白底产品图去编辑，回来变成黑底。确认是这种情况时，Canvex 会把主体重新抠出来。它只认压平留下的精确特征，其余一律原样放行，包括你自己要求的纯黑背景。',
     mediaLibrary: '素材库',
     selectCanvasFirst: '请先选择一个画布',
     loading: '加载中…',

@@ -456,3 +456,11 @@ export interface CanvasWizardProbe {
   done?: boolean;
 }
 
+
+/** 全局偏好 (backend models.AppSetting)。**单行**, 所以没有 id ——
+ *  见 services/canvas.service 的 getSettings。 */
+export interface CanvasAppSettings {
+  /** 生成结果如果是"透明背景被压平成黑底", 自动重新抠回来。默认开。
+   *  识别很挑剔(比特级全零 + 连到边界 + 占比够), 认不出就一个字节都不动。 */
+  flatten_repair: boolean;
+}

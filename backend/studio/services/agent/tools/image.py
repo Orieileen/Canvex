@@ -34,7 +34,7 @@ from django.db import transaction
 from langchain.tools import ToolRuntime, tool
 
 from studio.constants import CUTOUT_LLM_PROMPT
-from studio.models import ImageEditJob, ImageEditResult
+from studio.models import AppSetting, ImageEditJob, ImageEditResult
 from studio.services.billing import reserve_or_friendly_message
 from studio.services.image_channels import (
     KIND_SPECS,
@@ -136,14 +136,15 @@ def _volc_size(size: str, resolution: str) -> str:
     return _VOLC_PIXELS[tier].get(size_to_ratio(size), tier)
 
 
-def _fetch_generated_bytes(
+def _single_generation(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
     client: ImageClient | None = None, deadline: float | None = None,
 ) -> bytes:
     """单次 provider 调用, n=1 固定, 返单张 image bytes —— **供应商给什么就是什么**。
 
-    回包的后处理不在这里, 在 `_single_generation`。分开的理由: 这个函数有三个 return
-    (模板 / 同步 / 轮询), 后处理写进来就得抄三遍, 而抄漏的那一遍不会报错。
+    回包的后处理不在这里 (见 `_generate_and_persist`)。这个函数有三个 return
+    (模板 / 同步 / 轮询), 后处理写进来就得抄三遍, 而抄漏的那一遍不会报错; 而且它还是
+    ⚡ 探针的入口 —— 探针只想知道"这条通道通不通", 不该为此跑一遍 rembg。
 
     poll_enabled (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
     其他 (tu-zi / 火山 同步) 走 extract_images_from_response 取 data[0].
@@ -204,25 +205,6 @@ def _fetch_generated_bytes(
         req_timeout=channel.poll_timeout,
         deadline=deadline,
     )
-
-
-def _single_generation(
-    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
-    client: ImageClient | None = None, deadline: float | None = None,
-) -> bytes:
-    """单次生成 + 这条通道声明过的回包修复。**所有生图路径的收口。**
-
-    现在只有一项修复 (`flatten_repair`, 见 ImageChannel 上那段实测记录)。它挂在这一层
-    而不是各个分支里, 是因为模板通道和内置通道会撞上**同一个**供应商怪癖 —— 压平 alpha
-    是中转层干的, 跟我们用哪种形状发请求无关。
-
-    默认全关: 没有哪条通道会在用户没声明的情况下被动过结果。
-    """
-    data = _fetch_generated_bytes(
-        channel, prompt=prompt, image_urls=image_urls, size=size,
-        resolution=resolution, client=client, deadline=deadline,
-    )
-    return repair_flattened_alpha(data) if channel.flatten_repair else data
 
 
 def _template_generation(
@@ -451,6 +433,13 @@ def _generate_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
         # 用户选的通道(工具栏选择器 / agent 参数); 没选 / 排队期间被删 → 库里第一条。
         channel=channel_or_default(job.image_model_id),
     )
+    # 供应商回包的修复。**放在这里而不是 `_single_generation` 里**: 这是每个 job 一次的
+    # 决定, 而那个函数在 n>1 时会被并发调用 n 次 —— 每次都去读一遍设置行是白读; 而且
+    # ⚡ 探针也走那条路, 它只想知道通道通不通, 不该为此跑一遍 rembg。
+    #
+    # 工具栏和 agent 两条路都汇到这里 (agent 建的也是 ImageEditJob), 所以一处就够。
+    if AppSetting.load().flatten_repair:
+        image_bytes_list = [repair_flattened_alpha(b) for b in image_bytes_list]
     return _persist_results(job, image_bytes_list)
 
 
@@ -602,7 +591,7 @@ def repair_flattened_alpha(
     """透明背景被压平到黑 → 用 rembg 重新抠出来。**不确定就原样返回**, 从不猜。
 
     背景: 有些中转会把模型返回的 RGBA 压平成 RGB 交付, 而压平的默认底色是黑
-    (见 ImageChannel.flatten_repair, 那儿有实测数据)。
+    (见 AppSetting.flatten_repair, 以及本函数下面那段实测数据)。
 
     **判定和修复是两套东西**, 这是这个函数最要紧的一点:
 

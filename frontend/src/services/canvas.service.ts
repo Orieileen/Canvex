@@ -3,6 +3,7 @@ import { MEDIA_API_BASE } from "@/lib/canvas-media-url";
 import { createResource } from "./createResource";
 import type {
   CanvasAngleJob,
+  CanvasAppSettings,
   CanvasChatMessage,
   CanvasChatStreamEvent,
   CanvasImageEditJob,
@@ -37,6 +38,7 @@ const IMAGE_EDIT_JOBS = "/api/v1/canvas/image-edit-jobs/";
 const VIDEO_JOBS = "/api/v1/canvas/video-jobs/";
 const ANGLE_JOBS = "/api/v1/canvas/angle-jobs/";
 const SKILLS = "/api/v1/canvas/skills/";
+const SETTINGS = "/api/v1/canvas/settings/";
 const SKILL_LIBRARY = "/api/v1/canvas/skill-library/";
 const IMAGE_PROVIDERS = "/api/v1/canvas/image-providers/";
 const IMAGE_MODELS = "/api/v1/canvas/image-models/";
@@ -328,6 +330,15 @@ export const canvasService = {
     }),
   // POST 返 SSE 流 —— 见顶部 postChatStream 函数 (async generator)
   postChatStream,
+
+  // ── 全局偏好 ───────────────────────────────────────────────────────────────
+  // 单行表 (backend models.AppSetting), 所以没有 id、也没有"还没有设置"这个状态 ——
+  // 第一次 GET 会按默认值把那一行建出来。
+  getSettings: () => request.get<CanvasAppSettings>(SETTINGS),
+  // PATCH 而不是 PUT: 只发改动的那一项。用户开着旧页面、后端加了新设置时, PUT 会把
+  // 前端不认识的字段静默重置成它的默认值。
+  updateSettings: (patch: Partial<CanvasAppSettings>) =>
+    request.patch<CanvasAppSettings>(SETTINGS, patch),
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // agent 当前**看得见**哪些 skill (后端每次重读 store, 没有缓存 —— 为什么不能有,

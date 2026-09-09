@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
+    AppSetting,
     AngleJob,
     AngleResult,
     ChatMessage,
@@ -785,3 +786,14 @@ class SkillSerializer(serializers.ModelSerializer):
         data["name"] = name
         data["description"] = description
         return data
+
+
+class AppSettingSerializer(serializers.ModelSerializer):
+    """全局偏好。字段一多就该考虑分组, 现在只有一项。
+
+    `id` / 时间戳不下发: 单行表, 前端不需要知道它有主键。
+    """
+
+    class Meta:
+        model = AppSetting
+        fields = ["flatten_repair"]

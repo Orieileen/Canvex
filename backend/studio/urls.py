@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AppSettingView,
     ImageModelChoiceListView,
     ChannelWizardParseView,
     ChannelWizardProbeView,
@@ -132,6 +133,11 @@ urlpatterns = [
         "angle-jobs/<uuid:job_id>/",
         AngleJobRetrieveView.as_view(),
         name="canvas-angle-job-detail",
+    ),
+    path(
+        "settings/",
+        AppSettingView.as_view(),
+        name="canvas-settings",
     ),
     path(
         "skills/",

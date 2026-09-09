@@ -391,9 +391,6 @@ _TEMPLATE_TUNABLES = frozenset({
     # 画质档同理, 而且这一项**不填要花钱**: wan3.0-video 不传 resolution 按最贵的 1080P
     # 计费。生图那边也用得上 (apimart Seedream 的 2K / 4K)。
     "allowed_resolutions",
-    # 上面三项说的是"发什么", 这一项说的是"**收回来的东西被这家动过手脚吗**" ——
-    # apimart 转发 gpt-image-2 会把透明背景压平成黑底。见 ImageChannel.flatten_repair。
-    "flatten_repair",
 })
 # 视频专有: 画质档发到哪个键 (`resolution` 还是可灵那种 `mode`)。生图那边没有第二种
 # 叫法, 放出来只会多一个永远不用动的下拉。
@@ -527,7 +524,7 @@ _TUNABLE_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
         "image_field", "image_as_single", "response_format", "quality",
         "watermark", "inline_image", "size_mode", "allowed_ratios", "allowed_durations",
         "allowed_resolutions", "resolution_param", "ratio_scope", "ratio_param", "protocol",
-        "upload_path", "upload_result_path", "flatten_repair",
+        "upload_path", "upload_result_path",
     })),
     ("timing", frozenset({"timeout"})),
     ("poll", frozenset({
@@ -718,14 +715,6 @@ _UNDOCUMENTED_IMAGE_MODELS = (
 # grok-imagine-1.5-apimart 都收不了 auto。(实测过一条原话, 来自已经因为只能文生图而被
 # 移出名单的 grok-imagine-2.0-ext: `unsupported \`size\` for grok-imagine-2.0-ext: auto`
 # —— 这类模型是真的会 400, 不是静默回退。)
-# 这家转发这几个模型时会把**透明背景压平成黑底**, 结果落盘前要补救一次。
-# 见 ImageChannel.flatten_repair —— 那儿有实测数据和"为什么不在请求侧修"。
-#
-# **只有实测见过的才写进来。** 同一条通道的 seedream-4-0 三次都是 0% 纯黑, 没有这个
-# 毛病; 写进来只会让它白跑一次检测 (虽然检测本身会认出"不该修"而放过)。
-_APIMART_IMAGE_ALPHA_FLATTENED = frozenset({"gpt-image-2"})
-
-
 _APIMART_IMAGE_RATIOS: dict[str, str] = {
     # ── /images/gpt-image-1 ── 文档只列 1:1 / 3:2 / 2:3, **没提 auto**。
     # auto 是实测补的: 这家不校验 size, 直接把它透传给 OpenAI, 而上游的报错原文把支持的
@@ -1052,21 +1041,12 @@ PRESETS: tuple[_Preset, ...] = (
             "wan2.7-image-pro", "wan2.7-image",
         ),
         model_overrides={
-            m: {
-                **_sparse_overrides(
-                    m,
-                    allowed_ratios=_APIMART_IMAGE_RATIOS,
-                    allowed_resolutions=_APIMART_IMAGE_RESOLUTIONS,
-                ),
-                # 不走 _sparse_overrides: 那个函数取的是 `表[模型]` 的**值**, 而这里是
-                # 一张"在不在名单里"的集合, 值恒为 True。
-                **({"flatten_repair": True} if m in _APIMART_IMAGE_ALPHA_FLATTENED else {}),
-            }
-            for m in (
-                _APIMART_IMAGE_RATIOS.keys()
-                | _APIMART_IMAGE_RESOLUTIONS.keys()
-                | _APIMART_IMAGE_ALPHA_FLATTENED
+            m: _sparse_overrides(
+                m,
+                allowed_ratios=_APIMART_IMAGE_RATIOS,
+                allowed_resolutions=_APIMART_IMAGE_RESOLUTIONS,
             )
+            for m in (_APIMART_IMAGE_RATIOS.keys() | _APIMART_IMAGE_RESOLUTIONS.keys())
         },
         request_template=_STARTER_APIMART_IMAGE,
     ),

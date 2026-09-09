@@ -604,3 +604,54 @@ class Skill(models.Model):
 
     def __str__(self):
         return f"Skill({self.name})"
+
+
+class AppSetting(models.Model):
+    """全局偏好。**单行表。**
+
+    为什么是单行而不是 key/value 表: Canvex 是自托管单工作区, 没有 per-user 也没有
+    per-workspace 的概念 —— key/value 表的每一行都会需要一次"这个 key 存在吗、类型对吗"
+    的运行时检查, 而显式字段让这些在迁移那一刻就定死了。加一项设置 = 加一个字段 + 一条
+    迁移, 跟这个项目里 ImageChannel 那些旋钮同一个规矩。
+
+    **跟通道旋钮 (ImageProvider.defaults / ImageModel.overrides) 的分工**: 那边记的是
+    "这家供应商/这个模型真实是什么样", 是关于外部世界的事实; 这里记的是"用户希望 Canvex
+    怎么做", 是偏好。同一件事放错地方的表现是: 换一条通道之后设置莫名其妙变了。
+    """
+
+    #: 恒为 1。用 `load()` 取, 不要自己 `objects.create()`。
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+
+    #: 生成结果如果是"透明背景被压平成黑底", 自动重新抠回来。
+    #: 默认开: 这个毛病的表现 (拿一张白底产品图去编辑, 回来是黑底) 对用户来说完全没有
+    #: 线索指向"某个开关没打开", 所以默认值必须是能用的那个。识别很挑剔 (比特级全零 +
+    #: 连到边界 + 占比够, 见 services/agent/tools/image.py 的 _looks_flattened), 认不出
+    #: 就一个字节都不动 —— 所以默认开的代价只是每张图多一次几十毫秒的检查。
+    flatten_repair = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canvas_app_settings"
+        verbose_name = "Canvas App Setting"
+        verbose_name_plural = "Canvas App Settings"
+
+    def save(self, *args, **kwargs):
+        # 钉死主键 = 这一行永远只有一行。**取实例请走 `load()`。**
+        #
+        # 副作用: `AppSetting(...).save()` (自己 new 一个再存) 会撞主键抛
+        # IntegrityError, 而不是静默地覆盖掉那一行。这是有意的 —— 一个从内存里
+        # 凭空造出来的实例, 它没读过的字段都是字段默认值, 存下去等于把用户改过的
+        # **其余所有设置**悄悄重置。响亮地失败比那个好。
+        self.id = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "AppSetting":
+        """取那一行, 没有就按字段默认值建一行。"""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return "AppSetting"

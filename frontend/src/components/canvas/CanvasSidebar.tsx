@@ -17,11 +17,14 @@ import {
   PinOff,
   Plus,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
   Twitter,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -153,6 +156,97 @@ function FooterButton({
   );
 }
 
+/** 侧栏底部的**开关**行 —— 跟 FooterButton 同一行高和间距, 但右边是一个 Switch,
+ *  标签后面跟一个问号。
+ *
+ *  为什么不做成 FooterButton 的一个变体: 那个组件整行是一个 `<button>`, 而这里行内
+ *  已经有两个可点的东西 (问号、开关) —— 嵌套按钮既不合法也点不准。
+ *
+ *  **折叠态退化成一个图标按钮**: 那时宽度只有一个图标, 塞不下 "标签 + 问号 + 开关"。
+ *  点一下直接切换, 开着的时候图标高亮 —— 状态仍然看得见, 只是要靠颜色而不是滑块。 */
+function FooterToggle({
+  collapsed,
+  first,
+  label,
+  hint,
+  checked,
+  onCheckedChange,
+  icon,
+}: {
+  collapsed: boolean;
+  first?: boolean;
+  label: string;
+  /** 问号上的提示。折叠态没有问号, 所以它也当整行的 title。 */
+  hint: string;
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  icon: React.ReactNode;
+}) {
+  const gap = first ? "mt-2" : "mt-1";
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => onCheckedChange(!checked)}
+        className={cn(
+          gap,
+          "mx-auto flex size-9 items-center justify-center rounded-md transition-colors",
+          checked
+            ? "text-stone-700 hover:bg-stone-100"
+            : "text-stone-400 hover:bg-stone-100 hover:text-stone-600",
+        )}
+        aria-label={label}
+        aria-pressed={checked}
+        title={`${label} — ${hint}`}
+      >
+        {icon}
+      </button>
+    );
+  }
+  return (
+    <div
+      className={cn(
+        gap,
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px]",
+        "font-medium text-stone-700",
+      )}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            // 纯提示, 点了不该有任何副作用 —— 但仍然是 button 而不是 span:
+            // 键盘用户要能 Tab 到它, radix 的 Tooltip 在 focus 时也会展开。
+            className={cn(
+              "flex size-4 shrink-0 items-center justify-center rounded-full",
+              "border border-stone-300 text-[10px] font-semibold text-stone-500",
+              "transition-colors hover:border-stone-400 hover:text-stone-700",
+            )}
+            aria-label={hint}
+            onClick={(e) => e.preventDefault()}
+          >
+            ?
+          </button>
+        </TooltipTrigger>
+        {/* 这段话不短(要解释清楚它什么时候动手、什么时候不动), 给个明确宽度免得
+            被撑成横跨整个窗口的一行。 */}
+        <TooltipContent side="right" className="max-w-[280px] leading-relaxed">
+          {hint}
+        </TooltipContent>
+      </Tooltip>
+      <Switch
+        className="ml-auto"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
+
 function loadPinned(): string[] {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_PINNED_KEY);
@@ -207,8 +301,39 @@ export function CanvasSidebar({
   const [deleting, setDeleting] = useState(false);
   const [pinnedIds, setPinnedIds] = useState<string[]>(loadPinned);
   const [helpOpen, setHelpOpen] = useState(false);
+  // 全局偏好。**初值就是后端的默认值 (true)** —— 拉取只有几毫秒, 但把初值写成 false
+  // 的话, 开关会先渲染成关、再跳成开, 看起来像"它自己动了一下"。
+  const [flattenRepair, setFlattenRepair] = useState(true);
 
   const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed);
+
+  // 开页面时拉一次。**失败只记日志不 toast**: 这是个附属设置, 为它弹一个红条会盖住
+  // 用户真正在做的事; 而且拿不到时显示的默认值跟后端默认值是同一个。
+  useEffect(() => {
+    let alive = true;
+    canvasService
+      .getSettings()
+      .then(({ data }) => {
+        if (alive) setFlattenRepair(data.flatten_repair);
+      })
+      .catch((err) => console.warn("canvas settings: load failed", err));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 乐观更新: 先动 UI 再发请求, 失败了退回去并说一声。开关这种东西等一个往返才动,
+  // 手感上像是没点着。
+  const toggleFlattenRepair = useCallback(
+    (next: boolean) => {
+      setFlattenRepair(next);
+      canvasService.updateSettings({ flatten_repair: next }).catch((err) => {
+        setFlattenRepair(!next);
+        toast.error(extractApiError(err, t("sidebar.settingsSaveFailed")));
+      });
+    },
+    [t],
+  );
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
@@ -636,9 +761,17 @@ export function CanvasSidebar({
       </nav>
 
       {/* 底部固定入口。生图设置不依赖当前画布, 所以不像素材库那样在无激活画布时禁用。 */}
-      <FooterButton
+      <FooterToggle
         collapsed={collapsed}
         first
+        label={t("sidebar.flattenRepair")}
+        hint={t("sidebar.flattenRepairHint")}
+        checked={flattenRepair}
+        onCheckedChange={toggleFlattenRepair}
+        icon={<Sparkles className="size-4 shrink-0" strokeWidth={2} />}
+      />
+      <FooterButton
+        collapsed={collapsed}
         label={t("sidebar.imageSettings")}
         onClick={onOpenImageSettings}
         icon={<SlidersHorizontal className="size-4 shrink-0" strokeWidth={2} />}

@@ -19,6 +19,7 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .models import (
+    AppSetting,
     ImageModel,
     ImageProvider,
     AngleJob,
@@ -32,6 +33,7 @@ from .models import (
 )
 from .permissions import filter_canvas_for_user, filter_scene_chat_for_user
 from .serializers import (
+    AppSettingSerializer,
     ImageModelChoiceSerializer,
     ImageProviderSerializer,
     AngleJobCreateSerializer,
@@ -250,6 +252,29 @@ class SkillListView(APIView):
 
     def get(self, request):
         return Response(list_skills())
+
+
+class AppSettingView(APIView):
+    """`GET / PATCH /settings/` —— 全局偏好那一行。
+
+    **没有 POST, 也没有 id**: 这是单行表 (见 models.AppSetting), 第一次 GET 会按字段
+    默认值把它建出来。前端因此永远不用处理"还没有设置"这个状态。
+
+    PATCH 而不是 PUT: 前端改的是一个开关, 不该因此把它不认识的字段一起覆盖掉 —— 版本
+    不同步时 (用户开着旧页面, 后端加了新设置) PUT 会静默地把新设置重置成前端的默认值。
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response(AppSettingSerializer(AppSetting.load()).data)
+
+    def patch(self, request):
+        serializer = AppSettingSerializer(
+            AppSetting.load(), data=request.data, partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class SkillViewSet(viewsets.ModelViewSet):
