@@ -23,4 +23,12 @@ COPY requirements.lock.txt /app/
 # 而不像未锁定时还能退而求其次。默认 5 次重试在网络抖动的环境下不够。
 RUN pip install --no-cache-dir --retries 10 --timeout 60 -r requirements.lock.txt
 
+# 抠图用的 u2net 模型 (168MB) 预下载进镜像。不烤进来的话 rembg 会在**用户第一次抠图时**
+# 现从 GitHub release 拉,画布上只有一个转圈的占位框、没有任何"正在下模型"的提示;
+# 而且它落在容器可写层而不是 volume,`docker compose down` 之后要重下一遍。
+# 拉不动就让构建当场失败 —— 反正第 1 步 git clone 已经要求 GitHub 可达了,
+# 总好过装完之后抠图莫名其妙卡死。
+# 放在 `COPY . /app/` 之前:改后端代码不会让这一层失效。
+RUN python -c "from rembg import new_session; new_session('u2net')"
+
 COPY . /app/
