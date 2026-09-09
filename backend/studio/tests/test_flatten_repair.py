@@ -87,6 +87,26 @@ class RepairFlattenedAlphaTests(SimpleTestCase):
 
         self.assertEqual(repair_flattened_alpha(original), original)
 
+    def test_compression_noise_in_the_background_is_swept_up_too(self):
+        """**这条是第一版的 bug。**
+
+        第一版判定和填充用的是同一个标准 (比特级全零)。判定那样是对的, 填充那样是错的:
+        压平之后中转还会**再有损压缩一次**, 把大片纯黑扰动成 (1,1,0) 这类值。实测一张
+        真实输出 54% 比特级全零、73% 接近黑 —— 中间那 19% 被留成不透明, 白底上一片黑点,
+        而另一张样本恰好只差 1.1%, 看起来干净, 于是这个 bug 骗过了第一轮验证。
+
+        所以填充走容差。这里造的正是那个形状: 大部分精确黑 (让判定命中) + 一片
+        (1,1,0) 的噪声 (第一版会漏掉的那部分)。
+        """
+        a = _flattened_subject()
+        a[80:100, :] = (1, 1, 0)  # 底部两成: 接近黑但不是全零
+
+        alpha = _alpha_of(repair_flattened_alpha(_png(a)))
+
+        self.assertEqual(alpha[10, 10], 0, "精确黑的部分")
+        self.assertEqual(alpha[90, 10], 0, "被压缩扰动过的部分也得吃掉")
+        self.assertEqual(alpha[50, 50], 255, "主体还在")
+
     def test_edge_band_is_unmatted_back_to_semi_transparent(self):
         """紧贴背景那一窄条要反解回半透明, 而不是当成"不透明的深灰"。
 

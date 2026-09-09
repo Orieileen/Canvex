@@ -503,37 +503,36 @@ def _binarize_alpha(image_bytes: bytes, threshold: int = _ALPHA_BINARIZE_THRESHO
     return buf.getvalue()
 
 
-# 认定"这是压平出来的黑底"的最低占比。实测样本是 54% / 54% / 72%, 20% 留了很大余量 ——
+# 认定"这是压平出来的黑底"的最低占比。实测样本 54% / 54% / 72%, 20% 留了很大余量 ——
 # 主体占满画面的图背景也不会低到这个数。
 #
 # **已知的误判**: 加了黑边 (letterbox) 的图, 那两条黑边也是比特级全零且连到边界。真撞上
-# 的话它们会变透明。可以接受的理由是这一项**默认关**, 只在实测会压平的模型上打开 ——
-# 而不是拿一个启发式去猜所有人的图。
+# 的话它会被当成压平图去抠。可以接受的理由是这一项**默认关**, 只在实测会压平的模型上
+# 打开 —— 而不是拿一个启发式去猜所有人的图。
 _FLATTEN_MIN_BLACK_RATIO = 0.20
 
-# 去黑边的窄条宽度 (像素)。实测 0 / 2 / 4 / 8 四档: 0 是一圈明显的黑描边, 2 就去掉了
-# 绝大部分, 8 最干净但那么宽会啃到主体 —— 小图上尤其。取 2 是**保守**的那一端:
-# 宁可留一点点边, 也不要把用户产品的真实边缘吃掉一圈。
+# 填充时"多暗算背景"。**故意跟判定的标准不一样** —— 判定要精确指纹, 填充要吃掉压缩噪声,
+# 见 repair_flattened_alpha 的 docstring。实测同一张图: 0 → 52% (白底上一片黑点),
+# 16 → 73% (跟 rembg 的结果分不出来), 32 → 73% (没有额外收益)。取小的那个。
+_FLATTEN_FILL_TOLERANCE = 16
+
+# 去黑边的窄条宽度 (像素)。实测 0 / 2 / 4 / 8: 0 是一圈明显的黑描边, 2 就去掉了绝大部分,
+# 8 最干净但那么宽会啃到主体, 小图上尤其。取 2 是保守的那一端。
 _UNMATTE_BAND = 2
 
 
-def repair_flattened_alpha(
-    image_bytes: bytes, *, min_ratio: float = _FLATTEN_MIN_BLACK_RATIO,
-) -> bytes:
-    """透明背景被压平到黑 → 还原成透明。**不确定就原样返回**, 从不猜。
+def _looks_flattened(image_bytes: bytes, min_ratio: float) -> bool:
+    """这张图是不是"透明被压平到黑"的产物。
 
-    背景: 有些中转会把模型返回的 RGBA 压平成 RGB 交付, 而压平的默认底色是黑
-    (见 ImageChannel.flatten_repair, 那儿有实测数据)。
+    三条**同时**满足才算, 每一条都是为了不误判:
+      1. 图**没有** alpha 通道 —— 有 alpha 就说明没被压平过。
+      2. 有一片**比特级全零** (`== 0`, 不是"接近黑") 的像素。扩散模型画出来的黑背景一定
+         带噪声; 大片精确 `(0,0,0)` 只有合成才产生。这一条是整个判定的地基。
+      3. 那片黑**连到画面边界**且占比够大。主体内部的黑 (logo、阴影、黑色产品本身) 不连
+         边界 —— 所以走连通域, 而不是"数一数有多少黑像素"。
 
-    判定三条**同时**满足才动手, 每一条都是为了不误伤:
-      1. 图**没有** alpha 通道 —— 有 alpha 就说明没被压平过, 一个字节都不该动。
-      2. 那片黑是**比特级全零** (`== 0` 而不是"接近黑")。扩散模型画出来的黑背景一定带
-         噪声; 大片精确 `(0,0,0)` 只有合成才产生。这一条是整个判定的地基。
-      3. 那片黑**连到画面边界**。主体内部的黑 (logo、阴影、黑色产品本身) 不连边界, 不会
-         被打成透明 —— 所以走连通域而不是"把所有黑像素设成透明"。
-
-    **边缘那圈**单独处理, 见 `_UNMATTE_BAND`: 不处理的话结果是"背景没了, 但每条边都镶了
-    一道黑边" —— 对着白底看非常明显 (实测那张塑料杯盖是半透明的, 整个盖子发灰)。
+    **只判断, 不修。** 判定用的是压平留下的**精确**指纹, 而修复不能依赖这个精确性 ——
+    见 repair_flattened_alpha 里那段。
     """
     from io import BytesIO  # noqa: PLC0415 — 跟 _binarize_alpha 同一个理由, 别在 web 进程顶层拉 PIL
     import numpy as np  # noqa: PLC0415
@@ -544,58 +543,103 @@ def repair_flattened_alpha(
         img = Image.open(BytesIO(image_bytes))
         img.load()
     except Exception:
-        # 认不出的字节原样放行: 这是个补救步骤, 不该由它来决定一次生成算不算失败。
+        # 认不出的字节当成"不是": 这是个补救步骤, 不该由它来决定一次生成算不算失败。
         logger.warning("flatten repair: PIL could not open the result, passing through (bytes=%d)", len(image_bytes))
-        return image_bytes
+        return False
 
     if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
-        return image_bytes  # 条件 1: alpha 还在
+        return False  # 条件 1
 
-    rgb = np.asarray(img.convert("RGB"))
-    black = (rgb == 0).all(axis=2)  # 条件 2: 比特级全零
+    black = (np.asarray(img.convert("RGB")) == 0).all(axis=2)  # 条件 2
     if not black.any():
-        return image_bytes
+        return False
 
     labels, count = ndimage.label(black)
     if not count:
-        return image_bytes
-    # 条件 3: 只取碰到四条边的那些连通块
-    border_labels = {
+        return False
+    border_labels = {  # 条件 3: 只取碰到四条边的那些连通块
         int(v) for v in np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
     } - {0}
     if not border_labels:
-        return image_bytes
-    background = np.isin(labels, list(border_labels))
-    ratio = float(background.mean())
+        return False
+
+    ratio = float(np.isin(labels, list(border_labels)).mean())
     if ratio < min_ratio:
+        return False
+    logger.info("flatten repair: %.1f%% bit-exact black touching the border, re-cutting", ratio * 100)
+    return True
+
+
+def repair_flattened_alpha(
+    image_bytes: bytes, *, min_ratio: float = _FLATTEN_MIN_BLACK_RATIO,
+) -> bytes:
+    """透明背景被压平到黑 → 用 rembg 重新抠出来。**不确定就原样返回**, 从不猜。
+
+    背景: 有些中转会把模型返回的 RGBA 压平成 RGB 交付, 而压平的默认底色是黑
+    (见 ImageChannel.flatten_repair, 那儿有实测数据)。
+
+    **判定和修复用的不是同一套东西**, 这是这个函数最要紧的一点:
+
+    - **判定**靠"比特级全零" —— 它是压平留下的精确指纹, 换成"接近黑"就会把夜景图和
+      用户明说要的纯黑背景一起掏空。
+    - **修复不能也靠它。** 第一版就是这么写的 (从边界 flood fill 那片精确黑), 在一张
+      样本上很干净, 换一张就露馅: 压平之后**又过了一次有损压缩**, 把 19% 的纯黑扰动成
+      了 (1,1,0) 这类值 —— 它们不满足 `== 0`, 于是留成不透明, 白底上一片黑点。
+      一张图 54% 比特级全零、73% 接近黑, 另一张 72.4% / 73.5%; 差多少完全取决于中转
+      那边怎么再编码一次, 而我们看不见也控制不了。
+
+      所以填充改用**容差** (`_FLATTEN_FILL_TOLERANCE`), 从边界漫延。实测同一张图:
+      容差 0 只吃到 52%、白底上一片黑点; 容差 16 吃到 73%, 跟 rembg 的结果在观看尺寸
+      下分不出来, 而且 47ms vs 1093ms。
+
+    **为什么不干脆用 rembg** (它按语义分割, 完全不受压缩噪声影响): `_rembg_remove` 里
+    有一道显式护栏 —— rembg 是阻塞 CPU, 在 gevent 池下会冻死整个 event loop, 撞上直接
+    抛 RuntimeError。而生图这条路跑的就是 `canvas` (gevent)。抠图之所以拆成两段丢给
+    `canvas_cpu` (prefork) 正是为了这个。为一个补救步骤再拆一条 Celery leg 不划算, 而
+    容差填充在同一张图上已经拿到了同等的结果。
+
+    **仍然是补救不是修复**: 边缘那圈半透明像素在压平时已经被乘到黑上, 这里只能在紧贴
+    背景的窄条里反解一次 (见 `_UNMATTE_BAND`)。正解在请求侧 (background=opaque)。
+    """
+    from io import BytesIO  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415
+    from scipy import ndimage  # noqa: PLC0415
+
+    if not _looks_flattened(image_bytes, min_ratio):
         return image_bytes
+
+    rgb = np.asarray(Image.open(BytesIO(image_bytes)).convert("RGB")).astype(np.float32)
+    # 容差 + 连通域: "暗**且**从边界连得过来"。单看暗度会掏空主体里的深色区域, 单看
+    # 连通域 (精确黑) 会漏掉压缩噪声 —— 两个条件缺一不可。
+    dark = rgb.max(axis=2) <= _FLATTEN_FILL_TOLERANCE
+    labels, _ = ndimage.label(dark)
+    border_labels = {
+        int(v) for v in np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+    } - {0}
+    background = np.isin(labels, list(border_labels))
 
     alpha = np.where(background, 0.0, 1.0)
-    color = rgb.astype(np.float32)
-
     # ── 去黑边 ──
-    # 压平做的是 `c_out = c × a` (直通 alpha 合成到黑底), 所以贴着背景那一窄条里,
-    # **两个未知数一个方程**。取 `a ≈ max(r,g,b)/255` 把它定下来: 半透明像素三个通道
-    # 一起被同一个 a 压暗, 最亮的那个通道最接近原色, 于是它的衰减量就是 a 的估计。
-    # 反解出 a 之后 `c = c_out / a` 顺带把颜色也提回来。
-    #
-    # **只在窄条里做**, 因为这个估计对"本来就暗的不透明像素"是错的 —— 一个纯黑的产品
-    # 会被整片判成透明。窄条把错误限制在紧贴背景的两像素内, 而那里本来就大概率是过渡带。
+    # 压平做的是 `c_out = c × a` (直通 alpha 合成到黑底), 贴着背景那一窄条里是**两个
+    # 未知数一个方程**。取 `a ≈ max(r,g,b)/255` 定下来: 三个通道被同一个 a 压暗, 最亮
+    # 的那个最接近原色, 它的衰减量就是 a 的估计; 再用 `c = c_out / a` 把颜色提回来。
+    # **只在窄条里做** —— 这个估计对"本来就暗的不透明像素"是错的, 一个纯黑产品会被整片
+    # 判成半透明。窄条把错误关在紧贴背景的两像素内, 而那里本来就是过渡带。
     band = ndimage.binary_dilation(background, iterations=_UNMATTE_BAND) & ~background
     if band.any():
-        est = np.clip(color.max(axis=2) / 255.0, 0.0, 1.0)
+        est = np.clip(rgb.max(axis=2) / 255.0, 0.0, 1.0)
         alpha = np.where(band, est, alpha)
-        # 除数兜底: est=0 的像素是纯黑, 除下去是 inf/nan, 会污染整张图。
-        color = np.where(
-            band[..., None], np.clip(color / np.maximum(est, 1e-3)[..., None], 0, 255), color,
+        # 除数兜底: est=0 的像素除下去是 inf/nan, 会污染整张图。
+        rgb = np.where(
+            band[..., None], np.clip(rgb / np.maximum(est, 1e-3)[..., None], 0, 255), rgb,
         )
 
     out = Image.fromarray(
-        np.dstack([color.astype(np.uint8), (alpha * 255).astype(np.uint8)]), "RGBA",
+        np.dstack([rgb.astype(np.uint8), (alpha * 255).astype(np.uint8)]), "RGBA",
     )
     buf = BytesIO()
     out.save(buf, "PNG")
-    logger.info("flatten repair: %.1f%% of the image was flattened black, restored to alpha", ratio * 100)
     return buf.getvalue()
 
 
