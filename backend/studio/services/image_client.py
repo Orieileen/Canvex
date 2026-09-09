@@ -644,6 +644,23 @@ class ImageChannel:
     upload_path: str = field(default="", metadata={"example": "/uploads/images"})
     # 上传回包里哪个字段是那个地址 (request_template.extract 的路径语法)。
     upload_result_path: str = "url"
+    # ── 回包被这家动过手脚吗 ──
+    # 这家会把**透明背景压平成黑底**吗。开了之后, 结果字节落盘前过一次
+    # `repair_flattened_alpha` (见 agent/tools/image.py)。
+    #
+    # 存在的理由是一次实测: apimart 转发 gpt-image-2 时, 模型返回的透明 PNG 到我们手上
+    # 变成了 **RGB 黑底** —— 三张样本里 54% / 54% / 72% 的像素是**比特级全零**, 而主体
+    # 边缘是一条 1→2→3→5→10→51→108 的平滑斜坡。扩散模型画不出比特级全零的大片背景,
+    # 只有 RGBA 合成到黑底才会。同一条通道的 seedream-4-0 是 0%, gpt-image-2 自己也有
+    # 一次 0% (那次模型没选透明) —— 所以这是 **per-model + 看这一次的输出**, 不是
+    # 一条通道的固定属性, 也就不能做成全局开关。
+    #
+    # **为什么修在这边而不是请求侧。** 正解是给 gpt-image-2 发 `background=opaque`
+    # (它默认 `auto` = 模型自己决定)。但 apimart 的模板里没有这个字段, 而且它转不转发
+    # 这个参数没验过 —— 加上去要么真生效、要么被静默丢掉, 而后者会让人以为已经修好了。
+    # 这一项是**在拿到坏结果之后补救**, 不是修复: 边缘那圈被压暗的像素回不来。
+    # 哪天验明请求侧能治本, 这一项就该退场。
+    flatten_repair: bool = False
     timeout: int = _D["timeout"]
     # ── 异步轮询 (apimart 这类先返 task_id 的供应商) ──
     poll_enabled: bool = False

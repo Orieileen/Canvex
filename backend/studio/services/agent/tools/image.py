@@ -136,11 +136,14 @@ def _volc_size(size: str, resolution: str) -> str:
     return _VOLC_PIXELS[tier].get(size_to_ratio(size), tier)
 
 
-def _single_generation(
+def _fetch_generated_bytes(
     channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
     client: ImageClient | None = None, deadline: float | None = None,
 ) -> bytes:
-    """单次 provider 调用, n=1 固定, 返单张 image bytes.
+    """单次 provider 调用, n=1 固定, 返单张 image bytes —— **供应商给什么就是什么**。
+
+    回包的后处理不在这里, 在 `_single_generation`。分开的理由: 这个函数有三个 return
+    (模板 / 同步 / 轮询), 后处理写进来就得抄三遍, 而抄漏的那一遍不会报错。
 
     poll_enabled (apimart 异步) 走 handle_poll_if_needed 桥接 task_id → bytes;
     其他 (tu-zi / 火山 同步) 走 extract_images_from_response 取 data[0].
@@ -201,6 +204,25 @@ def _single_generation(
         req_timeout=channel.poll_timeout,
         deadline=deadline,
     )
+
+
+def _single_generation(
+    channel: ImageChannel, *, prompt: str, image_urls: list[str], size: str, resolution: str = "",
+    client: ImageClient | None = None, deadline: float | None = None,
+) -> bytes:
+    """单次生成 + 这条通道声明过的回包修复。**所有生图路径的收口。**
+
+    现在只有一项修复 (`flatten_repair`, 见 ImageChannel 上那段实测记录)。它挂在这一层
+    而不是各个分支里, 是因为模板通道和内置通道会撞上**同一个**供应商怪癖 —— 压平 alpha
+    是中转层干的, 跟我们用哪种形状发请求无关。
+
+    默认全关: 没有哪条通道会在用户没声明的情况下被动过结果。
+    """
+    data = _fetch_generated_bytes(
+        channel, prompt=prompt, image_urls=image_urls, size=size,
+        resolution=resolution, client=client, deadline=deadline,
+    )
+    return repair_flattened_alpha(data) if channel.flatten_repair else data
 
 
 def _template_generation(
@@ -478,6 +500,102 @@ def _binarize_alpha(image_bytes: bytes, threshold: int = _ALPHA_BINARIZE_THRESHO
     img = Image.merge("RGBA", (r, g, b, a))
     buf = BytesIO()
     img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+# 认定"这是压平出来的黑底"的最低占比。实测样本是 54% / 54% / 72%, 20% 留了很大余量 ——
+# 主体占满画面的图背景也不会低到这个数。
+#
+# **已知的误判**: 加了黑边 (letterbox) 的图, 那两条黑边也是比特级全零且连到边界。真撞上
+# 的话它们会变透明。可以接受的理由是这一项**默认关**, 只在实测会压平的模型上打开 ——
+# 而不是拿一个启发式去猜所有人的图。
+_FLATTEN_MIN_BLACK_RATIO = 0.20
+
+# 去黑边的窄条宽度 (像素)。实测 0 / 2 / 4 / 8 四档: 0 是一圈明显的黑描边, 2 就去掉了
+# 绝大部分, 8 最干净但那么宽会啃到主体 —— 小图上尤其。取 2 是**保守**的那一端:
+# 宁可留一点点边, 也不要把用户产品的真实边缘吃掉一圈。
+_UNMATTE_BAND = 2
+
+
+def repair_flattened_alpha(
+    image_bytes: bytes, *, min_ratio: float = _FLATTEN_MIN_BLACK_RATIO,
+) -> bytes:
+    """透明背景被压平到黑 → 还原成透明。**不确定就原样返回**, 从不猜。
+
+    背景: 有些中转会把模型返回的 RGBA 压平成 RGB 交付, 而压平的默认底色是黑
+    (见 ImageChannel.flatten_repair, 那儿有实测数据)。
+
+    判定三条**同时**满足才动手, 每一条都是为了不误伤:
+      1. 图**没有** alpha 通道 —— 有 alpha 就说明没被压平过, 一个字节都不该动。
+      2. 那片黑是**比特级全零** (`== 0` 而不是"接近黑")。扩散模型画出来的黑背景一定带
+         噪声; 大片精确 `(0,0,0)` 只有合成才产生。这一条是整个判定的地基。
+      3. 那片黑**连到画面边界**。主体内部的黑 (logo、阴影、黑色产品本身) 不连边界, 不会
+         被打成透明 —— 所以走连通域而不是"把所有黑像素设成透明"。
+
+    **边缘那圈**单独处理, 见 `_UNMATTE_BAND`: 不处理的话结果是"背景没了, 但每条边都镶了
+    一道黑边" —— 对着白底看非常明显 (实测那张塑料杯盖是半透明的, 整个盖子发灰)。
+    """
+    from io import BytesIO  # noqa: PLC0415 — 跟 _binarize_alpha 同一个理由, 别在 web 进程顶层拉 PIL
+    import numpy as np  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415
+    from scipy import ndimage  # noqa: PLC0415
+
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+    except Exception:
+        # 认不出的字节原样放行: 这是个补救步骤, 不该由它来决定一次生成算不算失败。
+        logger.warning("flatten repair: PIL could not open the result, passing through (bytes=%d)", len(image_bytes))
+        return image_bytes
+
+    if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+        return image_bytes  # 条件 1: alpha 还在
+
+    rgb = np.asarray(img.convert("RGB"))
+    black = (rgb == 0).all(axis=2)  # 条件 2: 比特级全零
+    if not black.any():
+        return image_bytes
+
+    labels, count = ndimage.label(black)
+    if not count:
+        return image_bytes
+    # 条件 3: 只取碰到四条边的那些连通块
+    border_labels = {
+        int(v) for v in np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+    } - {0}
+    if not border_labels:
+        return image_bytes
+    background = np.isin(labels, list(border_labels))
+    ratio = float(background.mean())
+    if ratio < min_ratio:
+        return image_bytes
+
+    alpha = np.where(background, 0.0, 1.0)
+    color = rgb.astype(np.float32)
+
+    # ── 去黑边 ──
+    # 压平做的是 `c_out = c × a` (直通 alpha 合成到黑底), 所以贴着背景那一窄条里,
+    # **两个未知数一个方程**。取 `a ≈ max(r,g,b)/255` 把它定下来: 半透明像素三个通道
+    # 一起被同一个 a 压暗, 最亮的那个通道最接近原色, 于是它的衰减量就是 a 的估计。
+    # 反解出 a 之后 `c = c_out / a` 顺带把颜色也提回来。
+    #
+    # **只在窄条里做**, 因为这个估计对"本来就暗的不透明像素"是错的 —— 一个纯黑的产品
+    # 会被整片判成透明。窄条把错误限制在紧贴背景的两像素内, 而那里本来就大概率是过渡带。
+    band = ndimage.binary_dilation(background, iterations=_UNMATTE_BAND) & ~background
+    if band.any():
+        est = np.clip(color.max(axis=2) / 255.0, 0.0, 1.0)
+        alpha = np.where(band, est, alpha)
+        # 除数兜底: est=0 的像素是纯黑, 除下去是 inf/nan, 会污染整张图。
+        color = np.where(
+            band[..., None], np.clip(color / np.maximum(est, 1e-3)[..., None], 0, 255), color,
+        )
+
+    out = Image.fromarray(
+        np.dstack([color.astype(np.uint8), (alpha * 255).astype(np.uint8)]), "RGBA",
+    )
+    buf = BytesIO()
+    out.save(buf, "PNG")
+    logger.info("flatten repair: %.1f%% of the image was flattened black, restored to alpha", ratio * 100)
     return buf.getvalue()
 
 

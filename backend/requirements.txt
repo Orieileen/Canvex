@@ -40,6 +40,14 @@ psycopg-pool==3.3.1
 requests==2.34.2
 Pillow==12.3.0
 rembg[cpu]==2.0.77
+# numpy / scipy 一直被 rembg 拖进来 (Required-by: PyMatting, rembg, scikit-image),
+# 但 2026-09-09 起我们**自己**直接 import 了它们: repair_flattened_alpha 用
+# scipy.ndimage.label 做连通域, 判"这片黑连不连到画面边界"。
+# 不写在这里的话, 哪天 rembg 换掉实现, 这段代码会在 worker 里炸 ImportError, 而
+# requirements.txt 会一直显示我们没依赖过它们。版本跟 lock 里现有的一致, 所以这次
+# 改动不需要重新解析依赖树。
+numpy==2.4.6
+scipy==1.18.0
 python-dotenv==1.2.2
 gunicorn==26.0.0
 psycopg[binary]==3.3.4
