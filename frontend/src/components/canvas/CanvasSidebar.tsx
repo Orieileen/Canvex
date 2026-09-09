@@ -213,6 +213,12 @@ function FooterToggle({
     >
       {icon}
       <span className="truncate">{label}</span>
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={label}
+      />
+      {/* `ml-auto` 在问号上 —— 它是行里最右的那个, 撑开的空白留在开关和它之间。 */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -220,7 +226,7 @@ function FooterToggle({
             // 纯提示, 点了不该有任何副作用 —— 但仍然是 button 而不是 span:
             // 键盘用户要能 Tab 到它, radix 的 Tooltip 在 focus 时也会展开。
             className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-full",
+              "ml-auto flex size-4 shrink-0 items-center justify-center rounded-full",
               "border border-stone-300 text-[10px] font-semibold text-stone-500",
               "transition-colors hover:border-stone-400 hover:text-stone-700",
             )}
@@ -236,12 +242,6 @@ function FooterToggle({
           {hint}
         </TooltipContent>
       </Tooltip>
-      <Switch
-        className="ml-auto"
-        checked={checked}
-        onCheckedChange={onCheckedChange}
-        aria-label={label}
-      />
     </div>
   );
 }
