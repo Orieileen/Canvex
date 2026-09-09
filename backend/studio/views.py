@@ -371,9 +371,20 @@ class SceneChatView(APIView):
                     "canvas chat stream failed: scene=%s user_msg=%s",
                     scene_id_str, user_msg_id,
                 )
+                # **原文, 不只是异常类名。** 供应商那句话(「用户额度不足, 剩余额度:
+                # ＄-0.088」)是唯一能让用户知道该干什么的东西, 而它以前只进了服务器
+                # 日志 —— 前端拿到的是 "assistant_failed: CanvasAgentInvocationError",
+                # 等于什么都没说。
+                #
+                # `diagnosis` 是 code 不是话: 跟通道卡片同一套 (channel_diagnosis),
+                # 文案在前端 (前端 lib/channel-diagnosis)。后端回中文的话英文界面上
+                # 会冒出一句中文, 而且同一句话有了两个来源。
+                # 聊天通道不是模板通道, 所以 template 用默认的 False。
+                detail = f"{type(exc).__name__}: {exc}"
                 yield _sse_event({
                     "event": StreamEvent.ERROR,
-                    "detail": f"assistant_failed: {type(exc).__name__}",
+                    "detail": detail,
+                    "diagnosis": channel_diagnosis.diagnose(detail),
                 })
                 yield _sse_event({"event": StreamEvent.DONE})
                 return

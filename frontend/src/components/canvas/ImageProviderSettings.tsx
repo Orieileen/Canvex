@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { diagText } from "@/lib/channel-diagnosis";
 import { toast } from "sonner";
 import {
   ChevronDown,
@@ -68,16 +69,6 @@ type Values = Record<string, unknown>;
 /** kind → 界面上的展示名。徽标和新建时的下拉共用, 免得两处各拼一次 i18n key。 */
 const kindLabel = (t: TFunction, kind: string) =>
   t(`imageProviders.kind${kind[0].toUpperCase()}${kind.slice(1)}`);
-
-/** 诊断 code → 一句能照做的话。
- *
- *  后端只回 code (见 backend services/channel_diagnosis.py), 文案在这边 —— 否则英文界面
- *  上会冒出一句中文, 而且同一句话有了两个来源。
- *
- *  `defaultValue: ""` 而不是 `i18n.exists`: 后端加了一个新 code、这边还没补文案时, 表现是
- *  "少一句提示"而不是界面上冒出一个 key 名。原文本来就在下面, 少一句提示不致命。 */
-const diagText = (t: TFunction, code: string) =>
-  code ? t(`imageProviders.diag.${code}`, { defaultValue: "" }) : "";
 
 /** 等宽多行输入 (curl 导入、请求模板)。跟 `inputCls` 同一个理由: 这串 class 在本文件里
  *  已经出现过三次, 而改主题/尺寸时漏掉一处不会报错, 只会长得不一样。 */

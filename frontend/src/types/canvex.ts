@@ -211,7 +211,10 @@ export type CanvasChatStreamEvent =
   // A canvas asset a tool produced this turn — the client places it on the
   // Excalidraw board via pinImage.
   | { event: "canvas_asset"; url: string }
-  | { event: "error"; detail: string }
+  /** `detail` 是供应商报错原文 (带异常类名), `diagnosis` 是 code —— 跟
+   *  `CanvasImageProvider.last_error_diagnosis` 同一套, 文案见 lib/channel-diagnosis。
+   *  认不出就是空串, 那时界面上只有原文。 */
+  | { event: "error"; detail: string; diagnosis?: string }
   | { event: "done" };
 
 

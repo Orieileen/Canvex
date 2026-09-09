@@ -10,8 +10,12 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
+
+from studio.models import Scene
+from studio.services.agent.builder import CanvasAgentInvocationError
 from langchain_core.tools import tool
 
 from studio.services.agent.builder import CHAT_PROTOCOLS
@@ -116,3 +120,69 @@ class ProtocolChoicesTests(SimpleTestCase):
         row = next(t for t in tunable_schema()["chat"]["tunables"] if t["key"] == "protocol")
         self.assertEqual(row["control"], "choice")
         self.assertEqual(row["choices"], list(CHAT_PROTOCOL_CHOICES))
+
+
+class ChatErrorStreamTests(TestCase):
+    """聊天流炸掉的时候, `error` 事件里必须带着**供应商原话** + 诊断 code。
+
+    以前这里发的是 `assistant_failed: {异常类名}`。表现: 用户在界面上只看到"回复失败"
+    四个字一闪而过, 而"额度不足, 去后台充值"这句唯一能让他知道该干什么的话, 只进了
+    服务器日志 —— 而会看 `docker compose logs` 的用户本来就不需要这句提示。
+
+    `diagnosis` 是 code 不是话 (文案在前端 lib/channel-diagnosis), 跟通道卡片同一套。
+    """
+
+    #: 兔子/new-api 那家在余额为负时的真实报文, 从一次真实失败里抄下来的。
+    _QUOTA_403 = (
+        "agent stream failed: PermissionDeniedError: Error code: 403 - "
+        "{'error': {'message': '用户额度不足, 剩余额度: ＄-0.088648', "
+        "'type': 'new_api_error', 'code': 'insufficient_user_quota'}}"
+    )
+
+    def _stream(self, exc):
+        scene = Scene.objects.create(title="t")
+        with mock.patch("studio.views.stream_canvas_agent", side_effect=exc):
+            resp = self.client.post(
+                f"/api/v1/canvas/scenes/{scene.id}/chat/",
+                data=json.dumps({"content": "hi"}),
+                content_type="application/json",
+            )
+            body = b"".join(resp.streaming_content).decode()
+        return [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+
+    def test_error_event_carries_provider_text_and_diagnosis(self):
+        events = self._stream(CanvasAgentInvocationError(self._QUOTA_403))
+
+        error = next(e for e in events if e["event"] == "error")
+        # 原话在里面 —— 这是用户唯一能照着做事的东西。
+        self.assertIn("用户额度不足", error["detail"])
+        self.assertIn("CanvasAgentInvocationError", error["detail"])
+        self.assertEqual(error["diagnosis"], "quota")
+
+    def test_error_turn_still_closes_the_stream(self):
+        """失败也要发 `done`, 否则前端的流循环挂在那儿等。
+
+        注意**不能**有 `assistant` 事件: 一轮没产出的对话不该在库里留一条空回复,
+        那样刷新页面会看到一条"(空)"的助手消息。
+        """
+        events = self._stream(CanvasAgentInvocationError(self._QUOTA_403))
+        kinds = [e["event"] for e in events]
+
+        self.assertEqual(kinds[-1], "done")
+        self.assertIn("error", kinds)
+        self.assertNotIn("assistant", kinds)
+
+    def test_unrecognised_error_still_ships_the_raw_text(self):
+        """认不出的报错 → diagnosis 是空串, 但原话照发。
+
+        诊断表跟不上供应商的措辞是常态; 那时候界面上少一句提示, 而不是少全部信息。
+        """
+        events = self._stream(CanvasAgentInvocationError("something nobody mapped yet"))
+
+        error = next(e for e in events if e["event"] == "error")
+        self.assertEqual(error["diagnosis"], "")
+        self.assertIn("something nobody mapped yet", error["detail"])

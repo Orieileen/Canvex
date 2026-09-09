@@ -53,6 +53,7 @@ import { skillSlugFromToolCall, toolArgAsNonNegInt, toolArgAsString } from "@/li
 import { imageEditOutputSize } from "@/lib/canvas-image-output-size";
 import { videoAspectSource, videoOutputSize } from "@/lib/canvas-video-output-size";
 import { absoluteMediaUrl } from "@/lib/canvas-media-url";
+import { diagText } from "@/lib/channel-diagnosis";
 import type {
   CanvasChatMessage,
   CanvasMediaImage,
@@ -930,6 +931,11 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
       // 时清, 同 scene 内的两次连发不触发, 因此这里显式重置。
       resetPackRow();
 
+      // 后端把失败当成流里的一个 `error` 事件发 (SSE 已经开始流了, 改不回 4xx 状态码),
+      // 之后照常收尾。所以"流正常跑完"**不等于**"回复成功" —— 不记这一笔的话, 循环出来
+      // 那个成功 chip 会立刻盖掉刚弹的失败提示, 界面上就是"已回复"而实际一个字都没有。
+      let sawError = false;
+
       try {
         for await (const event of canvasService.postChatStream(
           activeSceneId,
@@ -1092,9 +1098,18 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
               setStreamingText(event.message.content);
               setStreamFinalizing(true);
               break;
-            case "error":
+            case "error": {
+              sawError = true;
               showTransientStatus({ label: t("workspace.status.replyFailed"), variant: "error" });
+              // chip 一闪就没, 而这里往往是"额度不足"/"key 不对"这种**只要看见就知道该干
+              // 什么**的信息。跟通道卡片同一套: 诊断那句当标题 (能照做的一步), 供应商原文
+              // 当副文本 (认不出 code 时它就是全部)。
+              const hint = diagText(t, event.diagnosis ?? "");
+              toast.error(hint || event.detail || t("workspace.toast.chatFailed"), {
+                description: hint ? event.detail : undefined,
+              });
               break;
+            }
             case "done":
               break;
             default: {
@@ -1104,8 +1119,9 @@ function CanvasArea({ sceneId, channels, skills, onManageSkills }: CanvasAreaPro
             }
           }
         }
-        // Fell off the stream normally — show success chip briefly
-        if (!abort.signal.aborted) {
+        // Fell off the stream normally — show success chip briefly.
+        // `!sawError`: 见上面那个标志位 —— 带着 error 事件跑完也是"正常跑完"。
+        if (!abort.signal.aborted && !sawError) {
           showTransientStatus({ label: t("workspace.status.replied"), variant: "success" });
         }
       } catch (err) {
