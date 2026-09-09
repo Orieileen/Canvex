@@ -39,6 +39,12 @@ def _flattened_subject(size: int = 100) -> np.ndarray:
     return a
 
 
+def _alpha_of(png_bytes: bytes) -> np.ndarray:
+    img = Image.open(io.BytesIO(png_bytes))
+    assert img.mode == "RGBA", img.mode
+    return np.asarray(img)[:, :, 3]
+
+
 def _detects(array: np.ndarray, mode: str = "RGB") -> bool:
     return _looks_flattened(_png(array, mode), _FLATTEN_MIN_BLACK_RATIO)
 
@@ -91,12 +97,27 @@ class LooksFlattenedTests(SimpleTestCase):
 class RepairFlattenedAlphaTests(SimpleTestCase):
     """闸门。rembg 本身 mock 掉 —— 它是第三方神经网络, 不是这个改动的一部分。"""
 
-    def test_calls_rembg_when_the_image_looks_flattened(self):
-        with mock.patch.object(image_tools, "_rembg_offloaded", return_value=b"cut") as rembg:
+    def test_calls_rembg_and_binarizes_its_soft_mask(self):
+        """rembg 的输出要过一次二值化, **不是原样返回**。
+
+        实测 u2net 给这类图的 mask 整片停在 240-254 而不是 255 (一张真实修复结果:
+        alpha 0 占 72.4%、240-254 占 21.7%、255 只占 3.9%)。也就是整个主体带着 2-6% 的
+        透明度 —— 贴白底看不出来 (白透白), 贴到深色画布上整个产品发暗发脏。
+        这里造的正是那个形状: 主体 alpha=250, 修完必须是 255。
+        """
+        cut = np.dstack([
+            _flattened_subject(),
+            np.where(_flattened_subject()[:, :, 0] > 0, 250, 0).astype(np.uint8),
+        ])
+        with mock.patch.object(
+            image_tools, "_rembg_offloaded", return_value=_png(cut, mode="RGBA"),
+        ) as rembg:
             out = repair_flattened_alpha(_png(_flattened_subject()))
 
         rembg.assert_called_once()
-        self.assertEqual(out, b"cut")
+        alpha = _alpha_of(out)
+        self.assertEqual(alpha[50, 50], 255, "主体那 250 要被推到全不透明")
+        self.assertEqual(alpha[0, 0], 0, "背景仍然是透明")
 
     def test_does_not_call_rembg_on_a_normal_image(self):
         """没命中判定时**一次都不能调** —— rembg 是 1.4 秒的 CPU, 每张图都跑一遍既慢,

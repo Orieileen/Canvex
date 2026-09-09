@@ -511,7 +511,13 @@ def _binarize_alpha(image_bytes: bytes, threshold: int = _ALPHA_BINARIZE_THRESHO
     是灰色 halo. 二值化 alpha: > threshold 留 255, ≤ threshold 转 0, 一刀切。
     RGB 通道完全不动 — 主体内的白像素 (alpha=255) 安全保留, 不会被误删。
     代价: 边缘锯齿 (没了 anti-alias). 1024×1024 cutout 视觉可接受;
-    再要平滑可换 rembg(alpha_matting=True) 但慢 2-3 倍。"""
+    再要平滑可换 rembg(alpha_matting=True) 但慢 2-3 倍。
+
+    **阈值不要往上调过头。** 实测 u2net 给"压平修复"那类图的 mask 整片停在 240-254
+    (见 repair_flattened_alpha), 阈值一旦越过 240, 整个主体会连同灰边一起被判成 0 ——
+    结果不是"边更干净", 是**整张图空了**。128 到 240 之间这张图的结果几乎一样
+    (实测 128/160/200 的不透明占比是 26.1% / 26.0% / 25.8%), 所以这个数没有微调的价值,
+    它只是"在两个峰之间随便找一刀"。"""
     from io import BytesIO  # noqa: PLC0415 — lazy 避免 web 进程顶层加载 PIL
     from PIL import Image  # noqa: PLC0415
 
@@ -615,7 +621,12 @@ def repair_flattened_alpha(
     if not _looks_flattened(image_bytes, min_ratio):
         return image_bytes
     try:
-        return _rembg_offloaded(image_bytes)
+        # 二值化跟抠图那条路同一个理由, 但这里的表现更隐蔽: u2net 给这类图的 mask **整片
+        # 停在 240-254**, 不是 255 —— 实测一张真实修复结果的 alpha 分布是
+        # 0 占 72.4%、240-254 占 21.7%、255 只占 3.9%, 真正的柔边不到 2%。
+        # 也就是说整个主体带着 2-6% 的透明度。贴白底看不出来 (白透白), 贴到深色画布上
+        # 整个产品会发暗发脏 —— 而画布背景是用户随时会换的东西。
+        return _binarize_alpha(_rembg_offloaded(image_bytes))
     except Exception:
         # 修复失败**不该**让一次成功的生成变成失败 —— 用户拿到黑底图总比拿到报错好,
         # 而且他还能自己点一下「抠图」。
