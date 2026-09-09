@@ -479,6 +479,41 @@ def _rembg_remove(source_bytes: bytes) -> bytes:
     return remove(source_bytes)
 
 
+#: gevent worker 上跑 rembg 用的线程池。**大小恒为 1** —— 见 `_rembg_offloaded`。
+#: 懒建: 绝大多数进程 (web、prefork worker) 永远走不到这里。
+_REMBG_THREAD_POOL = None
+
+
+def _rembg_offloaded(source_bytes: bytes) -> bytes:
+    """跟 `_rembg_remove` 同一件事, 但**在 gevent 下也能用** —— 丢进真实 OS 线程。
+
+    为什么可行 (实测, 不是推测): onnxruntime 的推理是 C++ 并且**释放 GIL**, 所以把
+    `remove()` 放进一个真线程之后 hub 照常调度。同一张图、同一个进程里量的:
+
+        直接调用      1671ms   心跳 greenlet 跑了 **0** 次 (event loop 全程冻死)
+        threadpool    1366ms   心跳跑了 105 次, 最大间隔 91ms
+
+    **池子大小写死 1。** `_rembg_remove` 那道护栏挡的不只是冻 loop, 还有"gevent worker
+    上可以同时有一百个 greenlet"这件事 —— 每个 rembg 会话是 ~170MB onnx。串行化之后
+    最坏情况是排队变慢, 而不是把 worker 撑爆。
+
+    **`_rembg_remove` 的护栏原样保留**, 没有改成自动 offload: 那条路 (抠图 stage 2)
+    的正确答案是跑在 `canvas_cpu` prefork 上, 撞上护栏说明配置错了, 该让它响。这里是
+    另一回事 —— 生图这条路**本来就该**在 canvas/gevent 上, 而修复只是偶尔发生的一小段。
+    """
+    if not is_gevent_patched():
+        return _rembg_remove(source_bytes)
+
+    global _REMBG_THREAD_POOL
+    import gevent  # noqa: PLC0415 — 只有 gevent 进程才走到这儿
+    from rembg import remove  # noqa: PLC0415
+
+    if _REMBG_THREAD_POOL is None:
+        from gevent.threadpool import ThreadPool  # noqa: PLC0415
+        _REMBG_THREAD_POOL = ThreadPool(1, hub=gevent.get_hub())
+    return _REMBG_THREAD_POOL.apply(remove, (source_bytes,))
+
+
 _ALPHA_BINARIZE_THRESHOLD = 128
 
 
@@ -510,15 +545,6 @@ def _binarize_alpha(image_bytes: bytes, threshold: int = _ALPHA_BINARIZE_THRESHO
 # 的话它会被当成压平图去抠。可以接受的理由是这一项**默认关**, 只在实测会压平的模型上
 # 打开 —— 而不是拿一个启发式去猜所有人的图。
 _FLATTEN_MIN_BLACK_RATIO = 0.20
-
-# 填充时"多暗算背景"。**故意跟判定的标准不一样** —— 判定要精确指纹, 填充要吃掉压缩噪声,
-# 见 repair_flattened_alpha 的 docstring。实测同一张图: 0 → 52% (白底上一片黑点),
-# 16 → 73% (跟 rembg 的结果分不出来), 32 → 73% (没有额外收益)。取小的那个。
-_FLATTEN_FILL_TOLERANCE = 16
-
-# 去黑边的窄条宽度 (像素)。实测 0 / 2 / 4 / 8: 0 是一圈明显的黑描边, 2 就去掉了绝大部分,
-# 8 最干净但那么宽会啃到主体, 小图上尤其。取 2 是保守的那一端。
-_UNMATTE_BAND = 2
 
 
 def _looks_flattened(image_bytes: bytes, min_ratio: float) -> bool:
@@ -578,69 +604,34 @@ def repair_flattened_alpha(
     背景: 有些中转会把模型返回的 RGBA 压平成 RGB 交付, 而压平的默认底色是黑
     (见 ImageChannel.flatten_repair, 那儿有实测数据)。
 
-    **判定和修复用的不是同一套东西**, 这是这个函数最要紧的一点:
+    **判定和修复是两套东西**, 这是这个函数最要紧的一点:
 
-    - **判定**靠"比特级全零" —— 它是压平留下的精确指纹, 换成"接近黑"就会把夜景图和
-      用户明说要的纯黑背景一起掏空。
-    - **修复不能也靠它。** 第一版就是这么写的 (从边界 flood fill 那片精确黑), 在一张
-      样本上很干净, 换一张就露馅: 压平之后**又过了一次有损压缩**, 把 19% 的纯黑扰动成
-      了 (1,1,0) 这类值 —— 它们不满足 `== 0`, 于是留成不透明, 白底上一片黑点。
-      一张图 54% 比特级全零、73% 接近黑, 另一张 72.4% / 73.5%; 差多少完全取决于中转
-      那边怎么再编码一次, 而我们看不见也控制不了。
+    - **判定** (`_looks_flattened`) 靠"比特级全零" —— 压平留下的精确指纹。换成"接近黑"
+      就会把夜景图和用户明说要的纯黑背景一起掏空。
+    - **修复不能也靠它。** 有一版就是这么写的 (从边界 flood fill 那片精确黑), 在一张
+      样本上很干净, 换一张就露馅: 压平之后中转**又有损压缩了一次**, 把 19% 的纯黑扰动
+      成 (1,1,0) 这类值 —— 不满足 `== 0`, 于是留成不透明, 白底上一片黑点。一张图 54%
+      比特级全零 / 73% 接近黑, 另一张 72.4% / 73.5%; 差多少取决于中转那边怎么再编码,
+      我们看不见也控制不了。任何"照着像素值划线"的填充都会栽在这个不确定性上。
 
-      所以填充改用**容差** (`_FLATTEN_FILL_TOLERANCE`), 从边界漫延。实测同一张图:
-      容差 0 只吃到 52%、白底上一片黑点; 容差 16 吃到 73%, 跟 rembg 的结果在观看尺寸
-      下分不出来, 而且 47ms vs 1093ms。
+    所以修复交给 rembg (u2net): 它按**语义**分割主体, 根本不看背景是什么颜色, 压缩噪声
+    对它没有影响。代价是慢一个量级 (实测 1.4s vs 0.05s)。
 
-    **为什么不干脆用 rembg** (它按语义分割, 完全不受压缩噪声影响): `_rembg_remove` 里
-    有一道显式护栏 —— rembg 是阻塞 CPU, 在 gevent 池下会冻死整个 event loop, 撞上直接
-    抛 RuntimeError。而生图这条路跑的就是 `canvas` (gevent)。抠图之所以拆成两段丢给
-    `canvas_cpu` (prefork) 正是为了这个。为一个补救步骤再拆一条 Celery leg 不划算, 而
-    容差填充在同一张图上已经拿到了同等的结果。
+    跑在 gevent worker 上靠 `_rembg_offloaded` —— 那儿有"为什么这样不会冻死 event loop"
+    的实测数据。
 
-    **仍然是补救不是修复**: 边缘那圈半透明像素在压平时已经被乘到黑上, 这里只能在紧贴
-    背景的窄条里反解一次 (见 `_UNMATTE_BAND`)。正解在请求侧 (background=opaque)。
+    **仍然是补救不是修复**: 边缘那圈半透明像素在压平时已经被乘到黑上, rembg 能切出干净
+    的轮廓, 但切出来的像素本身仍然偏暗。正解在请求侧 (background=opaque)。
     """
-    from io import BytesIO  # noqa: PLC0415
-    import numpy as np  # noqa: PLC0415
-    from PIL import Image  # noqa: PLC0415
-    from scipy import ndimage  # noqa: PLC0415
-
     if not _looks_flattened(image_bytes, min_ratio):
         return image_bytes
-
-    rgb = np.asarray(Image.open(BytesIO(image_bytes)).convert("RGB")).astype(np.float32)
-    # 容差 + 连通域: "暗**且**从边界连得过来"。单看暗度会掏空主体里的深色区域, 单看
-    # 连通域 (精确黑) 会漏掉压缩噪声 —— 两个条件缺一不可。
-    dark = rgb.max(axis=2) <= _FLATTEN_FILL_TOLERANCE
-    labels, _ = ndimage.label(dark)
-    border_labels = {
-        int(v) for v in np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
-    } - {0}
-    background = np.isin(labels, list(border_labels))
-
-    alpha = np.where(background, 0.0, 1.0)
-    # ── 去黑边 ──
-    # 压平做的是 `c_out = c × a` (直通 alpha 合成到黑底), 贴着背景那一窄条里是**两个
-    # 未知数一个方程**。取 `a ≈ max(r,g,b)/255` 定下来: 三个通道被同一个 a 压暗, 最亮
-    # 的那个最接近原色, 它的衰减量就是 a 的估计; 再用 `c = c_out / a` 把颜色提回来。
-    # **只在窄条里做** —— 这个估计对"本来就暗的不透明像素"是错的, 一个纯黑产品会被整片
-    # 判成半透明。窄条把错误关在紧贴背景的两像素内, 而那里本来就是过渡带。
-    band = ndimage.binary_dilation(background, iterations=_UNMATTE_BAND) & ~background
-    if band.any():
-        est = np.clip(rgb.max(axis=2) / 255.0, 0.0, 1.0)
-        alpha = np.where(band, est, alpha)
-        # 除数兜底: est=0 的像素除下去是 inf/nan, 会污染整张图。
-        rgb = np.where(
-            band[..., None], np.clip(rgb / np.maximum(est, 1e-3)[..., None], 0, 255), rgb,
-        )
-
-    out = Image.fromarray(
-        np.dstack([rgb.astype(np.uint8), (alpha * 255).astype(np.uint8)]), "RGBA",
-    )
-    buf = BytesIO()
-    out.save(buf, "PNG")
-    return buf.getvalue()
+    try:
+        return _rembg_offloaded(image_bytes)
+    except Exception:
+        # 修复失败**不该**让一次成功的生成变成失败 —— 用户拿到黑底图总比拿到报错好,
+        # 而且他还能自己点一下「抠图」。
+        logger.exception("flatten repair: rembg failed, returning the provider's bytes as-is")
+        return image_bytes
 
 
 def _cutout_and_persist(job: ImageEditJob) -> list[ImageEditResult]:
