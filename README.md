@@ -77,6 +77,7 @@ cp .env.example .env后默认值直接可用，不需要更改.env里的任何�
 
 - Docker Desktop：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
 - Docker Compose 安装文档：[https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
+- B 站有现成的安装教程：[https://www.bilibili.com/video/BV1vm421T7Kw](https://www.bilibili.com/video/BV1vm421T7Kw)
 
 ```bash
 docker compose up -d --build

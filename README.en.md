@@ -77,6 +77,7 @@ Prerequisites: Docker + Docker Compose.
 
 - Docker Desktop: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
 - Docker Compose install docs: [https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/)
+- A step-by-step install walkthrough (video, in Chinese): [https://www.bilibili.com/video/BV1vm421T7Kw](https://www.bilibili.com/video/BV1vm421T7Kw)
 
 ```bash
 docker compose up -d --build
