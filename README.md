@@ -86,7 +86,7 @@ docker compose up -d --build
 - 打开前端：http://localhost:5173 即可启动 Canvex
 - （后端 API：http://localhost:28000）
 
-### 4）添加通道
+### 4）在 Canvex 添加通道
 
 由于各家供应商的请求参数各不相同，Canvex 预设了一套 API 供应商格式（不是广告）：
 

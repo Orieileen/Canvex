@@ -86,7 +86,7 @@ docker compose up -d --build
 - Open the frontend at http://localhost:5173 — that's Canvex running
 - (Backend API: http://localhost:28000)
 
-### 4) Add your channels
+### 4) Add your channels in Canvex
 
 Providers all take different request parameters — names, values and structure alike — so Canvex ships a set of ready-made API provider request formats (this is not an ad):
 
