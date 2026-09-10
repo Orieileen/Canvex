@@ -19,11 +19,17 @@
       这个窗口有一两秒, 而"刷新之后立刻划一下"恰好落在里面。样式表同理: Vite 是由 JS
       注入的, 一样晚。只有内联的 <style> 在首屏解析时就在。
 
-      放在 html 上是因为它是滚动元素 (body 是 overflow:hidden)。Chrome / Edge 认这个;
+      **html 和 body 两条都要写。** 视口用哪个元素的 overscroll-behavior, 跟着 overflow
+      的 propagate 规则走: 这里 html 的 overflow 是 visible(全局没有任何 html/body 的
+      overflow 规则), 于是 viewport-defining element 是 body。Chrome 140 之前就是从
+      body propagate 的 —— 只写 html 那一条会被整个忽略, 照样能划走; 140 起才改成从
+      html(root) propagate, 合规了但旧版本还在外面跑。两条都写才能同时盖住新旧
+      Chrome / Edge, 也是这道防线搬进来之前 index.css 里原本的写法。
+
       Safari 的历史手势忽略 overscroll-behavior, 只认 wheel 的 preventDefault, 那一半在
       上面那个 hook 里。
     -->
-    <style>html{overscroll-behavior-x:none}</style>
+    <style>html,body{overscroll-behavior-x:none}</style>
   </head>
   <body>
     <div id="root"></div>
