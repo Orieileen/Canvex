@@ -83,7 +83,7 @@ cp .env.example .env后默认值直接可用，不需要更改.env里的任何�
 docker compose up -d --build
 ```
 
-- 前端：http://localhost:5173
+- 打开前端：http://localhost:5173 即可启动 Canvex
 - 后端 API：http://localhost:28000
 
 ### 4）添加通道

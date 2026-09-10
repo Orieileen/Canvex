@@ -83,7 +83,7 @@ Prerequisites: Docker + Docker Compose.
 docker compose up -d --build
 ```
 
-- Frontend: http://localhost:5173
+- Open the frontend at http://localhost:5173 — that's Canvex running
 - Backend API: http://localhost:28000
 
 ### 4) Add your channels
