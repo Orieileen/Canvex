@@ -10,6 +10,20 @@
       window.EXCALIDRAW_ASSET_PATH = window.EXCALIDRAW_ASSET_PATH || '/canvex-assets/'
     </script>
     <title>Canvex</title>
+    <!--
+      压掉 macOS 触摸板「双指横滑 = 浏览器前进/后退」。
+
+      **必须内联在这里, 不能放 index.css。** 画布上两指横滑就是平移, 而这个手势会把
+      整个页面导航走。JS 那一道 (hooks/use-suppress-swipe-nav) 要等 bundle 下载 + React
+      挂载 + effect 跑完才生效 —— 在那之前的每一次横滑都会真的返回。dev server 慢的时候
+      这个窗口有一两秒, 而"刷新之后立刻划一下"恰好落在里面。样式表同理: Vite 是由 JS
+      注入的, 一样晚。只有内联的 <style> 在首屏解析时就在。
+
+      放在 html 上是因为它是滚动元素 (body 是 overflow:hidden)。Chrome / Edge 认这个;
+      Safari 的历史手势忽略 overscroll-behavior, 只认 wheel 的 preventDefault, 那一半在
+      上面那个 hook 里。
+    -->
+    <style>html{overscroll-behavior-x:none}</style>
   </head>
   <body>
     <div id="root"></div>

@@ -4,25 +4,23 @@ import { useEffect } from "react";
  * 压掉 macOS 触摸板「双指横滑 = 浏览器前进/后退」历史导航手势 —— 覆盖**整个 canvas
  * 页面**(画布 + 侧栏 + 所有 overlay), 仅在 canvas 路由挂载期间生效。
  *
- * 两道一起上, 都随本 hook 挂/卸:
- * 1. **JS**(Safari 唯一认的): window 捕获阶段挂非被动 wheel 监听, 横向为主
- *    (`|dx| > |dy|`)的手势一律 `preventDefault()`, 除非路径上有真正可横向滚动且
- *    仍有余量的容器(放行让它自己消费, 如水平 chip 行)。纵向滚动(`|dx| <= |dy|`)
- *    提前返回, 不受影响。捕获阶段保证先于任何 `stopPropagation()` 的内层 handler
- *    看到事件; Safari 历史手势忽略 overscroll-behavior、只认 preventDefault。
- * 2. **CSS**(Chrome 原生机制): 给 `<html>` 加 `.no-swipe-nav` class, 触发
- *    index.css 里 `overscroll-behavior-x: none`。
+ * 两道防线, **这里只是其中一道**:
+ * 1. **CSS**(Chrome / Edge 的机制): `html { overscroll-behavior-x: none }`,
+ *    **内联在 index.html 里**, 不在这个 hook 里也不在 index.css 里。
+ *    原因见那段注释: 它必须在 bundle 下载 + React 挂载之前就生效, 否则"刷新之后
+ *    立刻横滑一下"会真的把页面导航走 —— 那正是这道防线以前漏掉的窗口。
+ * 2. **JS**(Safari 唯一认的, 也就是本 hook): window 捕获阶段挂非被动 wheel 监听,
+ *    横向为主(`|dx| > |dy|`)的手势一律 `preventDefault()`, 除非路径上有真正可横向
+ *    滚动且仍有余量的容器(放行让它自己消费, 如水平 chip 行)。纵向滚动
+ *    (`|dx| <= |dy|`)提前返回, 不受影响。捕获阶段保证先于任何 `stopPropagation()`
+ *    的内层 handler 看到事件; Safari 的历史手势忽略 overscroll-behavior、只认
+ *    preventDefault。
  *
  * 挂 window 而非画布 pane: 画布**之外**(侧栏 / 顶栏 / 间隙)横滑同样会触发返回,
- * pane 级监听收不到那些事件。两者都随卸载摘除(去监听 + 去 class), 所以**其它路由
- * 的横滑返回照常** —— 不把这个 canvas 专属行为泄露到全站。
+ * pane 级监听收不到那些事件。
  */
 export function useSuppressSwipeNav() {
   useEffect(() => {
-    // Chrome 路径: 用 class 把 overscroll 规则限定在 canvas 页面(见 index.css)。
-    const root = document.documentElement;
-    root.classList.add("no-swipe-nav");
-
     const onWheel = (e: WheelEvent) => {
       // 纵向为主的滚动放行 —— 面板 / 侧栏的垂直滚动必须保留。
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
@@ -54,9 +52,6 @@ export function useSuppressSwipeNav() {
 
     const opts: AddEventListenerOptions = { passive: false, capture: true };
     window.addEventListener("wheel", onWheel, opts);
-    return () => {
-      window.removeEventListener("wheel", onWheel, opts);
-      root.classList.remove("no-swipe-nav");
-    };
+    return () => window.removeEventListener("wheel", onWheel, opts);
   }, []);
 }

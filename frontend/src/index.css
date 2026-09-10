@@ -152,11 +152,9 @@
   * {
     @apply border-border outline-ring/50;
   }
-  /* 关掉横向 overscroll → 禁用双指横滑返回手势(仅 canvas 页面挂 .no-swipe-nav)。 */
-  html.no-swipe-nav,
-  html.no-swipe-nav body {
-    overscroll-behavior-x: none;
-  }
+  /* 横滑返回的 CSS 那一道**内联在 index.html 里**, 不在这儿 —— 它必须在 bundle
+     加载之前就生效, 而这个文件是由 JS 注入的。别再往这里加同样的规则: 两份会分叉,
+     而分叉的表现是"某些时候能滑走", 极难复现。 */
   [data-canvas-pane] {
     overscroll-behavior: none;
   }
