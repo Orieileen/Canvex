@@ -60,8 +60,6 @@ export const skills = {
         "`{{name}}` is built in, so its text can't be edited — there'd be no way back if it broke. Use \u201cCopy as mine\u201d and edit that instead, then disable the built-in one.",
       builtin_name_taken: "`{{name}}` is a built-in skill's name. Give yours a different `name`.",
       name_conflict: "A skill called `{{name}}` is already installed.",
-      builtin_undeletable:
-        "`{{name}}` is built in, so it can't be deleted — it ships with the codebase and would come back on the next rebuild. Disabling it does the same job.",
     },
     tooBig: "{{file}} is over {{limit}} KB — skipped.",
     readFailed: "Couldn't read {{file}} — skipped.",
@@ -72,6 +70,8 @@ export const skills = {
     overwrite: "Replace",
     deleteTitle: "Delete {{name}}?",
     deleteBody: "The assistant loses this SOP immediately. This can't be undone.",
+    deleteBodyBuiltin:
+      "The assistant loses this SOP immediately. It only comes back on a fresh database — rebuilding or restarting will not bring it back.",
   },
   zh: {
     // ── SkillSelector (单条消息的跳过) ────────────────────────────────────────
@@ -129,8 +129,6 @@ export const skills = {
         "`{{name}}` 是内置技能, 正文改不了 —— 改坏了没法还原。用「复制为我的」拷一份出来改, 再把内置这条停用。",
       builtin_name_taken: "`{{name}}` 是内置技能的名字, 占用了。给你这篇换个 `name` 吧。",
       name_conflict: "已经装了一个叫 `{{name}}` 的技能。",
-      builtin_undeletable:
-        "`{{name}}` 是内置技能, 删不掉 —— 它随代码库发, 重建容器又会回来。停用它就行, 效果一样。",
     },
     tooBig: "{{file}} 超过 {{limit}} KB, 跳过了。",
     readFailed: "{{file}} 读不出来, 跳过了。",
@@ -139,5 +137,7 @@ export const skills = {
     overwrite: "覆盖",
     deleteTitle: "删除 {{name}}?",
     deleteBody: "助手会立刻失去这份 SOP。删了没法撤销。",
+    deleteBodyBuiltin:
+      "助手会立刻失去这份 SOP。只有全新的数据库才会重新装上它 —— 重建容器、重启都不会让它回来。",
   },
 }

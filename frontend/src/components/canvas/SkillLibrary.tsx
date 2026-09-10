@@ -393,7 +393,13 @@ export function SkillLibrary({ open, onOpenChange, onChanged }: SkillLibraryProp
             <AlertDialogTitle>
               {t("skills.deleteTitle", { name: deleteTarget?.name ?? "" })}
             </AlertDialogTitle>
-            <AlertDialogDescription>{t("skills.deleteBody")}</AlertDialogDescription>
+            {/* 内置的多说一句"什么时候会回来" —— 不说的话, 用户在新机器上重新部署时
+                看见它又出现, 会以为删除没生效。 */}
+            <AlertDialogDescription>
+              {deleteTarget?.source === "builtin"
+                ? t("skills.deleteBodyBuiltin")
+                : t("skills.deleteBody")}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t("sidebar.cancel")}</AlertDialogCancel>
@@ -525,25 +531,25 @@ function SkillCard({
                 {t("skills.copyAsMine")}
               </button>
             ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setDraft(row.content)}
-                  className="rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-                >
-                  {t("skills.edit")}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={onDelete}
-                  className="ml-auto flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] text-destructive hover:bg-destructive/10 disabled:opacity-40"
-                >
-                  <Trash2 className="size-3.5" strokeWidth={2} />
-                  {t("skills.delete")}
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={() => setDraft(row.content)}
+                className="rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+              >
+                {t("skills.edit")}
+              </button>
             )}
+            {/* 删除对内置和自装的一视同仁。内置的**正文**仍然只读 (改坏了没有回退路径),
+                但删掉是个干净的动作 —— 而且删了就是删了, 只有全新数据库才会重新播种。 */}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onDelete}
+              className="ml-auto flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] text-destructive hover:bg-destructive/10 disabled:opacity-40"
+            >
+              <Trash2 className="size-3.5" strokeWidth={2} />
+              {t("skills.delete")}
+            </button>
           </div>
           )}
         </div>

@@ -315,14 +315,18 @@ class SkillViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_destroy(self, instance):
-        if instance.source == Skill.Source.BUILTIN:
-            # 删了磁盘上还在, 重建容器 migrate 又长回来 —— 那种"删不掉"最难解释。
-            # 内置的只提供停用。
-            raise ValidationError({
-                "detail": f"`{instance.name}` is a built-in skill and cannot be deleted.",
-                "code": "builtin_undeletable",
-                "name": instance.name,
-            })
+        # **内置的也能删。**
+        #
+        # 这里原来挡着内置行, 理由写的是"删了磁盘上还在, 重建容器 migrate 又长回来 ——
+        # 那种删不掉最难解释"。那个担心是错的: 磁盘那份只由迁移 0018 导入, 而迁移**只跑
+        # 一次** (django_migrations 记着), `resync_skills` 又是纯从库里推导的, 不 walk
+        # 磁盘。所以删掉之后 `docker compose up` 多少次它都不会回来。
+        #
+        # 唯一会回来的场景是**全新的数据库** (down -v / 换机器), 那时候 0018 重新跑一遍
+        # —— 而那正是它该做的事: 新装的人应该开箱就有两条能用的 SOP。
+        #
+        # 内容仍然是只读的 (见 serializers 的 builtin_readonly): 改坏了没有回退路径,
+        # 而删掉是个干净的、用户自己知道自己在做什么的动作。
         instance.delete()
         resync_skills()
 
