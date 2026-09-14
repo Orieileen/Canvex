@@ -195,7 +195,15 @@ function resolveImageSourceUrl(
   api: ExcalidrawImperativeAPI | null,
 ): string | null {
   if (selection.kind !== "single-image") return null;
-  if (selection.sourceUrl) return selection.sourceUrl;
+  // **在这里归一成绝对地址, 不要让每个消费方各自记得。** 后端故意返回相对的
+  // `/media/...`(见 backend serializers.py: Vite proxy 的 changeOrigin 会把 Host
+  // 改成 docker 内网, 浏览器解析不了), 而 fetch / <img src> 会把根相对解析到**前端
+  // 源** `:5173` —— Vite 不伺服 /media, 结果是 500。
+  //
+  // 这条规则以前靠每个调用点自己记住, 而下载那条路忘了: 点「下载图像」拿到的是
+  // `HTTP 500`, 换视角立方体的贴图也是空的。`absoluteMediaUrl` 幂等(非 `/` 开头的
+  // 原样返回), 所以下游那几个已经调过的地方不受影响。
+  if (selection.sourceUrl) return absoluteMediaUrl(selection.sourceUrl);
   if (!api || !selection.fileId) return null;
   return api.getFiles()[selection.fileId]?.dataURL ?? null;
 }
