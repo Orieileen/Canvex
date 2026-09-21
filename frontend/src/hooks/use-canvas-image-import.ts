@@ -4,7 +4,6 @@ import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
 import { canvasService } from "@/services/canvas.service";
 import { extractApiError } from "@/services/errors";
-import { MAX_UPLOAD_IMAGE_BYTES } from "@/lib/upload-limits";
 import { screenPointToWorld } from "@/lib/excalidraw-bounds";
 import type { UseCanvasPinning } from "@/hooks/use-canvas-pinning";
 
@@ -46,7 +45,6 @@ import type { UseCanvasPinning } from "@/hooks/use-canvas-pinning";
  */
 
 const SVG_MIME = "image/svg+xml";
-const MAX_UPLOAD_IMAGE_MB = Math.round(MAX_UPLOAD_IMAGE_BYTES / (1024 * 1024));
 
 // Excalidraw 0.18.1: the image tool radio carries `data-testid="toolbar-image"`
 // (rendered as `toolbar-${value}`) and its only key trigger is numericKey "9"
@@ -159,18 +157,6 @@ export function useCanvasImageImport({
   const placementGenRef = useRef(0);
   const [placement, setPlacement] = useState<CanvasImagePlacement | null>(null);
 
-  /** Filter out files over the size limit, toasting once if any were dropped. */
-  const acceptBySize = useCallback(
-    (files: File[]): File[] => {
-      const accepted = files.filter((f) => f.size <= MAX_UPLOAD_IMAGE_BYTES);
-      if (accepted.length < files.length) {
-        toast.error(`Some images exceed the ${MAX_UPLOAD_IMAGE_MB} MB limit and were skipped.`);
-      }
-      return accepted;
-    },
-    [],
-  );
-
   /** Fire all uploads at once (parallel), each resolving to a result — never
    *  rejecting, so they can sit pending until awaited without unhandled-rejection. */
   const startUploads = useCallback(
@@ -242,19 +228,18 @@ export function useCanvasImageImport({
   const importAt = useCallback(
     async (files: File[], startAt: { x: number; y: number } | undefined): Promise<void> => {
       if (!sceneId) return;
-      const accepted = acceptBySize(files);
-      if (!accepted.length) return;
-      await pinUploads(startUploads(sceneId, accepted), accepted.length, startAt);
+      if (!files.length) return;
+      await pinUploads(startUploads(sceneId, files), files.length, startAt);
     },
-    [sceneId, acceptBySize, startUploads, pinUploads],
+    [sceneId, startUploads, pinUploads],
   );
 
   // Toolbar / "9" / paste path — start the upload(s) and enter placement mode.
   const beginPlacement = useCallback(
     async (files: File[]): Promise<void> => {
       if (!sceneId) return;
-      const accepted = acceptBySize(files);
-      if (!accepted.length) return;
+      if (!files.length) return;
+      const accepted = files;
       cancelPlacement(); // replace any in-flight placement (bumps the generation)
       const gen = placementGenRef.current;
 
@@ -283,7 +268,7 @@ export function useCanvasImageImport({
       jobRef.current = { previewUrl, uploads, total: accepted.length };
       setPlacement({ previewUrl, naturalWidth: size.width, naturalHeight: size.height });
     },
-    [sceneId, acceptBySize, startUploads, cancelPlacement],
+    [sceneId, startUploads, cancelPlacement],
   );
 
   useEffect(() => {

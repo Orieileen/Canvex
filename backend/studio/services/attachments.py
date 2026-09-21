@@ -11,6 +11,7 @@ provider can fetch.
 剥 organization/user(单工作区)。
 """
 import io
+import os
 from typing import TYPE_CHECKING
 
 from PIL import Image, UnidentifiedImageError
@@ -24,10 +25,17 @@ from .agent.tools.common import (
 if TYPE_CHECKING:
     from studio.models import Scene
 
-# 20 MB. Matches PIL DOS-cap defaults for decompression bombs (large enough
-# for 4K screenshots / dragged photos, tight enough to bound qiniu cost on
-# abuse). Caller (view) also limits multipart size.
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+# 单张导入图的体积上限。**这是唯一一道了** —— 前端那道 10 MB 的预筛已经删掉
+# (见 frontend/src/lib/upload-limits.ts 里那段墓碑注释), 所以超限现在只有这一个出口,
+# 而且它会明确告诉用户超了多少。
+#
+# 默认给到 200 MB: 手机照片 3-12 MB、45MP 相机直出 25-40 MB、美工从 PSD 导的 PNG
+# 上百兆都常见, 原来那个 20 MB 对这个项目的用户(电商卖家 / 美工)是真的会撞到的。
+#
+# **没有做成无上限**, 理由不是防攻击(这是个本地自托管工具, 没有别人能访问), 而是
+# 手滑: 把一个几 G 的视频拖进画布时, 一句"太大了"比把内存吃干净好。要真的不限,
+# 把 CANVAS_MAX_ATTACHMENT_MB 设成一个够大的数。
+MAX_ATTACHMENT_BYTES = int(os.getenv("CANVAS_MAX_ATTACHMENT_MB", "200")) * 1024 * 1024
 
 
 def persist_canvas_attachment(
