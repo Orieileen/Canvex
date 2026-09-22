@@ -196,7 +196,12 @@ export function useCanvasImageImport({
       } else if (ok === 0) {
         toast.error(extractApiError(lastError, "Image import failed"), { id: toastId });
       } else {
-        toast.error(`Imported ${ok}, ${total - ok} failed`, { id: toastId });
+        // 带上原因 —— 混批里最常见的失败就是"某一张超了后端上限", 而超限现在只有后端
+        // 报得出来 (前端那道预筛已删)。只说"1 failed" 用户无从下手。
+        toast.error(
+          `Imported ${ok}, ${total - ok} failed: ${extractApiError(lastError, "unknown error")}`,
+          { id: toastId },
+        );
       }
     },
     [pinImage],
@@ -239,12 +244,11 @@ export function useCanvasImageImport({
     async (files: File[]): Promise<void> => {
       if (!sceneId) return;
       if (!files.length) return;
-      const accepted = files;
       cancelPlacement(); // replace any in-flight placement (bumps the generation)
       const gen = placementGenRef.current;
 
-      const previewUrl = URL.createObjectURL(accepted[0]);
-      const uploads = startUploads(sceneId, accepted);
+      const previewUrl = URL.createObjectURL(files[0]);
+      const uploads = startUploads(sceneId, files);
       let size: { width: number; height: number };
       try {
         size = await imageNaturalSize(previewUrl);
@@ -265,7 +269,7 @@ export function useCanvasImageImport({
         toast.error("Image import failed");
         return;
       }
-      jobRef.current = { previewUrl, uploads, total: accepted.length };
+      jobRef.current = { previewUrl, uploads, total: files.length };
       setPlacement({ previewUrl, naturalWidth: size.width, naturalHeight: size.height });
     },
     [sceneId, startUploads, cancelPlacement],

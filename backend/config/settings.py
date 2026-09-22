@@ -25,6 +25,21 @@ def _as_list(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _as_int(value: str | None, default: int, *, minimum: int = 1) -> int:
+    """写错的数字 → 回落到默认值, 而不是让进程在 import 期就炸。
+
+    `.env` 里把一行留空 (`FOO=`) 是"我想用默认值"的常见写法, 但这时 os.getenv 拿到的
+    是 `""` 不是 None, 裸 `int("")` 会抛 ValueError —— 而这发生在 import 期, web 和三个
+    celery worker 会一起起不来, 线索只在容器日志里。同样挡掉 "200MB" 这种带单位的写法,
+    以及会把功能整个关死的 0 / 负数 (minimum=0 的调用点除外, 那里 0 有意义)。
+    """
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me-in-production")
 DEBUG = _as_bool(os.getenv("DJANGO_DEBUG"), True)
 ALLOWED_HOSTS = _as_list(os.getenv("DJANGO_ALLOWED_HOSTS")) or ["*"]
@@ -140,8 +155,16 @@ CELERY_TASK_ROUTES = {
 }
 
 # Upload guards
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(20 * 1024 * 1024)))
-FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", str(20 * 1024 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = _as_int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE"), 20 * 1024 * 1024, minimum=0)
+FILE_UPLOAD_MAX_MEMORY_SIZE = _as_int(os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE"), 20 * 1024 * 1024, minimum=0)
+
+# 导入到画布的单张图片体积上限 (MB)。真正把关的地方是 studio.services.attachments
+# (它的 MAX_ATTACHMENT_BYTES 就取这个值) —— 前端那道预筛已经删了, 这是唯一一道。
+#
+# 上面两行**故意**还留在 20 MB, 不要为了"配平"跟着调大: 超过 FILE_UPLOAD_MAX_MEMORY_SIZE
+# 的上传会落到磁盘临时文件而不是攒在内存里, 正是大图想要的行为; DATA_UPLOAD_MAX_MEMORY_SIZE
+# 只管 multipart 里的非文件字段, 不会挡住图片本身。
+CANVAS_MAX_ATTACHMENT_BYTES = _as_int(os.getenv("CANVAS_MAX_ATTACHMENT_MB"), 200) * 1024 * 1024
 
 # 媒体基址 —— **给浏览器的**, 不是给供应商的。用在「发到聊天」的附件 URL, 以及把相对
 # /media/... 归一成能存进 job 行的绝对地址。供应商不会来拉它: 源图在提交那一刻由

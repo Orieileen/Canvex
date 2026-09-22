@@ -64,7 +64,11 @@ from .services.agent.builder import (
 from .services.agent.skills import list_skills, resync_skills
 from .services.agent.tools.common import enqueue_on_commit
 from .services.agent.tools.image import PROBE_PROMPT, PROBE_VIDEO_PROMPT, probe_image_channel
-from .services.attachments import MAX_ATTACHMENT_BYTES, persist_canvas_attachment
+from .services.attachments import (
+    MAX_ATTACHMENT_BYTES,
+    attachment_too_large_message,
+    persist_canvas_attachment,
+)
 from .services.angle import create_angle_job, probe_angle_channel
 from .services.image import create_image_edit_job, create_split_jobs
 from .services.curl_import import (
@@ -225,9 +229,9 @@ class SceneAttachmentUploadView(APIView):
         # Reject too-large uploads before loading bytes into memory. f.size
         # comes from Content-Length / multipart header — free.
         if f.size and f.size > MAX_ATTACHMENT_BYTES:
-            raise ValidationError(
-                {"image": f"attachment too large ({f.size} > {MAX_ATTACHMENT_BYTES})"},
-            )
+            # 文案跟下面那道兜底检查共用一份 (attachments.attachment_too_large_message),
+            # 两处各写各的迟早会飘 —— 而它现在是用户唯一能看到的超限提示。
+            raise ValidationError({"image": attachment_too_large_message(f.size)})
         try:
             data = persist_canvas_attachment(scene, f.read(), original_filename=f.name)
         except ValueError as exc:

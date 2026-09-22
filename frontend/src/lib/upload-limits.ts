@@ -1,6 +1,8 @@
 /**
- * Upload limits — 跟后端必须一致。改时后端常量 + 这里同步, 否则前端拦不住的会
- * 被 400 顶回来 (差体验)。
+ * Upload limits — 前端这边只剩 SKILL.md 一条, 而它跟后端必须一致: 改时后端常量 +
+ * 这里同步, 否则前端拦不住的会被 400 顶回来 (差体验)。
+ *
+ * 导入图片**不在这里** —— 上限只由后端定 (见下面那段墓碑)。
  */
 
 /* 这里原来有一个 MAX_UPLOAD_IMAGE_BYTES (10 MB), 在前端把超大的图**静默筛掉**。
@@ -8,8 +10,9 @@
    MAX_ATTACHMENT_BYTES, 可用 CANVAS_MAX_ATTACHMENT_MB 调)。
 
    顺带一提, 它的注释写的是"跟后端 MAX_UPLOAD_IMAGE_BYTES 一致" —— 后端**从来没有过**
-   这个常量, 真正的那个叫 MAX_ATTACHMENT_BYTES 而且是 20 MB。两个数从一开始就没对上,
-   而这种不一致正好不会报错: 用户只会觉得"10 MB 以上的图传不上去"。 */
+   这个常量, 真正的那个叫 MAX_ATTACHMENT_BYTES, 当时是 20 MB (现在由 settings 里的
+   CANVAS_MAX_ATTACHMENT_BYTES 给, 默认 200 MB)。两个数从一开始就没对上, 而这种不一致
+   正好不会报错: 用户只会觉得"10 MB 以上的图传不上去"。 */
 
 /** 单篇 SKILL.md 体积上限 (256 KB), 跟后端 skill_md.MAX_CONTENT_BYTES 一致。
  *

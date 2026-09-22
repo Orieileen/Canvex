@@ -11,9 +11,10 @@ provider can fetch.
 剥 organization/user(单工作区)。
 """
 import io
-import os
+import math
 from typing import TYPE_CHECKING
 
+from django.conf import settings
 from PIL import Image, UnidentifiedImageError
 
 from .agent.tools.common import (
@@ -35,7 +36,29 @@ if TYPE_CHECKING:
 # **没有做成无上限**, 理由不是防攻击(这是个本地自托管工具, 没有别人能访问), 而是
 # 手滑: 把一个几 G 的视频拖进画布时, 一句"太大了"比把内存吃干净好。要真的不限,
 # 把 CANVAS_MAX_ATTACHMENT_MB 设成一个够大的数。
-MAX_ATTACHMENT_BYTES = int(os.getenv("CANVAS_MAX_ATTACHMENT_MB", "200")) * 1024 * 1024
+#
+# 数字本身在 config/settings.py 的 "Upload guards" 那一段 (CANVAS_MAX_ATTACHMENT_BYTES,
+# 由 CANVAS_MAX_ATTACHMENT_MB 调)。放那边而不是在这里 os.getenv: 上传相关的另外两个旋钮
+# (DATA_UPLOAD / FILE_UPLOAD_MAX_MEMORY_SIZE) 就在那一段, 三个数摆在一起才看得出有没有打架;
+# 而且那边的 _as_int 会把 `CANVAS_MAX_ATTACHMENT_MB=` (留空) 这种写法兜住 —— 裸 int("") 会在
+# import 期抛 ValueError, 把 web 和三个 worker 一起拖死。
+MAX_ATTACHMENT_BYTES = getattr(settings, "CANVAS_MAX_ATTACHMENT_BYTES", 200 * 1024 * 1024)
+
+
+def _mb(num_bytes: int) -> str:
+    """按 MB 显示, 小数位向上取整 —— 只超出几个字节时, 四舍五入会印成自相矛盾的
+    "200 MB (limit 200 MB)"。"""
+    return f"{math.ceil(num_bytes / (1024 * 1024) * 10) / 10:.1f}".removesuffix(".0")
+
+
+def attachment_too_large_message(size_bytes: int) -> str:
+    """超限时给用户看的那一句。视图(按 Content-Length 预检)和下面的兜底检查共用一份,
+    免得两处文案各写各的。按 MB 说 —— 前端 toast 直接显示它, 而原来印的是两串裸字节数,
+    用户得自己除一遍才知道超了多少。"""
+    return (
+        f"attachment too large: {_mb(size_bytes)} MB "
+        f"(limit {_mb(MAX_ATTACHMENT_BYTES)} MB, raise CANVAS_MAX_ATTACHMENT_MB)"
+    )
 
 
 def persist_canvas_attachment(
@@ -52,8 +75,7 @@ def persist_canvas_attachment(
     kept in DataAsset.alt_text for human inspection in admin / library UI.
     """
     if len(image_bytes) > MAX_ATTACHMENT_BYTES:
-        msg = f"attachment too large ({len(image_bytes)} > {MAX_ATTACHMENT_BYTES})"
-        raise ValueError(msg)
+        raise ValueError(attachment_too_large_message(len(image_bytes)))
 
     try:
         with Image.open(io.BytesIO(image_bytes)) as img:
@@ -62,6 +84,14 @@ def persist_canvas_attachment(
             ext = (img.format or "png").lower()
             if ext == "jpeg":
                 ext = "jpg"
+    except Image.DecompressionBombError as exc:
+        # 注意 DecompressionBombError 直接继承 Exception, **不是** OSError, 所以下面那条
+        # except 抓不到它 —— 漏出去就是 500。原来 20 MB 的上限顺带让它几乎不可能发生
+        # (PIL 默认 89.5 MP, 超过 2 倍才抛), 上限抬到 200 MB 之后, 美工从 PSD 导的大图
+        # (比如 15000×12000 = 180 MP) 就真的会撞上, 必须在这里翻译成 400。
+        # 想让这类图能进来, 得有意识地调 PIL 的 Image.MAX_IMAGE_PIXELS —— 那是另一件事:
+        # 后面的抠图 / 压平是会真解码的, 放开之前要先想清楚内存。
+        raise ValueError(f"image has too many pixels to decode safely: {exc}") from exc
     except (UnidentifiedImageError, OSError) as exc:
         # PIL raises UnidentifiedImageError (subclass of OSError) for
         # non-image bytes (text file renamed .png, corrupted upload).
