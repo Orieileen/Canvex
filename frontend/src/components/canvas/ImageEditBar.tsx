@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -602,10 +603,11 @@ function ImagePanel({ selection, multiImageCount, promptFromTexts, isSubmitting,
   const { t } = useTranslation("canvasUi");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<ImageEditSize>("auto");
-  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
   const [n, setN] = useState<ImageEditCount>(1);
   const resolutions = useModelResolutions(imageModel);
-  useResolutionFallback(resolutions, resolution, setResolution);
+  const [resolution, setResolution] = useStickyResolution(
+    resolutions, IMAGE_RESOLUTION_STORAGE_KEY, DEFAULT_IMAGE_RESOLUTION,
+  );
 
   const isMulti = multiImageCount > 0;
   const trimmed = prompt.trim();
@@ -787,6 +789,35 @@ function useResolutionFallback(
   }, [tiers, value, set]);
 }
 
+const IMAGE_RESOLUTION_STORAGE_KEY = "canvex:image-resolution";
+const VIDEO_RESOLUTION_STORAGE_KEY = "canvex:video-resolution";
+
+/** 画质档的粘性选择 —— 用户挑过的档存 localStorage, 重开还停在那档 (跟
+ *  useStickyModelChoice 同一个思路)。**落盘只发生在用户主动改**的路径上:
+ *  useResolutionFallback 的自动吸附走裸 setState 不落盘 —— 这次会话被模型
+ *  吸到最近档没关系, 用户原本的偏好还留着, 换个收那一档的模型又回去了。 */
+function useStickyResolution(
+  tiers: string[], storageKey: string, fallback: string,
+): [string, (v: string) => void] {
+  const [value, rawSet] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(storageKey) || fallback;
+    } catch {
+      return fallback; // 隐私模式下 localStorage 会抛
+    }
+  });
+  const set = useCallback((v: string) => {
+    rawSet(v);
+    try {
+      window.localStorage.setItem(storageKey, v);
+    } catch {
+      // 持久化失败不影响本次会话
+    }
+  }, [storageKey]);
+  useResolutionFallback(tiers, value, rawSet);
+  return [value, set];
+}
+
 // ─── Video panel ────────────────────────────────────────────────────────────
 
 interface VideoPanelProps {
@@ -809,7 +840,12 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(5);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("16:9");
-  const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
+  // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
+  // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
+  const resolutions = useModelAllowed(videoModel, "allowed_resolutions");
+  const [resolution, setResolution] = useStickyResolution(
+    resolutions, VIDEO_RESOLUTION_STORAGE_KEY, DEFAULT_VIDEO_RESOLUTION,
+  );
 
   const trimmed = prompt.trim();
   const canGenerate = canPin && !isSubmitting && (trimmed.length > 0 || promptFromTexts.length > 0);
@@ -831,7 +867,6 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   }, [allowedRatios]);
   // 画质档没有画布默认可退 —— 各家从 360p 排到 4k, 凑不出一张通用的表。所以模型没报
   // 就**不显示这个下拉**, 也不发那个键 = 用供应商自己的默认, 跟这个功能之前一样。
-  const resolutions = useModelAllowed(videoModel, "allowed_resolutions");
   // 这个模型有没有"比例"这回事 —— 后端算好的 (见 ImageModelChoiceSerializer)。没有就
   // 别摆一个下拉让人选, 同画质下拉那条规矩。
   //
@@ -851,9 +886,6 @@ function VideoPanel({ videoModel, canPin, promptFromTexts, isSubmitting, onSubmi
   useEffect(() => {
     if (!ratios.includes(aspectRatio)) setAspectRatio(ratios[0]);
   }, [ratios, aspectRatio]);
-  // 跟生图那两个面板同一条规则 (见 useResolutionFallback): 落到最近的一档而不是第一档。
-  useResolutionFallback(resolutions, resolution, setResolution);
-
   function submitGenerate() {
     if (!canGenerate) return;
     const finalPrompt = [promptFromTexts, trimmed].filter(Boolean).join("\n");
@@ -1037,11 +1069,12 @@ interface SplitPanelProps {
  *  tweaks, switch to the Image tab. */
 function SplitPanel({ isSubmitting, onSubmit, imageModel }: SplitPanelProps) {
   const { t } = useTranslation("canvasUi");
-  const [resolution, setResolution] = useState<ImageEditResolution>(DEFAULT_IMAGE_RESOLUTION);
   // 拆分的两条 leg 跟「图像」标签走同一个模型, 所以档位也照它报的列 —— 否则在这里选
   // 一个 4K, 而 inpaint 那条 leg 的模型只到 2K。
   const resolutions = useModelResolutions(imageModel);
-  useResolutionFallback(resolutions, resolution, setResolution);
+  const [resolution, setResolution] = useStickyResolution(
+    resolutions, IMAGE_RESOLUTION_STORAGE_KEY, DEFAULT_IMAGE_RESOLUTION,
+  );
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (isSubmitting) return;

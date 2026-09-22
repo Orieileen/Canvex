@@ -66,8 +66,8 @@ export const IMAGE_EDIT_SIZES: { value: ImageEditSize; label: string }[] = [
 ];
 export const IMAGE_EDIT_COUNTS: ImageEditCount[] = [1, 2, 4];
 
-/** 画质档位(像素面积). 1K=1:1 1024×1024 (快/省), 2K=2048×2048 (默认), 4K=4096×4096
- *  (大 4 倍, 慢). 1K 主要给 apimart 主通道; 火山 fallback 最低 ~2K, 会被 _volc_size 抬到 2K.
+/** 画质档位(像素面积). 1K=1:1 1024×1024 (快/省, 默认), 2K=2048×2048, 4K=4096×4096
+ *  (大 4 倍, 慢). 模型不收 1K 时由 useResolutionFallback 吸到最近档 (如火山最低 ~2K).
  *  placeholder 预留框按档位像素算 (imageEditOutputSize). */
 /** **不是封闭联合** —— 各家的档位差得离谱: gemini-3.1-flash 有 `0.5K`,
  *  seedream-5-0-pro 有 `1.5K`, seedream-5-0-lite 有 `3K` 且不支持 `1K`, flux-2 干脆按
@@ -76,7 +76,7 @@ export const IMAGE_EDIT_COUNTS: ImageEditCount[] = [1, 2, 4];
 export type ImageEditResolution = string;
 /** 画布自己那三档。**只是模型没报支持哪几档时的兜底** —— 报了就照它列。 */
 export const IMAGE_EDIT_RESOLUTIONS: ImageEditResolution[] = ["1K", "2K", "4K"];
-export const DEFAULT_IMAGE_RESOLUTION: ImageEditResolution = "2K";
+export const DEFAULT_IMAGE_RESOLUTION: ImageEditResolution = "1K";
 
 export interface SubmitImageEditParams {
   selection: CanvasSelection;
